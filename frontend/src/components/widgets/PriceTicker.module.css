@@ -1,0 +1,43 @@
+.ticker {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12px 16px;
+  height: 100%;
+  background: #131318;
+  border: 1px solid #2a2a35;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.symbol {
+  font-size: 11px;
+  color: #888;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.price {
+  font-size: 28px;
+  font-weight: 600;
+  color: #e2e2e2;
+  letter-spacing: -0.02em;
+  transition: color 0.1s ease;
+}
+
+.price.up   { color: #22c55e; }
+.price.down { color: #ef4444; }
+
+.status {
+  font-size: 9px;
+  margin-top: 6px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.status.open       { color: #22c55e; }
+.status.connecting { color: #f59e0b; }
+.status.closed,
+.status.error      { color: #ef4444; }

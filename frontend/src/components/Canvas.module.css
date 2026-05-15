@@ -1,0 +1,119 @@
+.canvas {
+  width: 100%;
+  min-height: calc(100vh - 44px);
+  background: #0d0d0f;
+  padding: 6px;
+  position: relative;
+}
+
+/* ── Widget cell ──────────────────────────────────────────────────────── */
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #131318;
+  border: 1px solid #1e1e28;
+  transition: border-color 0.15s;
+}
+.cell:hover { border-color: #2a2a35; }
+
+.handle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  background: #111116;
+  cursor: grab;
+  flex-shrink: 0;
+  border-bottom: 1px solid #1e1e28;
+}
+.handle:active { cursor: grabbing; }
+
+.handleLabel {
+  font-size: 9px;
+  color: #444;
+  letter-spacing: 0.06em;
+  user-select: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.handleActions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cell:hover .handleActions { opacity: 1; }
+
+.actionBtn {
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+  line-height: 1;
+  transition: color 0.1s, background 0.1s;
+}
+.actionBtn:hover { color: #c0c0c0; background: #2a2a35; }
+.removeBtn:hover { color: #ef4444 !important; }
+
+.widgetBody {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.emptyTitle {
+  font-size: 15px;
+  color: #333;
+  font-weight: 500;
+}
+
+.emptyHint {
+  font-size: 12px;
+  color: #2a2a35;
+}
+.emptyHint strong { color: #444; }
+
+/* ── Add button ───────────────────────────────────────────────────────── */
+
+.addBtn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #7c6aff;
+  border: none;
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(124, 106, 255, 0.35);
+  transition: background 0.12s, transform 0.12s;
+  z-index: 100;
+}
+.addBtn:hover { background: #9d8fff; transform: scale(1.08); }

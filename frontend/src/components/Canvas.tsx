@@ -1,0 +1,176 @@
+import { useCallback, useState } from "react";
+import GridLayout, { type Layout } from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
+import type {
+  CanvasState,
+  CandlestickChartConfig,
+  PolymarketTickerConfig,
+  WidgetConfig,
+} from "../types";
+import { AddWidgetModal } from "./AddWidgetModal";
+import { CandlestickChart } from "./widgets/CandlestickChart";
+import { PolymarketTicker } from "./widgets/PolymarketTicker";
+import { PriceTicker } from "./widgets/PriceTicker";
+import styles from "./Canvas.module.css";
+
+const COLS = 24;
+const ROW_HEIGHT = 40;
+
+type Props = {
+  state: CanvasState;
+  onChange: (next: CanvasState) => void;
+};
+
+function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
+  const isChart = type === "candlestick_chart";
+  const w = isChart ? 14 : 5;
+  const h = isChart ? 9 : type === "polymarket_ticker" ? 4 : 3;
+  return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
+}
+
+function renderWidget(cfg: WidgetConfig) {
+  switch (cfg.type) {
+    case "price_ticker":
+      return <PriceTicker symbol={cfg.symbol} />;
+    case "candlestick_chart":
+      return (
+        <CandlestickChart
+          symbol={cfg.symbol}
+          interval={(cfg as CandlestickChartConfig).interval}
+        />
+      );
+    case "polymarket_ticker":
+      return (
+        <PolymarketTicker
+          symbol={cfg.symbol}
+          question={(cfg as PolymarketTickerConfig).question}
+        />
+      );
+    default:
+      return null;
+  }
+}
+
+export function Canvas({ state, onChange }: Props) {
+  const [showModal, setShowModal] = useState(false);
+
+  const emit = useCallback(
+    (patch: Partial<CanvasState>) => onChange({ ...state, ...patch }),
+    [state, onChange]
+  );
+
+  const onLayoutChange = useCallback(
+    (layout: Layout[]) => emit({ layout }),
+    [emit]
+  );
+
+  const addWidget = useCallback(
+    (cfg: WidgetConfig) => {
+      emit({
+        widgets: [...state.widgets, cfg],
+        layout: [...state.layout, defaultLayout(cfg.id, cfg.type)],
+      });
+    },
+    [state, emit]
+  );
+
+  const removeWidget = useCallback(
+    (id: string) => {
+      emit({
+        widgets: state.widgets.filter((w) => w.id !== id),
+        layout: state.layout.filter((l) => l.i !== id),
+      });
+    },
+    [state, emit]
+  );
+
+  const duplicateWidget = useCallback(
+    (id: string) => {
+      const src = state.widgets.find((w) => w.id === id);
+      const srcLayout = state.layout.find((l) => l.i === id);
+      if (!src || !srcLayout) return;
+
+      const newId = `${src.type}-${Date.now()}`;
+      const newCfg: WidgetConfig = { ...src, id: newId } as WidgetConfig;
+      const newLayout: Layout = {
+        ...srcLayout,
+        i: newId,
+        x: Math.min(srcLayout.x + 1, COLS - srcLayout.w),
+        y: srcLayout.y + 1,
+      };
+
+      emit({
+        widgets: [...state.widgets, newCfg],
+        layout: [...state.layout, newLayout],
+      });
+    },
+    [state, emit]
+  );
+
+  if (state.widgets.length === 0) {
+    return (
+      <div className={styles.canvas}>
+        {showModal && (
+          <AddWidgetModal onAdd={addWidget} onClose={() => setShowModal(false)} />
+        )}
+        <div className={styles.empty}>
+          <p className={styles.emptyTitle}>Canvas is empty</p>
+          <p className={styles.emptyHint}>Click <strong>+</strong> to add your first widget</p>
+        </div>
+        <button className={styles.addBtn} onClick={() => setShowModal(true)} title="Add widget">
+          +
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.canvas}>
+      {showModal && (
+        <AddWidgetModal onAdd={addWidget} onClose={() => setShowModal(false)} />
+      )}
+
+      <GridLayout
+        className="layout"
+        layout={state.layout}
+        cols={COLS}
+        rowHeight={ROW_HEIGHT}
+        width={window.innerWidth}
+        onLayoutChange={onLayoutChange}
+        draggableHandle={`.${styles.handle}`}
+        resizeHandles={["se"]}
+        margin={[6, 6]}
+      >
+        {state.widgets.map((cfg) => (
+          <div key={cfg.id} className={styles.cell}>
+            <div className={styles.handle}>
+              <span className={styles.handleLabel}>{cfg.symbol}</span>
+              <div className={styles.handleActions}>
+                <button
+                  className={styles.actionBtn}
+                  onClick={() => duplicateWidget(cfg.id)}
+                  title="Duplicate widget"
+                >
+                  ⊕
+                </button>
+                <button
+                  className={`${styles.actionBtn} ${styles.removeBtn}`}
+                  onClick={() => removeWidget(cfg.id)}
+                  title="Remove widget"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className={styles.widgetBody}>{renderWidget(cfg)}</div>
+          </div>
+        ))}
+      </GridLayout>
+
+      <button className={styles.addBtn} onClick={() => setShowModal(true)} title="Add widget">
+        +
+      </button>
+    </div>
+  );
+}
