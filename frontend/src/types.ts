@@ -131,6 +131,8 @@ export type LiquidationSignalsConfig = {
   type: "liquidation_signals";
   minNotional?: number;
   history?: LiquidationSignalRow[];
+  /** Bump when storage shape/filter rules change to reset persisted rows. */
+  historyVersion?: number;
 };
 
 export type WidgetConfig =

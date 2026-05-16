@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { POLYMARKET_15M_PRESETS, seriesToSymbol, type PolymarketPreset } from "../lib/polymarketPresets";
-import { DEFAULT_MIN_NOTIONAL } from "./widgets/LiquidationSignals";
+import { DEFAULT_MIN_NOTIONAL, LIQ_HISTORY_VERSION } from "./widgets/LiquidationSignals";
 import type { WidgetConfig, WidgetType } from "../types";
 import styles from "./AddWidgetModal.module.css";
 
@@ -68,6 +68,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           id,
           type: "liquidation_signals",
           minNotional: DEFAULT_MIN_NOTIONAL,
+          history: [],
+          historyVersion: LIQ_HISTORY_VERSION,
         });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
@@ -167,7 +169,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
 
               {binanceType === "liquidation_signals" && (
                 <p className={styles.hint}>
-                  Live liquidation feed across all symbols. Min notional threshold is adjustable in the widget.
+                  BTC, ETH, SOL, DOGE, XRP liquidations only. All events are saved; the widget shows those above the min $ threshold.
                 </p>
               )}
             </>

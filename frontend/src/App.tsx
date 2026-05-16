@@ -2,7 +2,13 @@ import { useCallback, useState } from "react";
 import { FeedProvider } from "./context/FeedContext";
 import { Canvas } from "./components/Canvas";
 import { TopBar } from "./components/TopBar";
-import type { CanvasState, DashboardsStorage } from "./types";
+import type {
+  CanvasState,
+  DashboardsStorage,
+  LiquidationSignalsConfig,
+  WidgetConfig,
+} from "./types";
+import { LIQ_HISTORY_VERSION } from "./components/widgets/LiquidationSignals";
 import styles from "./App.module.css";
 
 const STORAGE_KEY = "sirius-dashboards";
@@ -13,10 +19,38 @@ const DEFAULT_CANVAS: CanvasState = {
   layout: [{ i: "btc-ticker-default", x: 0, y: 0, w: 5, h: 3, minW: 3, minH: 2 }],
 };
 
+function sanitizeWidget(w: WidgetConfig): WidgetConfig {
+  if (w.type !== "liquidation_signals") return w;
+  const liq = w as LiquidationSignalsConfig;
+  const history = Array.isArray(liq.history) ? liq.history : [];
+  return {
+    ...liq,
+    history: liq.historyVersion === LIQ_HISTORY_VERSION ? history : [],
+    historyVersion:
+      liq.historyVersion === LIQ_HISTORY_VERSION ? LIQ_HISTORY_VERSION : undefined,
+    minNotional:
+      typeof liq.minNotional === "number" && Number.isFinite(liq.minNotional)
+        ? liq.minNotional
+        : undefined,
+  };
+}
+
+function sanitizeStorage(storage: DashboardsStorage): DashboardsStorage {
+  const dashboards: Record<string, CanvasState> = {};
+  for (const [name, canvas] of Object.entries(storage.dashboards)) {
+    dashboards[name] = {
+      ...canvas,
+      widgets: (canvas.widgets ?? []).map(sanitizeWidget),
+      layout: canvas.layout ?? [],
+    };
+  }
+  return { ...storage, dashboards };
+}
+
 function load(): DashboardsStorage {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as DashboardsStorage;
+    if (raw) return sanitizeStorage(JSON.parse(raw) as DashboardsStorage);
   } catch {}
 
   // Migrate from single-dashboard format (Faz 1-4)
@@ -47,15 +81,16 @@ export default function App() {
 
   // ── Dashboard management ──────────────────────────────────────────────
 
-  const handleCanvasChange = useCallback(
-    (state: CanvasState) => {
-      mutate({
-        ...storage,
-        dashboards: { ...storage.dashboards, [storage.active]: state },
-      });
-    },
-    [storage, mutate]
-  );
+  const handleCanvasChange = useCallback((state: CanvasState) => {
+    setStorage((prev) => {
+      const next: DashboardsStorage = {
+        ...prev,
+        dashboards: { ...prev.dashboards, [prev.active]: state },
+      };
+      save(next);
+      return next;
+    });
+  }, []);
 
   const handleSwitch = useCallback(
     (name: string) => mutate({ ...storage, active: name }),

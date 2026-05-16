@@ -80,7 +80,8 @@ function renderWidget(
       return (
         <LiquidationSignals
           minNotional={liqCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
-          history={liqCfg.history ?? []}
+          history={Array.isArray(liqCfg.history) ? liqCfg.history : []}
+          historyVersion={liqCfg.historyVersion}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
