@@ -4,6 +4,8 @@ Polymarket Gamma API client.
 Gamma API is the REST layer for market metadata (questions, slugs, token IDs, volumes).
 CLOB API is the order-book / price-feed layer.
 """
+import json
+
 import httpx
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
@@ -36,19 +38,67 @@ async def search_markets(q: str, limit: int = 20) -> list[dict]:
     return [_slim(m) for m in markets[:limit]]
 
 
+def _parse_json_list(raw) -> list:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _token_ids_from_market(market: dict) -> tuple[str | None, str | None]:
+    """Return (up_token, down_token) for Up/Down or Yes/No outcome markets."""
+    tokens = market.get("tokens") or []
+    if tokens:
+        up = next(
+            (t["tokenId"] for t in tokens if t.get("outcome") in ("Up", "Yes")),
+            None,
+        )
+        down = next(
+            (t["tokenId"] for t in tokens if t.get("outcome") in ("Down", "No")),
+            None,
+        )
+        if up:
+            return up, down
+
+    outcomes = _parse_json_list(market.get("outcomes"))
+    clob_ids = _parse_json_list(market.get("clobTokenIds"))
+    if not clob_ids:
+        return None, None
+
+    up_idx = next(
+        (i for i, o in enumerate(outcomes) if str(o).lower() in ("up", "yes")),
+        0,
+    )
+    down_idx = next(
+        (i for i, o in enumerate(outcomes) if str(o).lower() in ("down", "no")),
+        1 if len(clob_ids) > 1 else None,
+    )
+    up_id = clob_ids[up_idx] if up_idx is not None and up_idx < len(clob_ids) else clob_ids[0]
+    down_id = (
+        clob_ids[down_idx]
+        if down_idx is not None and down_idx < len(clob_ids)
+        else (clob_ids[1] if len(clob_ids) > 1 else None)
+    )
+    return str(up_id), str(down_id) if down_id is not None else None
+
+
 async def get_token_ids(slug: str) -> dict | None:
     """
-    Return {"yes": tokenId, "no": tokenId, "question": "..."} for a slug.
+    Return {"yes": up_token_id, "no": down_token_id, "question": "..."} for a slug.
+    The "yes" key holds the Up/Yes outcome token (CLOB asset id).
     Returns None if market not found or tokens unavailable.
     """
     market = await get_market_by_slug(slug)
     if not market:
         return None
 
-    tokens = market.get("tokens", [])
-    yes_id = next((t["tokenId"] for t in tokens if t.get("outcome") == "Yes"), None)
-    no_id  = next((t["tokenId"] for t in tokens if t.get("outcome") == "No"), None)
-
+    yes_id, no_id = _token_ids_from_market(market)
     if not yes_id:
         return None
 
@@ -62,10 +112,26 @@ async def get_token_ids(slug: str) -> dict | None:
 
 
 def _slim(m: dict) -> dict:
-    tokens = m.get("tokens", [])
-    yes_price = next(
-        (float(t.get("price", 0)) for t in tokens if t.get("outcome") == "Yes"), None
-    )
+    yes_price = None
+    tokens = m.get("tokens") or []
+    if tokens:
+        yes_price = next(
+            (
+                float(t.get("price", 0))
+                for t in tokens
+                if t.get("outcome") in ("Yes", "Up")
+            ),
+            None,
+        )
+    if yes_price is None:
+        outcomes = _parse_json_list(m.get("outcomes"))
+        prices = _parse_json_list(m.get("outcomePrices"))
+        up_idx = next(
+            (i for i, o in enumerate(outcomes) if str(o).lower() in ("up", "yes")),
+            0,
+        )
+        if prices and up_idx < len(prices):
+            yes_price = float(prices[up_idx])
     return {
         "slug": m.get("slug", ""),
         "question": m.get("question", ""),

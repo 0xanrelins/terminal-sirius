@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { POLYMARKET_15M_PRESETS, seriesToSymbol, type PolymarketPreset } from "../lib/polymarketPresets";
 import { DEFAULT_MIN_NOTIONAL } from "./widgets/LiquidationSignals";
-import type { PolymarketMarket, WidgetConfig, WidgetType } from "../types";
+import type { WidgetConfig, WidgetType } from "../types";
 import styles from "./AddWidgetModal.module.css";
 
 type DataSource = "binance" | "polymarket";
@@ -13,18 +14,14 @@ type Props = {
 export function AddWidgetModal({ onAdd, onClose }: Props) {
   const [source, setSource] = useState<DataSource>("binance");
 
-  // Binance fields
   const [binanceType, setBinanceType] = useState<WidgetType>("price_ticker");
   const [symbol, setSymbol] = useState("BTCUSDT-PERP.BINANCE");
 
-  // Polymarket fields
-  const [pmQuery, setPmQuery] = useState("");
-  const [pmResults, setPmResults] = useState<PolymarketMarket[]>([]);
-  const [pmSelected, setPmSelected] = useState<PolymarketMarket | null>(null);
-  const [pmSearching, setPmSearching] = useState(false);
+  const [pmPresets, setPmPresets] = useState<PolymarketPreset[]>([]);
+  const [pmSelected, setPmSelected] = useState<PolymarketPreset | null>(null);
+  const [pmLoading, setPmLoading] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -33,25 +30,25 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Debounced Polymarket search
   useEffect(() => {
-    if (source !== "polymarket" || pmQuery.trim().length < 2) {
-      setPmResults([]);
-      return;
-    }
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(async () => {
-      setPmSearching(true);
-      try {
-        const r = await fetch(`/polymarket/markets?q=${encodeURIComponent(pmQuery)}&limit=10`);
-        setPmResults(await r.json());
-      } catch {
-        setPmResults([]);
-      } finally {
-        setPmSearching(false);
-      }
-    }, 400);
-  }, [pmQuery, source]);
+    if (source !== "polymarket") return;
+    setPmLoading(true);
+    fetch("/polymarket/presets")
+      .then((r) => r.json())
+      .then((data: PolymarketPreset[]) => setPmPresets(data))
+      .catch(() => {
+        setPmPresets(
+          POLYMARKET_15M_PRESETS.map((p) => ({
+            ...p,
+            symbol: seriesToSymbol(p.series),
+            current_slug: "",
+            yes_price: null,
+            question: null,
+          }))
+        );
+      })
+      .finally(() => setPmLoading(false));
+  }, [source]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,22 +70,22 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           minNotional: DEFAULT_MIN_NOTIONAL,
         });
       } else {
-        onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase() });
+        onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
     } else {
       if (!pmSelected) return;
-      // POST subscribe so actor streams this slug
       fetch("/polymarket/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug: pmSelected.slug }),
+        body: JSON.stringify({ series: pmSelected.series }),
       }).catch(() => {});
       onAdd({
         id,
-        type: "polymarket_ticker",
-        symbol: `${pmSelected.slug}.POLYMARKET`,
-        slug: pmSelected.slug,
-        question: pmSelected.question,
+        type: "price_ticker",
+        symbol: pmSelected.symbol,
+        source: "polymarket",
+        series: pmSelected.series,
+        label: pmSelected.label,
       });
     }
     onClose();
@@ -108,7 +105,6 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         </header>
 
         <form onSubmit={submit} className={styles.form}>
-          {/* Data source */}
           <label className={styles.label}>
             <span>Data Source</span>
             <div className={styles.typeRow}>
@@ -180,42 +176,39 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           {source === "polymarket" && (
             <>
               <label className={styles.label}>
-                <span>Search Market</span>
-                <input
-                  ref={source === "polymarket" ? inputRef : undefined}
-                  className={styles.input}
-                  value={pmQuery}
-                  onChange={(e) => { setPmQuery(e.target.value); setPmSelected(null); }}
-                  placeholder="e.g. Trump, Fed rate, Bitcoin…"
-                  spellCheck={false}
-                />
+                <span>Widget Type</span>
+                <div className={styles.typeRow}>
+                  <button type="button" className={`${styles.typeBtn} ${styles.active}`}>
+                    Price Ticker
+                  </button>
+                </div>
               </label>
 
-              {pmSearching && <p className={styles.hint}>Searching…</p>}
-
-              {pmResults.length > 0 && (
+              <label className={styles.label}>
+                <span>Market (15m Up/Down)</span>
+                {pmLoading && <p className={styles.hint}>Loading…</p>}
                 <div className={styles.results}>
-                  {pmResults.map((m) => (
+                  {pmPresets.map((m) => (
                     <button
-                      key={m.slug}
+                      key={m.series}
                       type="button"
-                      className={`${styles.resultItem} ${pmSelected?.slug === m.slug ? styles.active : ""}`}
+                      className={`${styles.resultItem} ${pmSelected?.series === m.series ? styles.active : ""}`}
                       onClick={() => setPmSelected(m)}
                     >
-                      <span className={styles.resultQ}>{m.question}</span>
+                      <span className={styles.resultQ}>{m.label} Up/Down 15m</span>
                       {m.yes_price != null && (
                         <span className={styles.resultP}>
-                          {(m.yes_price * 100).toFixed(0)}%
+                          UP {(m.yes_price * 100).toFixed(0)}%
                         </span>
                       )}
                     </button>
                   ))}
                 </div>
-              )}
+              </label>
 
-              {pmQuery.length >= 2 && !pmSearching && pmResults.length === 0 && (
-                <p className={styles.hint}>No markets found.</p>
-              )}
+              <p className={styles.hint}>
+                Markets roll every 15 minutes; the backend tracks the active window automatically.
+              </p>
             </>
           )}
 

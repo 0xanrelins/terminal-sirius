@@ -7,10 +7,11 @@ Architecture:
     Nautilus TradingNode lifecycle (start/stop/dispose).
   - Uses asyncio.create_task() to run a non-blocking WS stream alongside the
     rest of the Nautilus event loop.
-  - When a new slug is added at runtime the stream task is cancelled and
-    restarted with the updated token_id set.
+  - Rolling 15m series (e.g. btc-updown-15m) auto-rotate to the current window slug.
 
-Symbol convention: "{slug}.POLYMARKET"  (e.g. "will-trump-win-2024.POLYMARKET")
+Symbol convention:
+  - Static slug:   "{slug}.POLYMARKET"
+  - Rolling series: "{series}.POLYMARKET"  (stable; backend maps to current slug)
 """
 import asyncio
 import json
@@ -24,12 +25,15 @@ from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.rolling import series_symbol, slug_for_series
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+ROTATION_POLL_SEC = 20
 
 
 class PolymarketActorConfig(ActorConfig, frozen=True):
     initial_slugs: tuple[str, ...] = ()
+    initial_series: tuple[str, ...] = ()
 
 
 class PolymarketActor(Actor):
@@ -37,13 +41,19 @@ class PolymarketActor(Actor):
         super().__init__(config)
         self._queue = data_queue
         self._initial_slugs: list[str] = list(config.initial_slugs)
+        self._initial_series: list[str] = list(config.initial_series)
 
         # slug → {yes: tokenId, no: tokenId, question: str, volume: float}
         self._meta: dict[str, dict] = {}
-        # YES tokenId → slug
+        # YES/Up tokenId → slug
         self._token_to_slug: dict[str, str] = {}
+        # series → current window slug
+        self._series_slugs: dict[str, str] = {}
+        # slug subscribed only via a series (eligible for cleanup on rotate)
+        self._slug_series: dict[str, str] = {}
 
         self._stream_task: Optional[asyncio.Task] = None
+        self._rotation_task: Optional[asyncio.Task] = None
 
     def _enqueue(self, msg: dict) -> None:
         try:
@@ -54,14 +64,16 @@ class PolymarketActor(Actor):
     # ── Nautilus lifecycle ────────────────────────────────────────────────────
 
     def on_start(self) -> None:
-        if self._initial_slugs:
-            asyncio.create_task(self._bootstrap(self._initial_slugs))
+        if self._initial_slugs or self._initial_series:
+            asyncio.create_task(self._bootstrap())
 
     def on_stop(self) -> None:
         self._cancel_stream()
+        if self._rotation_task and not self._rotation_task.done():
+            self._rotation_task.cancel()
 
     def on_dispose(self) -> None:
-        self._cancel_stream()
+        self.on_stop()
 
     # ── Public API (called from FastAPI endpoint) ─────────────────────────────
 
@@ -69,17 +81,67 @@ class PolymarketActor(Actor):
         """Dynamically add a market slug at runtime (thread-safe via asyncio)."""
         asyncio.create_task(self._add_slug(slug))
 
+    def subscribe_series(self, series: str) -> None:
+        """Subscribe to a rolling 15m series; rotates slug every window."""
+        asyncio.create_task(self._add_series(series))
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _bootstrap(self, slugs: list[str]) -> None:
-        await self._resolve_slugs(slugs)
+    async def _bootstrap(self) -> None:
+        for series in self._initial_series:
+            await self._add_series(series)
+        await self._resolve_slugs(self._initial_slugs)
         self._restart_stream()
+        self._ensure_rotation_loop()
 
     async def _add_slug(self, slug: str) -> None:
         if slug in self._meta:
-            return  # already subscribed
+            return
         await self._resolve_slugs([slug])
         self._restart_stream()
+
+    async def _add_series(self, series: str) -> None:
+        if series in self._series_slugs:
+            return
+        slug = slug_for_series(series)
+        self._series_slugs[series] = slug
+        await self._resolve_slugs([slug])
+        self._slug_series[slug] = series
+        self._restart_stream()
+        self._ensure_rotation_loop()
+
+    def _ensure_rotation_loop(self) -> None:
+        if self._rotation_task is None or self._rotation_task.done():
+            self._rotation_task = asyncio.create_task(self._rotation_loop())
+
+    async def _rotation_loop(self) -> None:
+        while self._series_slugs:
+            try:
+                await self._check_series_rotation()
+            except Exception as e:
+                self.log.warning(f"Polymarket rotation error: {e!r}")
+            await asyncio.sleep(ROTATION_POLL_SEC)
+
+    async def _check_series_rotation(self) -> None:
+        changed = False
+        for series, old_slug in list(self._series_slugs.items()):
+            new_slug = slug_for_series(series)
+            if new_slug == old_slug:
+                continue
+            self.log.info(f"Polymarket: rotating {series!r} {old_slug!r} → {new_slug!r}")
+            self._drop_slug(old_slug)
+            self._series_slugs[series] = new_slug
+            await self._resolve_slugs([new_slug])
+            self._slug_series[new_slug] = series
+            changed = True
+        if changed:
+            self._restart_stream()
+
+    def _drop_slug(self, slug: str) -> None:
+        info = self._meta.pop(slug, None)
+        if info:
+            self._token_to_slug.pop(info["yes"], None)
+        self._slug_series.pop(slug, None)
 
     async def _resolve_slugs(self, slugs: list[str]) -> None:
         for slug in slugs:
@@ -106,6 +168,12 @@ class PolymarketActor(Actor):
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
 
+    def _symbol_for_slug(self, slug: str) -> str:
+        series = self._slug_series.get(slug)
+        if series:
+            return series_symbol(series)
+        return _slug_to_symbol(slug)
+
     async def _stream(self, token_ids: list[str]) -> None:
         backoff = 1.0
         while True:
@@ -116,8 +184,9 @@ class PolymarketActor(Actor):
                     self.log.info(f"Polymarket: streaming {len(token_ids)} token(s)")
                     async for raw in ws:
                         events = json.loads(raw)
-                        if isinstance(events, list):
-                            for ev in events:
+                        batch = events if isinstance(events, list) else [events]
+                        for ev in batch:
+                            if isinstance(ev, dict):
                                 self._dispatch(ev)
             except asyncio.CancelledError:
                 return
@@ -127,43 +196,85 @@ class PolymarketActor(Actor):
                 backoff = min(backoff * 2, 60)
 
     def _dispatch(self, event: dict) -> None:
-        asset_id = event.get("asset_id")
-        slug = self._token_to_slug.get(asset_id)
+        etype = event.get("event_type")
+        try:
+            if etype == "price_change":
+                for change in event.get("price_changes") or []:
+                    self._emit_from_levels(change.get("asset_id"), change)
+            elif etype == "book":
+                self._emit_from_book(event.get("asset_id"), event)
+            elif etype == "last_trade_price":
+                self._emit_from_trade(event)
+        except Exception as e:
+            self.log.warning(f"Polymarket: dispatch error ({etype}): {e!r}")
+
+    @staticmethod
+    def _level_price(level) -> float:
+        if isinstance(level, dict):
+            return float(level.get("price", 0) or 0)
+        if isinstance(level, (list, tuple)) and level:
+            return float(level[0])
+        return 0.0
+
+    def _slug_for_asset(self, asset_id) -> str | None:
+        if asset_id is None:
+            return None
+        return self._token_to_slug.get(str(asset_id))
+
+    def _emit_from_levels(self, asset_id, levels: dict) -> None:
+        slug = self._slug_for_asset(asset_id)
         if not slug:
             return
+        bid = float(levels.get("best_bid") or 0)
+        ask = float(levels.get("best_ask") or 0)
+        if bid and ask:
+            mid = (bid + ask) / 2
+        else:
+            mid = float(levels.get("price") or 0)
+        self._emit_quote(slug, mid, bid or None, ask or None)
 
-        symbol = _slug_to_symbol(slug)
-        question = self._meta[slug]["question"]
-        ts_ns = int(time.time() * 1e9)
+    def _emit_from_book(self, asset_id, event: dict) -> None:
+        slug = self._slug_for_asset(asset_id)
+        if not slug:
+            return
+        bids = event.get("bids") or []
+        asks = event.get("asks") or []
+        best_bid = self._level_price(bids[0]) if bids else 0.0
+        best_ask = self._level_price(asks[0]) if asks else 0.0
+        mid = (best_bid + best_ask) / 2 if best_bid and best_ask else (best_bid or best_ask)
+        self._emit_quote(slug, mid, best_bid or None, best_ask or None)
 
-        etype = event.get("event_type")
+    def _emit_from_trade(self, event: dict) -> None:
+        slug = self._slug_for_asset(event.get("asset_id"))
+        if not slug:
+            return
+        price = float(event.get("price") or 0)
+        self._emit_quote(slug, price)
 
-        if etype == "price_change":
-            self._enqueue({
-                "type": "polymarket",
-                "symbol": symbol,
-                "slug": slug,
-                "question": question,
-                "yes_price": float(event.get("price", 0)),
-                "ts": ts_ns,
-            })
-
-        elif etype == "book":
-            bids = event.get("bids", [])
-            asks = event.get("asks", [])
-            best_bid = float(bids[0][0]) if bids else 0.0
-            best_ask = float(asks[0][0]) if asks else 0.0
-            mid = (best_bid + best_ask) / 2 if best_bid and best_ask else (best_bid or best_ask)
-            self._enqueue({
-                "type": "polymarket",
-                "symbol": symbol,
-                "slug": slug,
-                "question": question,
-                "yes_price": round(mid, 4),
-                "bid": best_bid,
-                "ask": best_ask,
-                "ts": ts_ns,
-            })
+    def _emit_quote(
+        self,
+        slug: str,
+        yes_price: float,
+        bid: float | None = None,
+        ask: float | None = None,
+    ) -> None:
+        if yes_price <= 0:
+            return
+        symbol = self._symbol_for_slug(slug)
+        msg: dict = {
+            "type": "polymarket",
+            "symbol": symbol,
+            "slug": slug,
+            "series": self._slug_series.get(slug),
+            "question": self._meta[slug]["question"],
+            "yes_price": round(yes_price, 4),
+            "ts": int(time.time() * 1e9),
+        }
+        if bid:
+            msg["bid"] = bid
+        if ask:
+            msg["ask"] = ask
+        self._enqueue(msg)
 
 
 def _slug_to_symbol(slug: str) -> str:

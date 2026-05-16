@@ -30,7 +30,8 @@ load_dotenv()
 sys.path.insert(0, ".")
 
 import db
-from adapters.polymarket.gamma import search_markets
+from adapters.polymarket.gamma import get_market_by_slug, get_token_ids, search_markets
+from adapters.polymarket.rolling import PRESET_15M_SERIES, series_symbol, slug_for_series
 from bar_time import bar_open_time_ns
 from klines import fetch_klines
 from liquidations import fetch_liquidation_bars
@@ -109,7 +110,33 @@ async def polymarket_markets(q: str, limit: int = 20):
 
 
 class SubscribeBody(BaseModel):
-    slug: str
+    slug: str | None = None
+    series: str | None = None
+
+
+@app.get("/polymarket/presets")
+async def polymarket_presets():
+    """Configured rolling 15m markets (stable series id + current window slug)."""
+    import json
+
+    out = []
+    for p in PRESET_15M_SERIES:
+        series = p["series"]
+        slug = slug_for_series(series)
+        info = await get_token_ids(slug)
+        yes_price = None
+        market = await get_market_by_slug(slug)
+        if market:
+            prices = json.loads(market.get("outcomePrices") or "[]")
+            yes_price = float(prices[0]) if prices else None
+        out.append({
+            **p,
+            "symbol": series_symbol(series),
+            "current_slug": slug,
+            "yes_price": yes_price,
+            "question": info["question"] if info else None,
+        })
+    return out
 
 
 @app.post("/polymarket/subscribe")
@@ -119,8 +146,19 @@ async def polymarket_subscribe(body: SubscribeBody):
         actor = get_polymarket_actor()
         if actor is None:
             raise HTTPException(status_code=503, detail="Polymarket actor not running")
-        actor.subscribe_slug(body.slug)
-        return {"status": "queued", "slug": body.slug}
+        if body.series:
+            actor.subscribe_series(body.series)
+            slug = slug_for_series(body.series)
+            return {
+                "status": "queued",
+                "series": body.series,
+                "symbol": series_symbol(body.series),
+                "slug": slug,
+            }
+        if body.slug:
+            actor.subscribe_slug(body.slug)
+            return {"status": "queued", "slug": body.slug}
+        raise HTTPException(status_code=400, detail="Provide slug or series")
     except ImportError:
         raise HTTPException(status_code=503, detail="Nautilus not available")
 

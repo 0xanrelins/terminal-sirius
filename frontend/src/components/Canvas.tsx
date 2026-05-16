@@ -38,6 +38,9 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
 function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
   if (cfg.type === "candlestick_chart") return "";
+  if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
+    return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
+  }
   return cfg.symbol;
 }
 
@@ -47,7 +50,13 @@ function renderWidget(
 ) {
   switch (cfg.type) {
     case "price_ticker":
-      return <PriceTicker symbol={cfg.symbol} />;
+      return (
+        <PriceTicker
+          symbol={cfg.symbol}
+          source={cfg.source}
+          label={cfg.label}
+        />
+      );
     case "candlestick_chart": {
       const chartCfg = cfg as CandlestickChartConfig;
       return (

@@ -35,6 +35,7 @@ export type PolymarketMsg = {
   type: "polymarket";
   symbol: string;
   slug: string;
+  series?: string;
   question: string;
   yes_price: number;
   bid?: number;
@@ -84,6 +85,11 @@ export type PriceTickerConfig = {
   id: string;
   type: "price_ticker";
   symbol: string;
+  /** binance (default) or polymarket rolling 15m */
+  source?: "binance" | "polymarket";
+  /** Stable series id for polymarket, e.g. btc-updown-15m */
+  series?: string;
+  label?: string;
 };
 
 export type ChartIndicator =

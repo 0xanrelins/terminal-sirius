@@ -6,8 +6,8 @@ Polymarket CLOB feed via PolymarketActor.
 
 Environment variables:
   DATABASE_URL       — PostgreSQL DSN for Nautilus CacheDatabase
-  POLYMARKET_SLUGS   — comma-separated list of market slugs to subscribe on boot
-                       e.g. "will-trump-win-2024,will-fed-cut-rates-2025"
+  POLYMARKET_SLUGS        — comma-separated static market slugs on boot
+  POLYMARKET_15M_SERIES   — comma-separated rolling 15m series (default: btc,eth,sol,doge,xrp updown)
 """
 import os
 import queue
@@ -80,6 +80,14 @@ def _polymarket_slugs() -> tuple[str, ...]:
     return tuple(s.strip() for s in raw.split(",") if s.strip())
 
 
+def _polymarket_series() -> tuple[str, ...]:
+    raw = os.environ.get(
+        "POLYMARKET_15M_SERIES",
+        "btc-updown-15m,eth-updown-15m,sol-updown-15m,doge-updown-15m,xrp-updown-15m",
+    )
+    return tuple(s.strip() for s in raw.split(",") if s.strip())
+
+
 def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_INSTRUMENTS) -> TradingNode:
     global _polymarket_actor
 
@@ -90,6 +98,7 @@ def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_I
     pm_cfg = PolymarketActorConfig(
         component_id="PolymarketActor-001",
         initial_slugs=_polymarket_slugs(),
+        initial_series=_polymarket_series(),
     )
 
     config = TradingNodeConfig(

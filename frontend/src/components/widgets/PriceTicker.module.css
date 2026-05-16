@@ -17,6 +17,18 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pmBadge {
+  font-size: 8px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: #2d1f4e;
+  color: #a78bfa;
+  letter-spacing: 0.06em;
 }
 
 .price {
