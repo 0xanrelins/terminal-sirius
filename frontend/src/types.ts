@@ -78,6 +78,7 @@ export type PolymarketMarket = {
 export type WidgetType =
   | "price_ticker"
   | "candlestick_chart"
+  | "comparison_chart"
   | "polymarket_ticker"
   | "liquidation_signals";
 
@@ -110,6 +111,12 @@ export type CandlestickChartConfig = {
   indicators?: ChartIndicator[];
 };
 
+export type ComparisonChartConfig = {
+  id: string;
+  type: "comparison_chart";
+  interval: string;
+};
+
 export type PolymarketTickerConfig = {
   id: string;
   type: "polymarket_ticker";
@@ -138,6 +145,7 @@ export type LiquidationSignalsConfig = {
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
+  | ComparisonChartConfig
   | PolymarketTickerConfig
   | LiquidationSignalsConfig;
 

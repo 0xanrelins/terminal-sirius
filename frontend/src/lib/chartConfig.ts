@@ -9,6 +9,23 @@ export const CHART_SYMBOLS = [
   "HYPEUSDT-PERP.BINANCE",
 ] as const;
 
+/** Binance perps used in the multi-series comparison widget. */
+export const COMPARISON_SYMBOLS = [
+  "BTCUSDT-PERP.BINANCE",
+  "ETHUSDT-PERP.BINANCE",
+  "SOLUSDT-PERP.BINANCE",
+  "DOGEUSDT-PERP.BINANCE",
+  "XRPUSDT-PERP.BINANCE",
+] as const;
+
+export const COMPARISON_COLORS: Record<(typeof COMPARISON_SYMBOLS)[number], string> = {
+  "BTCUSDT-PERP.BINANCE": "#f7931a",
+  "ETHUSDT-PERP.BINANCE": "#627eea",
+  "SOLUSDT-PERP.BINANCE": "#14f195",
+  "DOGEUSDT-PERP.BINANCE": "#c2a633",
+  "XRPUSDT-PERP.BINANCE": "#38bdf8",
+};
+
 export const CHART_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 
 export type IndicatorPreset =

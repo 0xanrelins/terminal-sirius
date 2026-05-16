@@ -63,6 +63,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           interval: "1m",
           indicators: [],
         });
+      } else if (binanceType === "comparison_chart") {
+        onAdd({
+          id,
+          type: "comparison_chart",
+          interval: "1m",
+        });
       } else if (binanceType === "liquidation_signals") {
         onAdd({
           id,
@@ -95,7 +101,10 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
 
   const canSubmit =
     source === "binance"
-      ? binanceType === "liquidation_signals" || !!symbol.trim()
+      ? binanceType === "liquidation_signals" ||
+        binanceType === "comparison_chart" ||
+        binanceType === "candlestick_chart" ||
+        !!symbol.trim()
       : !!pmSelected;
 
   return (
@@ -129,7 +138,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                 <span>Widget Type</span>
                 <div className={styles.typeRow}>
                   {(
-                    ["price_ticker", "candlestick_chart", "liquidation_signals"] as WidgetType[]
+                    [
+                      "price_ticker",
+                      "candlestick_chart",
+                      "comparison_chart",
+                      "liquidation_signals",
+                    ] as WidgetType[]
                   ).map((t) => (
                     <button
                       key={t}
@@ -141,7 +155,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                         ? "Price Ticker"
                         : t === "candlestick_chart"
                           ? "Candlestick Chart"
-                          : "Liq Signals"}
+                          : t === "comparison_chart"
+                            ? "Compare Chart"
+                            : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -164,6 +180,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "candlestick_chart" && (
                 <p className={styles.hint}>
                   Pair, timeframe and indicators can be changed from the chart toolbar.
+                </p>
+              )}
+
+              {binanceType === "comparison_chart" && (
+                <p className={styles.hint}>
+                  BTC, ETH, SOL, DOGE, XRP perpetuals — % from visible left (0%), UTC daily session lines, recent window on open.
                 </p>
               )}
 

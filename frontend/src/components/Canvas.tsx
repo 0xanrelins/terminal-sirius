@@ -5,12 +5,14 @@ import "react-resizable/css/styles.css";
 import type {
   CanvasState,
   CandlestickChartConfig,
+  ComparisonChartConfig,
   LiquidationSignalsConfig,
   PolymarketTickerConfig,
   WidgetConfig,
 } from "../types";
 import { AddWidgetModal } from "./AddWidgetModal";
 import { CandlestickChart } from "./widgets/CandlestickChart";
+import { ComparisonChart } from "./widgets/ComparisonChart";
 import {
   DEFAULT_MIN_NOTIONAL,
   LiquidationSignals,
@@ -28,7 +30,7 @@ type Props = {
 };
 
 function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
-  const isChart = type === "candlestick_chart";
+  const isChart = type === "candlestick_chart" || type === "comparison_chart";
   const isLiq = type === "liquidation_signals";
   const w = isChart ? 14 : isLiq ? 6 : 5;
   const h = isChart ? 9 : isLiq ? 8 : type === "polymarket_ticker" ? 4 : 3;
@@ -37,7 +39,7 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
 
 function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
-  if (cfg.type === "candlestick_chart") return "";
+  if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
   }
@@ -64,6 +66,15 @@ function renderWidget(
           symbol={chartCfg.symbol}
           interval={chartCfg.interval}
           indicators={chartCfg.indicators ?? []}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    }
+    case "comparison_chart": {
+      const cmpCfg = cfg as ComparisonChartConfig;
+      return (
+        <ComparisonChart
+          interval={cmpCfg.interval}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
@@ -189,14 +200,14 @@ export function Canvas({ state, onChange }: Props) {
         width={window.innerWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .signalsToolbar`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
         {state.widgets.map((cfg) => (
           <div key={cfg.id} className={styles.cell}>
             <div className={styles.handle}>
-              {cfg.type !== "candlestick_chart" && (
+              {cfg.type !== "candlestick_chart" && cfg.type !== "comparison_chart" && (
                 <span className={styles.handleLabel}>{handleLabel(cfg)}</span>
               )}
               <div className={styles.handleActions}>
