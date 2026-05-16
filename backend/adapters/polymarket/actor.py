@@ -45,6 +45,12 @@ class PolymarketActor(Actor):
 
         self._stream_task: Optional[asyncio.Task] = None
 
+    def _enqueue(self, msg: dict) -> None:
+        try:
+            self._queue.put_nowait(msg)
+        except queue.Full:
+            pass
+
     # ── Nautilus lifecycle ────────────────────────────────────────────────────
 
     def on_start(self) -> None:
@@ -133,7 +139,7 @@ class PolymarketActor(Actor):
         etype = event.get("event_type")
 
         if etype == "price_change":
-            self._queue.put_nowait({
+            self._enqueue({
                 "type": "polymarket",
                 "symbol": symbol,
                 "slug": slug,
@@ -148,7 +154,7 @@ class PolymarketActor(Actor):
             best_bid = float(bids[0][0]) if bids else 0.0
             best_ask = float(asks[0][0]) if asks else 0.0
             mid = (best_bid + best_ask) / 2 if best_bid and best_ask else (best_bid or best_ask)
-            self._queue.put_nowait({
+            self._enqueue({
                 "type": "polymarket",
                 "symbol": symbol,
                 "slug": slug,

@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { PolymarketMarket, WidgetConfig, WidgetType } from "../types";
 import styles from "./AddWidgetModal.module.css";
 
-const INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
-
 type DataSource = "binance" | "polymarket";
 
 type Props = {
@@ -17,7 +15,6 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
   // Binance fields
   const [binanceType, setBinanceType] = useState<WidgetType>("price_ticker");
   const [symbol, setSymbol] = useState("BTCUSDT-PERP.BINANCE");
-  const [interval, setInterval] = useState("1m");
 
   // Polymarket fields
   const [pmQuery, setPmQuery] = useState("");
@@ -61,7 +58,13 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
 
     if (source === "binance") {
       if (binanceType === "candlestick_chart") {
-        onAdd({ id, type: "candlestick_chart", symbol: symbol.toUpperCase(), interval });
+        onAdd({
+          id,
+          type: "candlestick_chart",
+          symbol: "BTCUSDT-PERP.BINANCE",
+          interval: "1m",
+          indicators: [],
+        });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase() });
       }
@@ -130,34 +133,24 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                 </div>
               </label>
 
-              <label className={styles.label}>
-                <span>Symbol</span>
-                <input
-                  ref={inputRef}
-                  className={styles.input}
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value)}
-                  placeholder="e.g. BTCUSDT-PERP.BINANCE"
-                  spellCheck={false}
-                />
-              </label>
+              {binanceType === "price_ticker" && (
+                <label className={styles.label}>
+                  <span>Symbol</span>
+                  <input
+                    ref={inputRef}
+                    className={styles.input}
+                    value={symbol}
+                    onChange={(e) => setSymbol(e.target.value)}
+                    placeholder="e.g. BTCUSDT-PERP.BINANCE"
+                    spellCheck={false}
+                  />
+                </label>
+              )}
 
               {binanceType === "candlestick_chart" && (
-                <label className={styles.label}>
-                  <span>Interval</span>
-                  <div className={styles.intervalRow}>
-                    {INTERVALS.map((iv) => (
-                      <button
-                        key={iv}
-                        type="button"
-                        className={`${styles.intervalBtn} ${interval === iv ? styles.active : ""}`}
-                        onClick={() => setInterval(iv)}
-                      >
-                        {iv}
-                      </button>
-                    ))}
-                  </div>
-                </label>
+                <p className={styles.hint}>
+                  Pair, timeframe and indicators can be changed from the chart toolbar.
+                </p>
               )}
             </>
           )}

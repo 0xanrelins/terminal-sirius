@@ -1,7 +1,8 @@
 import queue
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
-from nautilus_trader.model.data import Bar, BarType, TradeTick, QuoteTick
+from nautilus_trader.model.data import Bar, BarType, TradeTick
+from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.identifiers import InstrumentId
 
 
@@ -28,16 +29,21 @@ class BridgeActor(Actor):
         self._instrument_ids = [InstrumentId.from_str(i) for i in config.instrument_ids]
         self._queue = data_queue
 
+    def _enqueue(self, msg: dict) -> None:
+        try:
+            self._queue.put_nowait(msg)
+        except queue.Full:
+            pass
+
     def on_start(self) -> None:
         for iid in self._instrument_ids:
             self.subscribe_trade_ticks(iid)
-            self.subscribe_quote_ticks(iid)
             for spec in BAR_SPECS:
                 bar_type = BarType.from_str(f"{iid}-{spec}")
                 self.subscribe_bars(bar_type)
 
     def on_trade_tick(self, tick: TradeTick) -> None:
-        self._queue.put_nowait({
+        self._enqueue({
             "type": "trade",
             "symbol": str(tick.instrument_id),
             "price": str(tick.price),
@@ -46,20 +52,9 @@ class BridgeActor(Actor):
             "ts": tick.ts_event,
         })
 
-    def on_quote_tick(self, tick: QuoteTick) -> None:
-        self._queue.put_nowait({
-            "type": "quote",
-            "symbol": str(tick.instrument_id),
-            "bid": str(tick.bid_price),
-            "ask": str(tick.ask_price),
-            "bid_size": str(tick.bid_size),
-            "ask_size": str(tick.ask_size),
-            "ts": tick.ts_event,
-        })
-
     def on_bar(self, bar: Bar) -> None:
         spec = bar.bar_type.spec
-        self._queue.put_nowait({
+        self._enqueue({
             "type": "bar",
             "symbol": str(bar.bar_type.instrument_id),
             "interval": _spec_to_interval(spec),
@@ -72,18 +67,18 @@ class BridgeActor(Actor):
         })
 
 
+_AGG_SUFFIX: dict[BarAggregation, str] = {
+    BarAggregation.MINUTE: "m",
+    BarAggregation.HOUR: "h",
+    BarAggregation.DAY: "d",
+    BarAggregation.WEEK: "w",
+    BarAggregation.MONTH: "M",
+}
+
+
 def _spec_to_interval(spec) -> str:
     """Convert Nautilus BarSpecification to lightweight-charts interval string."""
-    step = spec.step
-    agg = str(spec.aggregation)
-    mapping = {
-        "MINUTE": "m",
-        "HOUR": "h",
-        "DAY": "d",
-        "WEEK": "w",
-        "MONTH": "M",
-    }
-    for key, suffix in mapping.items():
-        if key in agg:
-            return f"{step}{suffix}"
-    return f"{step}{agg}"
+    suffix = _AGG_SUFFIX.get(spec.aggregation)
+    if suffix is None:
+        return f"{spec.step}{int(spec.aggregation)}"
+    return f"{spec.step}{suffix}"

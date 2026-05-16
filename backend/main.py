@@ -32,6 +32,8 @@ sys.path.insert(0, ".")
 import db
 from adapters.polymarket.gamma import search_markets
 from klines import fetch_klines
+from liquidations import fetch_liquidation_bars
+from liquidation_stream import run_liquidation_stream
 
 data_queue: queue.Queue = queue.Queue(maxsize=10_000)
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
@@ -43,11 +45,14 @@ async def lifespan(app: FastAPI):
     await db.init()
 
     # Nautilus (daemon thread — safe to skip if nautilus_trader not installed yet)
+    from node import DEFAULT_INSTRUMENTS, run_node_in_thread
+
     try:
-        from node import run_node_in_thread
         run_node_in_thread(data_queue)
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
+
+    asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
 
     asyncio.create_task(_broadcast_loop())
 
@@ -69,9 +74,23 @@ app.add_middleware(
 # ── REST ─────────────────────────────────────────────────────────────────────
 
 @app.get("/klines")
-async def klines_endpoint(symbol: str, interval: str = "1m", limit: int = 500):
+async def klines_endpoint(
+    symbol: str, interval: str = "1m", limit: int = 500, before: Optional[int] = None
+):
     try:
-        return await fetch_klines(symbol, interval, min(limit, 1000))
+        return await fetch_klines(symbol, interval, min(limit, 1000), before=before)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+
+
+@app.get("/liquidations")
+async def liquidations_endpoint(
+    symbol: str, interval: str = "1m", limit: int = 500, before: Optional[int] = None
+):
+    try:
+        return await fetch_liquidation_bars(symbol, interval, min(limit, 1000), before=before)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -133,12 +152,17 @@ async def _broadcast_loop() -> None:
         except Exception:
             continue
 
-        # Persist completed bars to PostgreSQL
+        # Persist to PostgreSQL
         if msg.get("type") == "bar":
             asyncio.create_task(_persist_bar(msg))
+        elif msg.get("type") == "liquidation":
+            asyncio.create_task(_persist_liquidation(msg))
 
         if not _clients:
             continue
+
+        if msg.get("type") == "liquidation":
+            msg = {k: v for k, v in msg.items() if not k.startswith("_")}
 
         payload = json.dumps(msg)
         symbol = msg.get("symbol")
@@ -158,6 +182,21 @@ async def _broadcast_loop() -> None:
                 except ValueError:
                     pass
             dead.clear()
+
+
+async def _persist_liquidation(msg: dict) -> None:
+    try:
+        updates = msg.get("_updates") or []
+        for u in updates:
+            await db.add_liquidation_delta(
+                symbol=u["symbol"],
+                interval=u["interval"],
+                time=u["time"],
+                long_delta=u["long_delta"],
+                short_delta=u["short_delta"],
+            )
+    except Exception as e:
+        print(f"[warn] liquidation persist failed: {e}")
 
 
 async def _persist_bar(msg: dict) -> None:

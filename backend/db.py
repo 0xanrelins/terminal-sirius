@@ -1,9 +1,9 @@
 """
 PostgreSQL access layer (asyncpg).
 
-Schema: one `klines` table — primary key is (symbol, interval, time).
-Nautilus bar messages are upserted here as they arrive.
-The /klines REST endpoint reads from here first.
+Schema:
+  - `klines` — OHLCV bars (symbol, interval, time)
+  - `liquidation_bars` — long/short liquidation notional per bar (symbol, interval, time)
 """
 import os
 from typing import Optional
@@ -52,21 +52,49 @@ async def _migrate(p: asyncpg.Pool) -> None:
             CREATE INDEX IF NOT EXISTS klines_symbol_interval_time
             ON klines (symbol, interval, time DESC)
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_bars (
+                symbol   TEXT             NOT NULL,
+                interval TEXT             NOT NULL,
+                time     BIGINT           NOT NULL,
+                long     DOUBLE PRECISION NOT NULL DEFAULT 0,
+                short    DOUBLE PRECISION NOT NULL DEFAULT 0,
+                PRIMARY KEY (symbol, interval, time)
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS liquidation_bars_symbol_interval_time
+            ON liquidation_bars (symbol, interval, time DESC)
+        """)
 
 
 # ── Queries ──────────────────────────────────────────────────────────────────
 
-async def get_klines(symbol: str, interval: str, limit: int) -> list[dict]:
-    rows = await pool().fetch(
-        """
-        SELECT time, open, high, low, close, volume
-        FROM klines
-        WHERE symbol = $1 AND interval = $2
-        ORDER BY time DESC
-        LIMIT $3
-        """,
-        symbol, interval, limit,
-    )
+async def get_klines(
+    symbol: str, interval: str, limit: int, before: int | None = None
+) -> list[dict]:
+    if before is not None:
+        rows = await pool().fetch(
+            """
+            SELECT time, open, high, low, close, volume
+            FROM klines
+            WHERE symbol = $1 AND interval = $2 AND time < $3
+            ORDER BY time DESC
+            LIMIT $4
+            """,
+            symbol, interval, before, limit,
+        )
+    else:
+        rows = await pool().fetch(
+            """
+            SELECT time, open, high, low, close, volume
+            FROM klines
+            WHERE symbol = $1 AND interval = $2
+            ORDER BY time DESC
+            LIMIT $3
+            """,
+            symbol, interval, limit,
+        )
     # Return ascending order (oldest first) — what lightweight-charts expects
     return [dict(r) for r in reversed(rows)]
 
@@ -95,3 +123,55 @@ async def upsert_klines(symbol: str, interval: str, rows: list[dict]) -> None:
 
 async def upsert_bar(symbol: str, interval: str, bar: dict) -> None:
     await upsert_klines(symbol, interval, [bar])
+
+
+# ── Liquidations ─────────────────────────────────────────────────────────────
+
+async def get_liquidation_bars(
+    symbol: str, interval: str, limit: int, before: int | None = None
+) -> list[dict]:
+    if before is not None:
+        rows = await pool().fetch(
+            """
+            SELECT time, long, short
+            FROM liquidation_bars
+            WHERE symbol = $1 AND interval = $2 AND time < $3
+            ORDER BY time DESC
+            LIMIT $4
+            """,
+            symbol, interval, before, limit,
+        )
+    else:
+        rows = await pool().fetch(
+            """
+            SELECT time, long, short
+            FROM liquidation_bars
+            WHERE symbol = $1 AND interval = $2
+            ORDER BY time DESC
+            LIMIT $3
+            """,
+            symbol, interval, limit,
+        )
+    return [
+        {"time": r["time"], "long": float(r["long"]), "short": float(r["short"])}
+        for r in reversed(rows)
+    ]
+
+
+async def add_liquidation_delta(
+    symbol: str,
+    interval: str,
+    time: int,
+    long_delta: float,
+    short_delta: float,
+) -> None:
+    await pool().execute(
+        """
+        INSERT INTO liquidation_bars (symbol, interval, time, long, short)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (symbol, interval, time) DO UPDATE
+            SET long  = liquidation_bars.long + EXCLUDED.long,
+                short = liquidation_bars.short + EXCLUDED.short
+        """,
+        symbol, interval, time, long_delta, short_delta,
+    )

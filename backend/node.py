@@ -48,7 +48,14 @@ from nautilus_trader.live.node import TradingNode
 from adapters.polymarket.actor import PolymarketActor, PolymarketActorConfig
 from bridge_actor import BridgeActor, BridgeActorConfig
 
-DEFAULT_INSTRUMENTS = ("BTCUSDT-PERP.BINANCE",)
+DEFAULT_INSTRUMENTS = (
+    "BTCUSDT-PERP.BINANCE",
+    "ETHUSDT-PERP.BINANCE",
+    "SOLUSDT-PERP.BINANCE",
+    "XRPUSDT-PERP.BINANCE",
+    "DOGEUSDT-PERP.BINANCE",
+    "HYPEUSDT-PERP.BINANCE",
+)
 
 _polymarket_actor: PolymarketActor | None = None
 

@@ -9,28 +9,89 @@
   overflow: hidden;
 }
 
-.header {
+.toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: 4px;
+  padding: 4px 8px;
   border-bottom: 1px solid #2a2a35;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
-.symbol {
+.menuWrap {
+  position: relative;
+}
+
+.menuBtn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
+  color: #c8c8d0;
+  background: #1a1a22;
+  border: 1px solid #2a2a35;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s;
+}
+.menuBtn:hover {
+  background: #22222c;
+  border-color: #3a3a48;
+}
+.menuBtnActive {
+  border-color: #7c6aff;
   color: #e2e2e2;
-  letter-spacing: 0.06em;
 }
 
-.interval {
+.chevron {
+  font-size: 8px;
+  color: #666;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 120px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #1a1a22;
+  border: 1px solid #2a2a35;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #b0b0b8;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.menuItem:hover {
+  background: #252530;
+  color: #e2e2e2;
+}
+.menuItemActive {
+  color: #7c6aff;
+}
+
+.check {
   font-size: 10px;
   color: #7c6aff;
-  background: #1e1a3a;
-  padding: 1px 6px;
-  border-radius: 3px;
 }
 
 .chart {

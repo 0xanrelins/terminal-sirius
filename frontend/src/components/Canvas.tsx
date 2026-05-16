@@ -29,17 +29,24 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
 }
 
-function renderWidget(cfg: WidgetConfig) {
+function renderWidget(
+  cfg: WidgetConfig,
+  onUpdate: (id: string, patch: Partial<WidgetConfig>) => void
+) {
   switch (cfg.type) {
     case "price_ticker":
       return <PriceTicker symbol={cfg.symbol} />;
-    case "candlestick_chart":
+    case "candlestick_chart": {
+      const chartCfg = cfg as CandlestickChartConfig;
       return (
         <CandlestickChart
-          symbol={cfg.symbol}
-          interval={(cfg as CandlestickChartConfig).interval}
+          symbol={chartCfg.symbol}
+          interval={chartCfg.interval}
+          indicators={chartCfg.indicators ?? []}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
+    }
     case "polymarket_ticker":
       return (
         <PolymarketTicker
@@ -80,6 +87,17 @@ export function Canvas({ state, onChange }: Props) {
       emit({
         widgets: state.widgets.filter((w) => w.id !== id),
         layout: state.layout.filter((l) => l.i !== id),
+      });
+    },
+    [state, emit]
+  );
+
+  const updateWidget = useCallback(
+    (id: string, patch: Partial<WidgetConfig>) => {
+      emit({
+        widgets: state.widgets.map((w) =>
+          w.id === id ? ({ ...w, ...patch } as WidgetConfig) : w
+        ),
       });
     },
     [state, emit]
@@ -139,14 +157,16 @@ export function Canvas({ state, onChange }: Props) {
         width={window.innerWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
         {state.widgets.map((cfg) => (
           <div key={cfg.id} className={styles.cell}>
             <div className={styles.handle}>
-              <span className={styles.handleLabel}>{cfg.symbol}</span>
+              {cfg.type !== "candlestick_chart" && (
+                <span className={styles.handleLabel}>{cfg.symbol}</span>
+              )}
               <div className={styles.handleActions}>
                 <button
                   className={styles.actionBtn}
@@ -164,7 +184,7 @@ export function Canvas({ state, onChange }: Props) {
                 </button>
               </div>
             </div>
-            <div className={styles.widgetBody}>{renderWidget(cfg)}</div>
+            <div className={styles.widgetBody}>{renderWidget(cfg, updateWidget)}</div>
           </div>
         ))}
       </GridLayout>

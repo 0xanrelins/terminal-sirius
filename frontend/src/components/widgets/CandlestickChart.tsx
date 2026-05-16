@@ -1,18 +1,47 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createChart,
   CandlestickSeries,
+  LineSeries,
+  HistogramSeries,
   type IChartApi,
   type ISeriesApi,
   type CandlestickSeriesOptions,
   type CandlestickData,
   type UTCTimestamp,
+  type LogicalRange,
 } from "lightweight-charts";
 import { useFeed } from "../../context/FeedContext";
-import type { BarMsg, Kline, TradeMsg } from "../../types";
+import {
+  CHART_INTERVALS,
+  CHART_SYMBOLS,
+  INDICATOR_PRESETS,
+  type IndicatorPreset,
+  isPresetActive,
+  maColor,
+  presetId,
+  symbolShort,
+} from "../../lib/chartConfig";
+import { calculateEMA } from "../../lib/chartIndicators";
+import type {
+  ChartIndicator,
+  Kline,
+  LiquidationBar,
+  LiquidationMsg,
+  TradeMsg,
+} from "../../types";
 import styles from "./CandlestickChart.module.css";
 
-type Props = { symbol: string; interval?: string };
+type Props = {
+  symbol: string;
+  interval?: string;
+  indicators?: ChartIndicator[];
+  onConfigChange: (patch: {
+    symbol?: string;
+    interval?: string;
+    indicators?: ChartIndicator[];
+  }) => void;
+};
 
 const INTERVAL_SECONDS: Record<string, number> = {
   "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
@@ -20,21 +49,208 @@ const INTERVAL_SECONDS: Record<string, number> = {
   "1d": 86400,
 };
 
-export function CandlestickChart({ symbol, interval = "1m" }: Props) {
+const INITIAL_LIMIT = 500;
+const PAGE_SIZE = 200;
+const LOAD_THRESHOLD = 10;
+const LIQ_PANE_INDEX = 1;
+const LIQ_PANE_HEIGHT = 110;
+const LONG_LIQ_COLOR = "#ef4444";
+const SHORT_LIQ_COLOR = "#22c55e";
+
+type OpenMenu = "symbol" | "interval" | "indicators" | null;
+
+type LiqBucket = { long: number; short: number };
+
+function liqToHistogramData(bars: LiquidationBar[]) {
+  return bars.map((b) => {
+    const long = b.long;
+    const short = b.short;
+    return {
+      time: b.time as UTCTimestamp,
+      value: long + short,
+      color: long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR,
+    };
+  });
+}
+
+function toCandles(data: Kline[]): CandlestickData<UTCTimestamp>[] {
+  return data.map((k) => ({
+    time: k.time as UTCTimestamp,
+    open: k.open,
+    high: k.high,
+    low: k.low,
+    close: k.close,
+  }));
+}
+
+function mergeCandles(
+  existing: CandlestickData<UTCTimestamp>[],
+  older: CandlestickData<UTCTimestamp>[]
+): CandlestickData<UTCTimestamp>[] {
+  if (older.length === 0) return existing;
+  const byTime = new Map<number, CandlestickData<UTCTimestamp>>();
+  for (const bar of [...older, ...existing]) {
+    byTime.set(bar.time as number, bar);
+  }
+  return Array.from(byTime.values()).sort(
+    (a, b) => (a.time as number) - (b.time as number)
+  );
+}
+
+function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
+  return raw.map((ind) => {
+    const t = (ind as { type: string }).type;
+    if (t === "liquidations") {
+      return { id: "liquidations", type: "liquidations" as const };
+    }
+    if (t === "ema" || t === "sma") {
+      const period = "period" in ind ? ind.period : 20;
+      return { id: `ema-${period}`, type: "ema" as const, period };
+    }
+    return ind;
+  });
+}
+
+export function CandlestickChart({
+  symbol,
+  interval = "1m",
+  indicators: indicatorsProp = [],
+  onConfigChange,
+}: Props) {
+  const indicators = normalizeIndicators(indicatorsProp);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const maSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  const liqSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const liqDataRef = useRef<Map<number, LiqBucket>>(new Map());
+  const barsRef = useRef<CandlestickData<UTCTimestamp>[]>([]);
   const liveBarRef = useRef<CandlestickData<UTCTimestamp> | null>(null);
+  const loadingRef = useRef(false);
+  const exhaustedRef = useRef(false);
+  const indicatorsRef = useRef(indicators);
+  const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const { subscribe } = useFeed();
 
-  // Init chart + load historical data
+  indicatorsRef.current = indicators;
+  const hasLiquidations = indicators.some((i) => i.type === "liquidations");
+
+  const pushLiqToSeries = useCallback(() => {
+    const bars: LiquidationBar[] = Array.from(liqDataRef.current.entries())
+      .map(([time, v]) => ({ time, long: v.long, short: v.short }))
+      .sort((a, b) => a.time - b.time);
+    liqSeriesRef.current?.setData(liqToHistogramData(bars));
+  }, []);
+
+  const applyLiqBar = useCallback((time: number, long: number, short: number) => {
+    liqDataRef.current.set(time, { long, short });
+    if (!liqSeriesRef.current) return;
+    liqSeriesRef.current.update({
+      time: time as UTCTimestamp,
+      value: long + short,
+      color: long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR,
+    });
+  }, []);
+
+  const syncLiqSeries = useCallback(
+    (chart: IChartApi, enabled: boolean) => {
+      if (!enabled) {
+        if (liqSeriesRef.current) {
+          chart.removeSeries(liqSeriesRef.current);
+          liqSeriesRef.current = null;
+        }
+        liqDataRef.current.clear();
+        return;
+      }
+
+      if (!liqSeriesRef.current) {
+        liqSeriesRef.current = chart.addSeries(
+          HistogramSeries,
+          {
+            priceFormat: { type: "volume" },
+            priceLineVisible: false,
+            lastValueVisible: false,
+          },
+          LIQ_PANE_INDEX
+        );
+        const liqPane = chart.panes()[LIQ_PANE_INDEX];
+        if (liqPane) liqPane.setHeight(LIQ_PANE_HEIGHT);
+      }
+      pushLiqToSeries();
+    },
+    [pushLiqToSeries]
+  );
+
+  const refreshMaSeries = useCallback(() => {
+    const bars = barsRef.current;
+    indicatorsRef.current.forEach((ind, idx) => {
+      const line = maSeriesRef.current.get(ind.id);
+      if (!line || ind.type !== "ema") return;
+      line.setData(calculateEMA(bars, ind.period));
+    });
+  }, []);
+
+  const syncMaSeries = useCallback(
+    (chart: IChartApi, next: ChartIndicator[]) => {
+      const prev = maSeriesRef.current;
+      const nextIds = new Set(next.map((i) => i.id));
+
+      for (const [id, line] of prev) {
+        if (!nextIds.has(id)) {
+          chart.removeSeries(line);
+          prev.delete(id);
+        }
+      }
+
+      next.forEach((ind, idx) => {
+        if (ind.type !== "ema") return;
+        let line = prev.get(ind.id);
+        if (!line) {
+          line = chart.addSeries(LineSeries, {
+            color: maColor(idx),
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          });
+          prev.set(ind.id, line);
+        }
+        line.setData(calculateEMA(barsRef.current, ind.period));
+      });
+    },
+    []
+  );
+
+  const setCandleData = useCallback(
+    (data: CandlestickData<UTCTimestamp>[]) => {
+      barsRef.current = data;
+      seriesRef.current?.setData(data);
+      refreshMaSeries();
+    },
+    [refreshMaSeries]
+  );
+
+  // Chart init + history + infinite scroll
   useEffect(() => {
     if (!containerRef.current) return;
+
+    barsRef.current = [];
+    liveBarRef.current = null;
+    loadingRef.current = false;
+    exhaustedRef.current = false;
+    maSeriesRef.current.clear();
+    liqSeriesRef.current = null;
+    liqDataRef.current.clear();
 
     const chart = createChart(containerRef.current, {
       layout: {
         background: { color: "#131318" },
         textColor: "#888",
+        attributionLogo: false,
+        panes: {
+          separatorColor: "#2a2a35",
+          separatorHoverColor: "#3a3a48",
+          enableResize: true,
+        },
       },
       grid: {
         vertLines: { color: "#1e1e28" },
@@ -65,8 +281,49 @@ export function CandlestickChart({ symbol, interval = "1m" }: Props) {
 
     chartRef.current = chart;
     seriesRef.current = series;
+    syncMaSeries(chart, indicatorsRef.current);
+    syncLiqSeries(chart, indicatorsRef.current.some((i) => i.type === "liquidations"));
 
-    // Resize observer
+    const fetchKlines = async (before?: number): Promise<Kline[]> => {
+      const params = new URLSearchParams({
+        symbol,
+        interval,
+        limit: String(before === undefined ? INITIAL_LIMIT : PAGE_SIZE),
+      });
+      if (before !== undefined) params.set("before", String(before));
+      const r = await fetch(`/klines?${params}`);
+      if (!r.ok) throw new Error(`klines ${r.status}`);
+      return r.json();
+    };
+
+    const loadOlder = async () => {
+      if (loadingRef.current || exhaustedRef.current) return;
+      const oldest = barsRef.current[0]?.time as number | undefined;
+      if (oldest === undefined) return;
+
+      loadingRef.current = true;
+      try {
+        const data = await fetchKlines(oldest);
+        const older = toCandles(data).filter((b) => (b.time as number) < oldest);
+        if (older.length === 0) {
+          exhaustedRef.current = true;
+          return;
+        }
+        setCandleData(mergeCandles(barsRef.current, older));
+      } catch (e) {
+        console.error(e);
+      } finally {
+        loadingRef.current = false;
+      }
+    };
+
+    const onVisibleRangeChange = (range: LogicalRange | null) => {
+      if (!range || range.from >= LOAD_THRESHOLD) return;
+      void loadOlder();
+    };
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+
     const ro = new ResizeObserver(() => {
       if (!containerRef.current) return;
       chart.applyOptions({
@@ -76,42 +333,91 @@ export function CandlestickChart({ symbol, interval = "1m" }: Props) {
     });
     ro.observe(containerRef.current);
 
-    // Historical klines
-    fetch(`/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=500`)
-      .then((r) => r.json())
-      .then((data: Kline[]) => {
-        series.setData(
-          data.map((k) => ({
-            time: k.time as UTCTimestamp,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
-          }))
-        );
+    fetchKlines()
+      .then((data) => {
+        setCandleData(toCandles(data));
         chart.timeScale().fitContent();
       })
       .catch(console.error);
 
     return () => {
       ro.disconnect();
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      maSeriesRef.current.clear();
+      liqSeriesRef.current = null;
+      liqDataRef.current.clear();
+      barsRef.current = [];
       liveBarRef.current = null;
     };
-  }, [symbol, interval]);
+  }, [symbol, interval, setCandleData, syncMaSeries, syncLiqSeries]);
 
-  // Live updates: prefer bar messages from Nautilus, fall back to building from trade ticks
+  // Sync indicators when toggled from toolbar
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    syncMaSeries(chart, indicators);
+    syncLiqSeries(chart, hasLiquidations);
+  }, [indicators, hasLiquidations, syncMaSeries, syncLiqSeries]);
+
+  // Load liquidation history
+  useEffect(() => {
+    if (!hasLiquidations) return;
+
+    const params = new URLSearchParams({
+      symbol,
+      interval,
+      limit: String(INITIAL_LIMIT),
+    });
+    fetch(`/liquidations?${params}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`liquidations ${r.status}`);
+        return r.json() as Promise<LiquidationBar[]>;
+      })
+      .then((data) => {
+        liqDataRef.current.clear();
+        for (const b of data) {
+          liqDataRef.current.set(b.time, { long: b.long, short: b.short });
+        }
+        pushLiqToSeries();
+      })
+      .catch(console.error);
+  }, [symbol, interval, hasLiquidations, pushLiqToSeries]);
+
+  // Live updates
   useEffect(() => {
     const barSec = INTERVAL_SECONDS[interval] ?? 60;
 
-    const unsub = subscribe(symbol, (msg) => {
+    const applyBar = (bar: CandlestickData<UTCTimestamp>) => {
       const series = seriesRef.current;
       if (!series) return;
 
+      const bars = barsRef.current;
+      const idx = bars.findIndex((b) => b.time === bar.time);
+      if (idx >= 0) bars[idx] = bar;
+      else {
+        bars.push(bar);
+        bars.sort((a, b) => (a.time as number) - (b.time as number));
+      }
+      series.update(bar);
+      refreshMaSeries();
+    };
+
+    const unsub = subscribe(symbol, (msg) => {
+      if (msg.type === "liquidation") {
+        const liq = msg as LiquidationMsg;
+        const barSec = INTERVAL_SECONDS[interval] ?? 60;
+        const t = Math.floor(liq.time / barSec) * barSec;
+        const cur = { ...(liqDataRef.current.get(t) ?? { long: 0, short: 0 }) };
+        if (liq.side === "SELL") cur.long += liq.notional;
+        else cur.short += liq.notional;
+        applyLiqBar(t, cur.long, cur.short);
+        return;
+      }
+
       if (msg.type === "bar" && msg.interval === interval) {
-        // Completed bar from Nautilus
         const bar: CandlestickData<UTCTimestamp> = {
           time: Math.floor(msg.ts / 1e9) as UTCTimestamp,
           open: parseFloat(msg.open),
@@ -119,19 +425,24 @@ export function CandlestickChart({ symbol, interval = "1m" }: Props) {
           low: parseFloat(msg.low),
           close: parseFloat(msg.close),
         };
-        series.update(bar);
         liveBarRef.current = null;
+        applyBar(bar);
         return;
       }
 
       if (msg.type === "trade") {
-        // Build live bar from trade ticks (fills gap before Nautilus emits a completed bar)
-        const price = parseFloat(msg.price);
+        const price = parseFloat((msg as TradeMsg).price);
         const barTime = (Math.floor(msg.ts / 1e9 / barSec) * barSec) as UTCTimestamp;
         const cur = liveBarRef.current;
 
         if (!cur || cur.time !== barTime) {
-          liveBarRef.current = { time: barTime, open: price, high: price, low: price, close: price };
+          liveBarRef.current = {
+            time: barTime,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+          };
         } else {
           liveBarRef.current = {
             time: barTime,
@@ -142,18 +453,141 @@ export function CandlestickChart({ symbol, interval = "1m" }: Props) {
           };
         }
 
-        series.update(liveBarRef.current);
+        applyBar(liveBarRef.current);
       }
     });
 
     return unsub;
-  }, [symbol, interval, subscribe]);
+  }, [symbol, interval, subscribe, refreshMaSeries, applyLiqBar]);
+
+  // Close menus on outside click
+  useEffect(() => {
+    if (!openMenu) return;
+    const close = () => setOpenMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [openMenu]);
+
+  const togglePreset = (preset: IndicatorPreset) => {
+    const id = presetId(preset);
+    const exists = indicators.some((i) => i.id === id);
+    if (exists) {
+      onConfigChange({ indicators: indicators.filter((i) => i.id !== id) });
+      return;
+    }
+    const added: ChartIndicator =
+      preset.type === "liquidations"
+        ? { id, type: "liquidations" }
+        : { id, type: "ema", period: preset.period };
+    onConfigChange({ indicators: [...indicators, added] });
+  };
+
+  const activeIndicatorCount = indicators.length;
+
+  const stopMenuClick = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
     <div className={styles.wrapper}>
-      <div className={styles.header}>
-        <span className={styles.symbol}>{symbol.replace("-PERP.BINANCE", "")} PERP</span>
-        <span className={styles.interval}>{interval}</span>
+      <div
+        className={`${styles.toolbar} chartToolbar`}
+        onClick={stopMenuClick}
+      >
+        <div className={styles.menuWrap}>
+          <button
+            type="button"
+            className={`${styles.menuBtn} ${openMenu === "symbol" ? styles.menuBtnActive : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenMenu((m) => (m === "symbol" ? null : "symbol"));
+            }}
+          >
+            {symbolShort(symbol)} PERP
+            <span className={styles.chevron}>▼</span>
+          </button>
+          {openMenu === "symbol" && (
+            <div className={styles.menu}>
+              {CHART_SYMBOLS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`${styles.menuItem} ${s === symbol ? styles.menuItemActive : ""}`}
+                  onClick={() => {
+                    onConfigChange({ symbol: s });
+                    setOpenMenu(null);
+                  }}
+                >
+                  {symbolShort(s)} PERP
+                  {s === symbol && <span className={styles.check}>✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className={styles.menuWrap}>
+          <button
+            type="button"
+            className={`${styles.menuBtn} ${openMenu === "interval" ? styles.menuBtnActive : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenMenu((m) => (m === "interval" ? null : "interval"));
+            }}
+          >
+            {interval}
+            <span className={styles.chevron}>▼</span>
+          </button>
+          {openMenu === "interval" && (
+            <div className={styles.menu}>
+              {CHART_INTERVALS.map((iv) => (
+                <button
+                  key={iv}
+                  type="button"
+                  className={`${styles.menuItem} ${iv === interval ? styles.menuItemActive : ""}`}
+                  onClick={() => {
+                    onConfigChange({ interval: iv });
+                    setOpenMenu(null);
+                  }}
+                >
+                  {iv}
+                  {iv === interval && <span className={styles.check}>✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className={styles.menuWrap}>
+          <button
+            type="button"
+            className={`${styles.menuBtn} ${openMenu === "indicators" ? styles.menuBtnActive : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenMenu((m) => (m === "indicators" ? null : "indicators"));
+            }}
+          >
+            Indicators{activeIndicatorCount > 0 ? ` (${activeIndicatorCount})` : ""}
+            <span className={styles.chevron}>▼</span>
+          </button>
+          {openMenu === "indicators" && (
+            <div className={styles.menu}>
+              {INDICATOR_PRESETS.map((preset) => {
+                const id = presetId(preset);
+                const active = isPresetActive(indicators, preset);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`${styles.menuItem} ${active ? styles.menuItemActive : ""}`}
+                    onClick={() => togglePreset(preset)}
+                  >
+                    {preset.label}
+                    {active && <span className={styles.check}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
       <div ref={containerRef} className={styles.chart} />
     </div>

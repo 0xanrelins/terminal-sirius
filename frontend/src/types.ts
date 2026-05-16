@@ -40,7 +40,20 @@ export type PolymarketMsg = {
   ts: number;
 };
 
-export type FeedMsg = TradeMsg | QuoteMsg | BarMsg | PolymarketMsg;
+export type LiquidationMsg = {
+  type: "liquidation";
+  symbol: string;
+  side: string;
+  notional: number;
+  time: number;
+};
+
+export type FeedMsg =
+  | TradeMsg
+  | QuoteMsg
+  | BarMsg
+  | PolymarketMsg
+  | LiquidationMsg;
 
 export type Kline = {
   time: number;
@@ -67,11 +80,22 @@ export type PriceTickerConfig = {
   symbol: string;
 };
 
+export type ChartIndicator =
+  | { id: string; type: "ema"; period: number }
+  | { id: string; type: "liquidations" };
+
+export type LiquidationBar = {
+  time: number;
+  long: number;
+  short: number;
+};
+
 export type CandlestickChartConfig = {
   id: string;
   type: "candlestick_chart";
   symbol: string;
   interval: string;
+  indicators?: ChartIndicator[];
 };
 
 export type PolymarketTickerConfig = {
