@@ -5,11 +5,16 @@ import "react-resizable/css/styles.css";
 import type {
   CanvasState,
   CandlestickChartConfig,
+  LiquidationSignalsConfig,
   PolymarketTickerConfig,
   WidgetConfig,
 } from "../types";
 import { AddWidgetModal } from "./AddWidgetModal";
 import { CandlestickChart } from "./widgets/CandlestickChart";
+import {
+  DEFAULT_MIN_NOTIONAL,
+  LiquidationSignals,
+} from "./widgets/LiquidationSignals";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
 import { PriceTicker } from "./widgets/PriceTicker";
 import styles from "./Canvas.module.css";
@@ -24,9 +29,16 @@ type Props = {
 
 function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isChart = type === "candlestick_chart";
-  const w = isChart ? 14 : 5;
-  const h = isChart ? 9 : type === "polymarket_ticker" ? 4 : 3;
+  const isLiq = type === "liquidation_signals";
+  const w = isChart ? 14 : isLiq ? 6 : 5;
+  const h = isChart ? 9 : isLiq ? 8 : type === "polymarket_ticker" ? 4 : 3;
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
+}
+
+function handleLabel(cfg: WidgetConfig): string {
+  if (cfg.type === "liquidation_signals") return "Liq Signals";
+  if (cfg.type === "candlestick_chart") return "";
+  return cfg.symbol;
 }
 
 function renderWidget(
@@ -54,6 +66,16 @@ function renderWidget(
           question={(cfg as PolymarketTickerConfig).question}
         />
       );
+    case "liquidation_signals": {
+      const liqCfg = cfg as LiquidationSignalsConfig;
+      return (
+        <LiquidationSignals
+          minNotional={liqCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
+          history={liqCfg.history ?? []}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    }
     default:
       return null;
   }
@@ -157,7 +179,7 @@ export function Canvas({ state, onChange }: Props) {
         width={window.innerWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}, .chartToolbar`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .signalsToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
@@ -165,7 +187,7 @@ export function Canvas({ state, onChange }: Props) {
           <div key={cfg.id} className={styles.cell}>
             <div className={styles.handle}>
               {cfg.type !== "candlestick_chart" && (
-                <span className={styles.handleLabel}>{cfg.symbol}</span>
+                <span className={styles.handleLabel}>{handleLabel(cfg)}</span>
               )}
               <div className={styles.handleActions}>
                 <button

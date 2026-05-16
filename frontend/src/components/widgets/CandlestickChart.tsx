@@ -15,13 +15,16 @@ import { useFeed } from "../../context/FeedContext";
 import {
   CHART_INTERVALS,
   CHART_SYMBOLS,
+  DEFAULT_LIQ_THRESHOLD,
   INDICATOR_PRESETS,
+  getLiqThreshold,
   type IndicatorPreset,
   isPresetActive,
   maColor,
   presetId,
   symbolShort,
 } from "../../lib/chartConfig";
+import { barOpenTime, currentBarBucket } from "../../lib/barTime";
 import { calculateEMA } from "../../lib/chartIndicators";
 import type {
   ChartIndicator,
@@ -56,21 +59,24 @@ const LIQ_PANE_INDEX = 1;
 const LIQ_PANE_HEIGHT = 110;
 const LONG_LIQ_COLOR = "#ef4444";
 const SHORT_LIQ_COLOR = "#22c55e";
+const LIQ_MUTED_COLOR = "#4a4a55";
 
 type OpenMenu = "symbol" | "interval" | "indicators" | null;
 
 type LiqBucket = { long: number; short: number };
 
-function liqToHistogramData(bars: LiquidationBar[]) {
-  return bars.map((b) => {
-    const long = b.long;
-    const short = b.short;
-    return {
-      time: b.time as UTCTimestamp,
-      value: long + short,
-      color: long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR,
-    };
-  });
+function liqHistColor(long: number, short: number, threshold: number): string {
+  const total = long + short;
+  if (total < threshold) return LIQ_MUTED_COLOR;
+  return long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR;
+}
+
+function liqToHistogramData(bars: LiquidationBar[], threshold: number) {
+  return bars.map((b) => ({
+    time: b.time as UTCTimestamp,
+    value: b.long + b.short,
+    color: liqHistColor(b.long, b.short, threshold),
+  }));
 }
 
 function toCandles(data: Kline[]): CandlestickData<UTCTimestamp>[] {
@@ -81,6 +87,54 @@ function toCandles(data: Kline[]): CandlestickData<UTCTimestamp>[] {
     low: k.low,
     close: k.close,
   }));
+}
+
+/** Seed placeholder for the open candle when REST only has closed bars. */
+function ensureFormingBar(
+  candles: CandlestickData<UTCTimestamp>[],
+  interval: string
+): CandlestickData<UTCTimestamp>[] {
+  if (candles.length === 0) return candles;
+  const bucket = currentBarBucket(interval);
+  const last = candles[candles.length - 1];
+  if ((last.time as number) >= bucket) return candles;
+  const price = last.close;
+  return [
+    ...candles,
+    {
+      time: bucket as UTCTimestamp,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+    },
+  ];
+}
+
+function mergeWithLiveBar(
+  candles: CandlestickData<UTCTimestamp>[],
+  live: CandlestickData<UTCTimestamp> | null
+): CandlestickData<UTCTimestamp>[] {
+  if (!live) return candles;
+  const idx = candles.findIndex((b) => b.time === live.time);
+  if (idx >= 0) {
+    const out = [...candles];
+    out[idx] = live;
+    return out;
+  }
+  const lastTime = candles[candles.length - 1]?.time as number | undefined;
+  if (lastTime === undefined || (live.time as number) > lastTime) {
+    return [...candles, live];
+  }
+  return candles;
+}
+
+function prepareHistoryCandles(
+  data: Kline[],
+  interval: string,
+  live: CandlestickData<UTCTimestamp> | null
+): CandlestickData<UTCTimestamp>[] {
+  return mergeWithLiveBar(ensureFormingBar(toCandles(data), interval), live);
 }
 
 function mergeCandles(
@@ -101,7 +155,11 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   return raw.map((ind) => {
     const t = (ind as { type: string }).type;
     if (t === "liquidations") {
-      return { id: "liquidations", type: "liquidations" as const };
+      const threshold =
+        "threshold" in ind && typeof ind.threshold === "number"
+          ? ind.threshold
+          : DEFAULT_LIQ_THRESHOLD;
+      return { id: "liquidations", type: "liquidations" as const, threshold };
     }
     if (t === "ema" || t === "sma") {
       const period = "period" in ind ? ind.period : 20;
@@ -128,27 +186,31 @@ export function CandlestickChart({
   const liveBarRef = useRef<CandlestickData<UTCTimestamp> | null>(null);
   const loadingRef = useRef(false);
   const exhaustedRef = useRef(false);
+  const historyReadyRef = useRef(false);
   const indicatorsRef = useRef(indicators);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const { subscribe } = useFeed();
 
   indicatorsRef.current = indicators;
   const hasLiquidations = indicators.some((i) => i.type === "liquidations");
+  const liqThreshold = getLiqThreshold(indicators);
 
   const pushLiqToSeries = useCallback(() => {
+    const threshold = getLiqThreshold(indicatorsRef.current);
     const bars: LiquidationBar[] = Array.from(liqDataRef.current.entries())
       .map(([time, v]) => ({ time, long: v.long, short: v.short }))
       .sort((a, b) => a.time - b.time);
-    liqSeriesRef.current?.setData(liqToHistogramData(bars));
+    liqSeriesRef.current?.setData(liqToHistogramData(bars, threshold));
   }, []);
 
   const applyLiqBar = useCallback((time: number, long: number, short: number) => {
     liqDataRef.current.set(time, { long, short });
     if (!liqSeriesRef.current) return;
+    const threshold = getLiqThreshold(indicatorsRef.current);
     liqSeriesRef.current.update({
       time: time as UTCTimestamp,
       value: long + short,
-      color: long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR,
+      color: liqHistColor(long, short, threshold),
     });
   }, []);
 
@@ -237,6 +299,7 @@ export function CandlestickChart({
     liveBarRef.current = null;
     loadingRef.current = false;
     exhaustedRef.current = false;
+    historyReadyRef.current = false;
     maSeriesRef.current.clear();
     liqSeriesRef.current = null;
     liqDataRef.current.clear();
@@ -335,10 +398,20 @@ export function CandlestickChart({
 
     fetchKlines()
       .then((data) => {
-        setCandleData(toCandles(data));
+        const candles = prepareHistoryCandles(data, interval, liveBarRef.current);
+        const bucket = currentBarBucket(interval);
+        const last = candles[candles.length - 1];
+        if (last && (last.time as number) === bucket) {
+          liveBarRef.current = last;
+        }
+        setCandleData(candles);
+        historyReadyRef.current = true;
         chart.timeScale().fitContent();
       })
-      .catch(console.error);
+      .catch((e) => {
+        console.error(e);
+        historyReadyRef.current = true;
+      });
 
     return () => {
       ro.disconnect();
@@ -351,6 +424,7 @@ export function CandlestickChart({
       liqDataRef.current.clear();
       barsRef.current = [];
       liveBarRef.current = null;
+      historyReadyRef.current = false;
     };
   }, [symbol, interval, setCandleData, syncMaSeries, syncLiqSeries]);
 
@@ -361,6 +435,10 @@ export function CandlestickChart({
     syncMaSeries(chart, indicators);
     syncLiqSeries(chart, hasLiquidations);
   }, [indicators, hasLiquidations, syncMaSeries, syncLiqSeries]);
+
+  useEffect(() => {
+    if (hasLiquidations) pushLiqToSeries();
+  }, [hasLiquidations, liqThreshold, pushLiqToSeries]);
 
   // Load liquidation history
   useEffect(() => {
@@ -388,11 +466,9 @@ export function CandlestickChart({
 
   // Live updates
   useEffect(() => {
-    const barSec = INTERVAL_SECONDS[interval] ?? 60;
-
-    const applyBar = (bar: CandlestickData<UTCTimestamp>) => {
+    const commitBar = (bar: CandlestickData<UTCTimestamp>) => {
       const series = seriesRef.current;
-      if (!series) return;
+      if (!series || !historyReadyRef.current) return;
 
       const bars = barsRef.current;
       const idx = bars.findIndex((b) => b.time === bar.time);
@@ -418,24 +494,27 @@ export function CandlestickChart({
       }
 
       if (msg.type === "bar" && msg.interval === interval) {
+        const t =
+          msg.time ??
+          barOpenTime(Math.floor(msg.ts / 1e9), interval);
         const bar: CandlestickData<UTCTimestamp> = {
-          time: Math.floor(msg.ts / 1e9) as UTCTimestamp,
+          time: t as UTCTimestamp,
           open: parseFloat(msg.open),
           high: parseFloat(msg.high),
           low: parseFloat(msg.low),
           close: parseFloat(msg.close),
         };
-        liveBarRef.current = null;
-        applyBar(bar);
+        liveBarRef.current = bar;
+        commitBar(bar);
         return;
       }
 
       if (msg.type === "trade") {
         const price = parseFloat((msg as TradeMsg).price);
-        const barTime = (Math.floor(msg.ts / 1e9 / barSec) * barSec) as UTCTimestamp;
+        const barTime = barOpenTime(Math.floor(msg.ts / 1e9), interval) as UTCTimestamp;
         const cur = liveBarRef.current;
 
-        if (!cur || cur.time !== barTime) {
+        if (!cur || (cur.time as number) !== barTime) {
           liveBarRef.current = {
             time: barTime,
             open: price,
@@ -453,7 +532,7 @@ export function CandlestickChart({
           };
         }
 
-        applyBar(liveBarRef.current);
+        commitBar(liveBarRef.current);
       }
     });
 
@@ -477,9 +556,18 @@ export function CandlestickChart({
     }
     const added: ChartIndicator =
       preset.type === "liquidations"
-        ? { id, type: "liquidations" }
+        ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
         : { id, type: "ema", period: preset.period };
     onConfigChange({ indicators: [...indicators, added] });
+  };
+
+  const setLiqThreshold = (value: number) => {
+    const next = Math.max(0, value);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "liquidations" ? { ...i, threshold: next } : i
+      ),
+    });
   };
 
   const activeIndicatorCount = indicators.length;
@@ -585,6 +673,20 @@ export function CandlestickChart({
                   </button>
                 );
               })}
+              {hasLiquidations && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>Liq threshold ($)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={0}
+                    step={1000}
+                    value={liqThreshold}
+                    onClick={stopMenuClick}
+                    onChange={(e) => setLiqThreshold(Number(e.target.value) || 0)}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>

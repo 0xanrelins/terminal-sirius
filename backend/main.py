@@ -31,6 +31,7 @@ sys.path.insert(0, ".")
 
 import db
 from adapters.polymarket.gamma import search_markets
+from bar_time import bar_open_time_ns
 from klines import fetch_klines
 from liquidations import fetch_liquidation_bars
 from liquidation_stream import run_liquidation_stream
@@ -201,11 +202,15 @@ async def _persist_liquidation(msg: dict) -> None:
 
 async def _persist_bar(msg: dict) -> None:
     try:
+        interval = msg["interval"]
+        bar_time = msg.get("time")
+        if bar_time is None:
+            bar_time = bar_open_time_ns(int(msg["ts"]), interval)
         await db.upsert_bar(
             symbol=msg["symbol"],
-            interval=msg["interval"],
+            interval=interval,
             bar={
-                "time": msg["ts"] // 1_000_000_000,   # nanoseconds → seconds
+                "time": int(bar_time),
                 "open": float(msg["open"]),
                 "high": float(msg["high"]),
                 "low": float(msg["low"]),

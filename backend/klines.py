@@ -10,6 +10,7 @@ import time
 import httpx
 
 import db
+from bar_time import INTERVAL_SECONDS, bar_open_time, is_aligned_open_time
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 
@@ -19,24 +20,6 @@ VALID_INTERVALS = {
     "1d", "3d", "1w", "1M",
 }
 
-INTERVAL_SECONDS: dict[str, int] = {
-    "1m": 60,
-    "3m": 180,
-    "5m": 300,
-    "15m": 900,
-    "30m": 1800,
-    "1h": 3600,
-    "2h": 7200,
-    "4h": 14400,
-    "6h": 21600,
-    "8h": 28800,
-    "12h": 43200,
-    "1d": 86400,
-    "3d": 259_200,
-    "1w": 604_800,
-}
-
-
 def _nautilus_to_binance_symbol(symbol: str) -> str:
     """'BTCUSDT-PERP.BINANCE' -> 'BTCUSDT'"""
     base = symbol.split(".")[0]
@@ -44,11 +27,59 @@ def _nautilus_to_binance_symbol(symbol: str) -> str:
     return base
 
 
+def _current_bar_open(interval: str) -> int:
+    bar_sec = INTERVAL_SECONDS.get(interval, 60)
+    now = int(time.time())
+    return (now // bar_sec) * bar_sec
+
+
 def _is_tail_stale(rows: list[dict], interval: str) -> bool:
     if not rows:
         return True
     bar_sec = INTERVAL_SECONDS.get(interval, 60)
     return time.time() - rows[-1]["time"] > bar_sec * 2
+
+
+def _is_missing_forming_bar(rows: list[dict], interval: str) -> bool:
+    if not rows:
+        return True
+    return rows[-1]["time"] < _current_bar_open(interval)
+
+
+def _merge_klines(interval: str, *groups: list[dict]) -> list[dict]:
+    """Merge rows; normalize timestamps to bar open; combine duplicate buckets."""
+    by_time: dict[int, dict] = {}
+    for group in groups:
+        for row in group:
+            t = bar_open_time(int(row["time"]), interval)
+            norm = {**row, "time": t}
+            prev = by_time.get(t)
+            if prev is None:
+                by_time[t] = norm
+                continue
+            by_time[t] = {
+                "time": t,
+                "open": prev["open"],
+                "high": max(prev["high"], norm["high"]),
+                "low": min(prev["low"], norm["low"]),
+                "close": norm["close"],
+                "volume": max(prev.get("volume", 0), norm.get("volume", 0)),
+            }
+    return [by_time[t] for t in sorted(by_time)]
+
+
+def _normalize_series(rows: list[dict], interval: str) -> list[dict]:
+    if not rows:
+        return rows
+    return _merge_klines(interval, rows)
+
+
+def _has_misaligned_times(rows: list[dict], interval: str) -> bool:
+    """Detect close-time bars persisted before open-time normalization."""
+    if not rows:
+        return False
+    tail = rows[-min(30, len(rows)) :]
+    return any(not is_aligned_open_time(int(r["time"]), interval) for r in tail)
 
 
 def _has_internal_gap(rows: list[dict], interval: str) -> bool:
@@ -62,10 +93,14 @@ def _has_internal_gap(rows: list[dict], interval: str) -> bool:
     return False
 
 
-def _needs_refresh(rows: list[dict], interval: str, limit: int) -> bool:
+def _needs_full_refresh(rows: list[dict], interval: str, limit: int) -> bool:
     if len(rows) < int(limit * 0.8):
         return True
-    return _is_tail_stale(rows, interval) or _has_internal_gap(rows, interval)
+    return (
+        _is_tail_stale(rows, interval)
+        or _has_internal_gap(rows, interval)
+        or _has_misaligned_times(rows, interval)
+    )
 
 
 async def fetch_klines(
@@ -79,18 +114,25 @@ async def fetch_klines(
     # Older pages: DB-first when sufficiently populated
     if before is not None:
         if len(cached) >= int(limit * 0.8):
-            return cached
+            return _normalize_series(cached, interval)
         fresh = await _fetch_from_binance(symbol, interval, limit, before=before)
         await db.upsert_klines(symbol, interval, fresh)
         return fresh
 
-  # Latest window: Binance returns a contiguous series (required by LWC setData)
-    if _needs_refresh(cached, interval, limit):
+    # Latest window: full refresh when sparse, stale, or gapped
+    if _needs_full_refresh(cached, interval, limit):
         fresh = await _fetch_from_binance(symbol, interval, limit)
         await db.upsert_klines(symbol, interval, fresh)
         return fresh
 
-    return cached
+    # Append in-progress bar from Binance (DB often ends at last closed candle)
+    if _is_missing_forming_bar(cached, interval):
+        tail = await _fetch_from_binance(symbol, interval, 3)
+        merged = _merge_klines(interval, cached, tail)[-limit:]
+        await db.upsert_klines(symbol, interval, tail)
+        return merged
+
+    return _normalize_series(cached, interval)
 
 
 async def _fetch_from_binance(

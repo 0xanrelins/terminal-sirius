@@ -21,6 +21,8 @@ export type BarMsg = {
   type: "bar";
   symbol: string;
   interval: string;
+  /** Bar open time (unix seconds), aligned to interval bucket. */
+  time: number;
   open: string;
   high: string;
   low: string;
@@ -72,7 +74,11 @@ export type PolymarketMarket = {
   active: boolean;
 };
 
-export type WidgetType = "price_ticker" | "candlestick_chart" | "polymarket_ticker";
+export type WidgetType =
+  | "price_ticker"
+  | "candlestick_chart"
+  | "polymarket_ticker"
+  | "liquidation_signals";
 
 export type PriceTickerConfig = {
   id: string;
@@ -82,7 +88,7 @@ export type PriceTickerConfig = {
 
 export type ChartIndicator =
   | { id: string; type: "ema"; period: number }
-  | { id: string; type: "liquidations" };
+  | { id: string; type: "liquidations"; threshold?: number };
 
 export type LiquidationBar = {
   time: number;
@@ -106,7 +112,26 @@ export type PolymarketTickerConfig = {
   question: string;
 };
 
-export type WidgetConfig = PriceTickerConfig | CandlestickChartConfig | PolymarketTickerConfig;
+export type LiquidationSignalRow = {
+  id: string;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  notional: number;
+  time: number;
+};
+
+export type LiquidationSignalsConfig = {
+  id: string;
+  type: "liquidation_signals";
+  minNotional?: number;
+  history?: LiquidationSignalRow[];
+};
+
+export type WidgetConfig =
+  | PriceTickerConfig
+  | CandlestickChartConfig
+  | PolymarketTickerConfig
+  | LiquidationSignalsConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

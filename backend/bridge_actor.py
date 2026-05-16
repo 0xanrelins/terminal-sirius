@@ -5,12 +5,16 @@ from nautilus_trader.model.data import Bar, BarType, TradeTick
 from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.identifiers import InstrumentId
 
+from bar_time import bar_open_time_ns
 
-# Bar types to subscribe to per instrument (interval -> Nautilus bar type suffix)
+
+# Bar types to subscribe to per instrument (must cover CHART_INTERVALS for official closed bars)
 BAR_SPECS = [
     "1-MINUTE-LAST-EXTERNAL",
+    "3-MINUTE-LAST-EXTERNAL",
     "5-MINUTE-LAST-EXTERNAL",
     "15-MINUTE-LAST-EXTERNAL",
+    "30-MINUTE-LAST-EXTERNAL",
     "1-HOUR-LAST-EXTERNAL",
     "4-HOUR-LAST-EXTERNAL",
     "1-DAY-LAST-EXTERNAL",
@@ -54,10 +58,12 @@ class BridgeActor(Actor):
 
     def on_bar(self, bar: Bar) -> None:
         spec = bar.bar_type.spec
+        interval = _spec_to_interval(spec)
         self._enqueue({
             "type": "bar",
             "symbol": str(bar.bar_type.instrument_id),
-            "interval": _spec_to_interval(spec),
+            "interval": interval,
+            "time": bar_open_time_ns(bar.ts_event, interval),
             "open": str(bar.open),
             "high": str(bar.high),
             "low": str(bar.low),

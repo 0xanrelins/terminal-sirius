@@ -15,6 +15,9 @@ export type IndicatorPreset =
   | { label: string; type: "ema"; period: number }
   | { label: string; type: "liquidations" };
 
+/** Min total liquidation notional (USD) per bar to highlight candles. */
+export const DEFAULT_LIQ_THRESHOLD = 50_000;
+
 export const INDICATOR_PRESETS: IndicatorPreset[] = [
   { label: "EMA 7", type: "ema", period: 7 },
   { label: "EMA 20", type: "ema", period: 20 },
@@ -39,8 +42,16 @@ export function isPresetActive(indicators: ChartIndicator[], preset: IndicatorPr
 }
 
 export function indicatorLabel(ind: ChartIndicator): string {
-  if (ind.type === "liquidations") return "Liquidations";
+  if (ind.type === "liquidations") {
+    const t = ind.threshold ?? DEFAULT_LIQ_THRESHOLD;
+    return `Liquidations ($${t >= 1000 ? `${Math.round(t / 1000)}k` : t})`;
+  }
   return `EMA ${ind.period}`;
+}
+
+export function getLiqThreshold(indicators: ChartIndicator[]): number {
+  const liq = indicators.find((i) => i.type === "liquidations");
+  return liq?.type === "liquidations" ? (liq.threshold ?? DEFAULT_LIQ_THRESHOLD) : DEFAULT_LIQ_THRESHOLD;
 }
 
 export function maColor(index: number): string {

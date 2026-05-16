@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DEFAULT_MIN_NOTIONAL } from "./widgets/LiquidationSignals";
 import type { PolymarketMarket, WidgetConfig, WidgetType } from "../types";
 import styles from "./AddWidgetModal.module.css";
 
@@ -65,6 +66,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           interval: "1m",
           indicators: [],
         });
+      } else if (binanceType === "liquidation_signals") {
+        onAdd({
+          id,
+          type: "liquidation_signals",
+          minNotional: DEFAULT_MIN_NOTIONAL,
+        });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase() });
       }
@@ -87,7 +94,10 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
     onClose();
   }
 
-  const canSubmit = source === "binance" ? !!symbol.trim() : !!pmSelected;
+  const canSubmit =
+    source === "binance"
+      ? binanceType === "liquidation_signals" || !!symbol.trim()
+      : !!pmSelected;
 
   return (
     <div className={styles.overlay} onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -120,14 +130,20 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               <label className={styles.label}>
                 <span>Widget Type</span>
                 <div className={styles.typeRow}>
-                  {(["price_ticker", "candlestick_chart"] as WidgetType[]).map((t) => (
+                  {(
+                    ["price_ticker", "candlestick_chart", "liquidation_signals"] as WidgetType[]
+                  ).map((t) => (
                     <button
                       key={t}
                       type="button"
                       className={`${styles.typeBtn} ${binanceType === t ? styles.active : ""}`}
                       onClick={() => setBinanceType(t)}
                     >
-                      {t === "price_ticker" ? "Price Ticker" : "Candlestick Chart"}
+                      {t === "price_ticker"
+                        ? "Price Ticker"
+                        : t === "candlestick_chart"
+                          ? "Candlestick Chart"
+                          : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -150,6 +166,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "candlestick_chart" && (
                 <p className={styles.hint}>
                   Pair, timeframe and indicators can be changed from the chart toolbar.
+                </p>
+              )}
+
+              {binanceType === "liquidation_signals" && (
+                <p className={styles.hint}>
+                  Live liquidation feed across all symbols. Min notional threshold is adjustable in the widget.
                 </p>
               )}
             </>
