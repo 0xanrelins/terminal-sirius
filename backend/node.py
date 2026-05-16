@@ -11,10 +11,36 @@ Environment variables:
 """
 import os
 import queue
+import signal
 import threading
 
-from nautilus_trader.adapters.binance.futures.config import BinanceFuturesDataClientConfig
-from nautilus_trader.adapters.binance.futures.factories import BinanceFuturesLiveDataClientFactory
+# Nautilus TradingNode registers signal handlers during __init__ via both
+# signal.signal() and loop.add_signal_handler(). Both require the main thread.
+# We run the node in a daemon thread (so FastAPI owns the main thread), so we
+# patch both to be no-ops when called from a non-main thread.
+
+_orig_signal = signal.signal
+
+def _safe_signal(sig, handler):
+    if threading.current_thread() is threading.main_thread():
+        return _orig_signal(sig, handler)
+
+signal.signal = _safe_signal  # type: ignore[assignment]
+
+try:
+    import uvloop as _uvloop
+    _orig_add_sig = _uvloop.Loop.add_signal_handler
+
+    def _safe_add_signal_handler(self, sig, callback, *args):
+        if threading.current_thread() is threading.main_thread():
+            return _orig_add_sig(self, sig, callback, *args)
+
+    _uvloop.Loop.add_signal_handler = _safe_add_signal_handler  # type: ignore[method-assign]
+except ImportError:
+    pass
+
+from nautilus_trader.adapters.binance.config import BinanceAccountType, BinanceDataClientConfig
+from nautilus_trader.adapters.binance.factories import BinanceLiveDataClientFactory
 from nautilus_trader.cache.config import CacheConfig
 from nautilus_trader.config import LiveDataEngineConfig, TradingNodeConfig
 from nautilus_trader.live.node import TradingNode
@@ -24,7 +50,6 @@ from bridge_actor import BridgeActor, BridgeActorConfig
 
 DEFAULT_INSTRUMENTS = ("BTCUSDT-PERP.BINANCE",)
 
-# Global reference so FastAPI endpoints can call actor.subscribe_slug() at runtime
 _polymarket_actor: PolymarketActor | None = None
 
 
@@ -64,11 +89,10 @@ def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_I
         trader_id="TERMINAL-SIRIUS-001",
         cache=_cache_config(),
         data_clients={
-            "BINANCE": BinanceFuturesDataClientConfig(
+            "BINANCE": BinanceDataClientConfig(
+                account_type=BinanceAccountType.USDT_FUTURES,
                 api_key=None,
                 api_secret=None,
-                is_testnet=False,
-                us=False,
             )
         },
         data_engine=LiveDataEngineConfig(
@@ -77,7 +101,7 @@ def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_I
     )
 
     node = TradingNode(config=config)
-    node.add_data_client_factory("BINANCE", BinanceFuturesLiveDataClientFactory)
+    node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
 
     bridge = BridgeActor(config=bridge_cfg, data_queue=data_queue)
     node.trader.add_actor(bridge)

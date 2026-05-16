@@ -139,6 +139,7 @@ export function Canvas({ state, onChange }: Props) {
         width={window.innerWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
+        draggableCancel={`.${styles.actionBtn}`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
