@@ -36,15 +36,21 @@ from bar_time import bar_open_time_ns
 from klines import fetch_klines
 from liquidations import fetch_liquidation_bars
 from liquidation_stream import run_liquidation_stream
+from simulation.engine import SimulationEngine
 
 data_queue: queue.Queue = queue.Queue(maxsize=10_000)
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
+_simulation: SimulationEngine | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _simulation
     # DB
     await db.init()
+
+    _simulation = SimulationEngine()
+    await _simulation.load_state()
 
     # Nautilus (daemon thread — safe to skip if nautilus_trader not installed yet)
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
@@ -139,6 +145,56 @@ async def polymarket_presets():
     return out
 
 
+# ── Simulation ───────────────────────────────────────────────────────────────
+
+@app.get("/simulation/status")
+async def simulation_status():
+    try:
+        from simulation import config as sim_cfg
+
+        status = await db.get_simulation_status()
+        status["enabled"] = sim_cfg.is_enabled()
+        status["thresholds"] = sim_cfg.thresholds()
+        status["min_usd"] = sim_cfg.min_usd()
+        status["min_shares"] = sim_cfg.min_shares_default()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/simulation/bets")
+async def simulation_bets(limit: int = 100):
+    try:
+        return await db.get_simulation_bets(min(limit, 500))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class SimulationConfigBody(BaseModel):
+    thresholds: dict[str, float] | None = None
+    min_usd: float | None = None
+    enabled: bool | None = None
+
+
+@app.post("/simulation/config")
+async def simulation_config(body: SimulationConfigBody):
+    import json
+    import os
+
+    if body.thresholds is not None:
+        os.environ["SIM_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
+    if body.min_usd is not None:
+        os.environ["SIM_MIN_USD"] = str(body.min_usd)
+    if body.enabled is not None:
+        os.environ["SIM_ENABLED"] = "true" if body.enabled else "false"
+    if _simulation is not None:
+        from simulation import config as sim_cfg
+
+        _simulation._thresholds = sim_cfg.thresholds()
+        _simulation._min_usd = sim_cfg.min_usd()
+    return await simulation_status()
+
+
 @app.post("/polymarket/subscribe")
 async def polymarket_subscribe(body: SubscribeBody):
     try:
@@ -197,22 +253,40 @@ async def _broadcast_loop() -> None:
         elif msg.get("type") == "liquidation":
             asyncio.create_task(_persist_liquidation(msg))
 
-        if not _clients:
+        sim_events: list[dict] = []
+        if _simulation is not None:
+            try:
+                sim_events = await _simulation.on_message(msg)
+            except Exception as e:
+                print(f"[warn] simulation error: {e}")
+
+        if not _clients and not sim_events:
             continue
 
+        outbound: list[dict] = []
         if msg.get("type") == "liquidation":
-            msg = {k: v for k, v in msg.items() if not k.startswith("_")}
+            outbound.append({k: v for k, v in msg.items() if not k.startswith("_")})
+        else:
+            outbound.append(msg)
+        outbound.extend(sim_events)
 
-        payload = json.dumps(msg)
-        symbol = msg.get("symbol")
+        for out in outbound:
+            payload = json.dumps(out)
+            is_sim = str(out.get("type", "")).startswith("simulation")
+            symbol = out.get("symbol") or out.get("binance_symbol")
 
-        for ws, symbol_filter in _clients:
-            if symbol_filter and symbol not in symbol_filter:
-                continue
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead.append((ws, symbol_filter))
+            for ws, symbol_filter in _clients:
+                if (
+                    not is_sim
+                    and symbol_filter
+                    and symbol
+                    and symbol not in symbol_filter
+                ):
+                    continue
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead.append((ws, symbol_filter))
 
         if dead:
             for item in dead:

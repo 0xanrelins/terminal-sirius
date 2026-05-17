@@ -51,12 +51,116 @@ export type LiquidationMsg = {
   time: number;
 };
 
+export type SimulationSide = "long" | "short";
+
+export type SimulationSignalMsg = {
+  type: "simulation_signal";
+  side: SimulationSide;
+  asset: string;
+  cycle_id: number;
+  binance_symbol: string;
+  poly_series: string;
+  signal_time: number;
+  signal_long_notional?: number;
+  signal_short_notional?: number;
+  threshold: number;
+  target_candle_open: number;
+};
+
+export type SimulationBetOpenMsg = {
+  type: "simulation_bet_open";
+  bet_id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  asset: string;
+  leg: number;
+  binance_symbol: string;
+  poly_series: string;
+  poly_slug: string;
+  candle_open: number;
+  entry_price: number;
+  shares: number;
+  cost_usd: number;
+  opened_at: number;
+};
+
+export type SimulationBetSettleMsg = {
+  type: "simulation_bet_settle";
+  bet_id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  asset: string;
+  leg: number;
+  candle_open: number;
+  outcome: "win" | "loss";
+  pnl_usd: number;
+  won: boolean;
+  candle_green: boolean;
+  settled_at: number;
+};
+
+export type SimulationCycleClosedMsg = {
+  type: "simulation_cycle_closed";
+  cycle_id: number;
+  asset: string;
+  side: SimulationSide;
+};
+
+export type SimulationMsg =
+  | SimulationSignalMsg
+  | SimulationBetOpenMsg
+  | SimulationBetSettleMsg
+  | SimulationCycleClosedMsg;
+
+export type SimulationBetRow = {
+  id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  leg: number;
+  candle_open: number;
+  poly_slug: string;
+  poly_series: string;
+  entry_price: number;
+  shares: number;
+  cost_usd: number;
+  outcome: string | null;
+  pnl_usd: number | null;
+  opened_at: number;
+  settled_at: number | null;
+  asset: string;
+};
+
+export type SimulationSideStats = {
+  total_bets: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_pnl_usd: number;
+  open_bets: number;
+};
+
+export type SimulationStatus = {
+  total_bets: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_pnl_usd: number;
+  open_bets: number;
+  active_cycles: number;
+  by_side?: Record<string, SimulationSideStats>;
+  enabled?: boolean;
+  thresholds?: Record<string, number>;
+  min_usd?: number;
+  min_shares?: number;
+};
+
 export type FeedMsg =
   | TradeMsg
   | QuoteMsg
   | BarMsg
   | PolymarketMsg
-  | LiquidationMsg;
+  | LiquidationMsg
+  | SimulationMsg;
 
 export type Kline = {
   time: number;
@@ -80,7 +184,8 @@ export type WidgetType =
   | "candlestick_chart"
   | "comparison_chart"
   | "polymarket_ticker"
-  | "liquidation_signals";
+  | "liquidation_signals"
+  | "simulation_panel";
 
 export type PriceTickerConfig = {
   id: string;
@@ -95,6 +200,7 @@ export type PriceTickerConfig = {
 
 export type ChartIndicator =
   | { id: string; type: "ema"; period: number }
+  | { id: string; type: "vwap"; period: number }
   | { id: string; type: "liquidations"; threshold?: number };
 
 export type LiquidationBar = {
@@ -142,12 +248,18 @@ export type LiquidationSignalsConfig = {
   historyVersion?: number;
 };
 
+export type SimulationPanelConfig = {
+  id: string;
+  type: "simulation_panel";
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
   | ComparisonChartConfig
   | PolymarketTickerConfig
-  | LiquidationSignalsConfig;
+  | LiquidationSignalsConfig
+  | SimulationPanelConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

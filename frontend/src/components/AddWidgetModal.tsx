@@ -77,6 +77,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           history: [],
           historyVersion: LIQ_HISTORY_VERSION,
         });
+      } else if (binanceType === "simulation_panel") {
+        onAdd({ id, type: "simulation_panel" });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -102,6 +104,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
   const canSubmit =
     source === "binance"
       ? binanceType === "liquidation_signals" ||
+        binanceType === "simulation_panel" ||
         binanceType === "comparison_chart" ||
         binanceType === "candlestick_chart" ||
         !!symbol.trim()
@@ -143,6 +146,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "candlestick_chart",
                       "comparison_chart",
                       "liquidation_signals",
+                      "simulation_panel",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -157,7 +161,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                           ? "Candlestick Chart"
                           : t === "comparison_chart"
                             ? "Compare Chart"
-                            : "Liq Signals"}
+                            : t === "simulation_panel"
+                              ? "Liq→Poly Sim"
+                              : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -192,6 +198,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "liquidation_signals" && (
                 <p className={styles.hint}>
                   BTC, ETH, SOL, DOGE, XRP liquidations only. All events are saved; the widget shows those above the min $ threshold.
+                </p>
+              )}
+
+              {binanceType === "simulation_panel" && (
+                <p className={styles.hint}>
+                  Paper trades: 15m long-liq bar ≥ threshold → Polymarket UP on next window. Red candle → second bet on the following window.
                 </p>
               )}
             </>

@@ -15,17 +15,21 @@ import { useFeed } from "../../context/FeedContext";
 import {
   CHART_INTERVALS,
   CHART_SYMBOLS,
+  DEFAULT_EMA_PERIOD,
   DEFAULT_LIQ_THRESHOLD,
+  DEFAULT_VWAP_PERIOD,
   INDICATOR_PRESETS,
+  getEmaPeriod,
   getLiqThreshold,
+  getVwapPeriod,
   type IndicatorPreset,
+  indicatorLineColor,
   isPresetActive,
-  maColor,
   presetId,
   symbolShort,
 } from "../../lib/chartConfig";
 import { barOpenTime, currentBarBucket } from "../../lib/barTime";
-import { calculateEMA } from "../../lib/chartIndicators";
+import { calculateEMA, calculateVWAP, type OhlcvBar } from "../../lib/chartIndicators";
 import type {
   ChartIndicator,
   Kline,
@@ -79,70 +83,73 @@ function liqToHistogramData(bars: LiquidationBar[], threshold: number) {
   }));
 }
 
-function toCandles(data: Kline[]): CandlestickData<UTCTimestamp>[] {
+function toOhlcv(data: Kline[]): OhlcvBar[] {
   return data.map((k) => ({
     time: k.time as UTCTimestamp,
     open: k.open,
     high: k.high,
     low: k.low,
     close: k.close,
+    volume: k.volume,
+  }));
+}
+
+function toCandles(bars: OhlcvBar[]): CandlestickData<UTCTimestamp>[] {
+  return bars.map(({ time, open, high, low, close }) => ({
+    time,
+    open,
+    high,
+    low,
+    close,
   }));
 }
 
 /** Seed placeholder for the open candle when REST only has closed bars. */
-function ensureFormingBar(
-  candles: CandlestickData<UTCTimestamp>[],
-  interval: string
-): CandlestickData<UTCTimestamp>[] {
-  if (candles.length === 0) return candles;
+function ensureFormingBar(bars: OhlcvBar[], interval: string): OhlcvBar[] {
+  if (bars.length === 0) return bars;
   const bucket = currentBarBucket(interval);
-  const last = candles[candles.length - 1];
-  if ((last.time as number) >= bucket) return candles;
+  const last = bars[bars.length - 1];
+  if ((last.time as number) >= bucket) return bars;
   const price = last.close;
   return [
-    ...candles,
+    ...bars,
     {
       time: bucket as UTCTimestamp,
       open: price,
       high: price,
       low: price,
       close: price,
+      volume: 0,
     },
   ];
 }
 
-function mergeWithLiveBar(
-  candles: CandlestickData<UTCTimestamp>[],
-  live: CandlestickData<UTCTimestamp> | null
-): CandlestickData<UTCTimestamp>[] {
-  if (!live) return candles;
-  const idx = candles.findIndex((b) => b.time === live.time);
+function mergeWithLiveBar(bars: OhlcvBar[], live: OhlcvBar | null): OhlcvBar[] {
+  if (!live) return bars;
+  const idx = bars.findIndex((b) => b.time === live.time);
   if (idx >= 0) {
-    const out = [...candles];
+    const out = [...bars];
     out[idx] = live;
     return out;
   }
-  const lastTime = candles[candles.length - 1]?.time as number | undefined;
+  const lastTime = bars[bars.length - 1]?.time as number | undefined;
   if (lastTime === undefined || (live.time as number) > lastTime) {
-    return [...candles, live];
+    return [...bars, live];
   }
-  return candles;
+  return bars;
 }
 
-function prepareHistoryCandles(
+function prepareHistoryBars(
   data: Kline[],
   interval: string,
-  live: CandlestickData<UTCTimestamp> | null
-): CandlestickData<UTCTimestamp>[] {
-  return mergeWithLiveBar(ensureFormingBar(toCandles(data), interval), live);
+  live: OhlcvBar | null
+): OhlcvBar[] {
+  return mergeWithLiveBar(ensureFormingBar(toOhlcv(data), interval), live);
 }
 
-function mergeCandles(
-  existing: CandlestickData<UTCTimestamp>[],
-  older: CandlestickData<UTCTimestamp>[]
-): CandlestickData<UTCTimestamp>[] {
+function mergeOhlcvBars(existing: OhlcvBar[], older: OhlcvBar[]): OhlcvBar[] {
   if (older.length === 0) return existing;
-  const byTime = new Map<number, CandlestickData<UTCTimestamp>>();
+  const byTime = new Map<number, OhlcvBar>();
   for (const bar of [...older, ...existing]) {
     byTime.set(bar.time as number, bar);
   }
@@ -151,22 +158,58 @@ function mergeCandles(
   );
 }
 
+function lineDataForIndicator(
+  ind: ChartIndicator,
+  candles: CandlestickData<UTCTimestamp>[],
+  ohlcv: OhlcvBar[]
+) {
+  if (ind.type === "ema") return calculateEMA(candles, ind.period);
+  if (ind.type === "vwap") return calculateVWAP(ohlcv, ind.period);
+  return [];
+}
+
 function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
-  return raw.map((ind) => {
+  let ema: ChartIndicator | null = null;
+  let vwap: ChartIndicator | null = null;
+  let liquidations: ChartIndicator | null = null;
+
+  for (const ind of raw) {
     const t = (ind as { type: string }).type;
     if (t === "liquidations") {
       const threshold =
         "threshold" in ind && typeof ind.threshold === "number"
           ? ind.threshold
           : DEFAULT_LIQ_THRESHOLD;
-      return { id: "liquidations", type: "liquidations" as const, threshold };
+      liquidations = { id: "liquidations", type: "liquidations", threshold };
+      continue;
+    }
+    if (t === "vwap") {
+      const period =
+        "period" in ind && typeof ind.period === "number"
+          ? ind.period
+          : DEFAULT_VWAP_PERIOD;
+      vwap = { id: "vwap", type: "vwap", period: Math.max(1, period) };
+      continue;
     }
     if (t === "ema" || t === "sma") {
-      const period = "period" in ind ? ind.period : 20;
-      return { id: `ema-${period}`, type: "ema" as const, period };
+      let period =
+        "period" in ind && typeof ind.period === "number"
+          ? ind.period
+          : DEFAULT_EMA_PERIOD;
+      const id = (ind as { id?: string }).id;
+      if (id?.startsWith("ema-")) {
+        const parsed = parseInt(id.slice(4), 10);
+        if (!Number.isNaN(parsed)) period = parsed;
+      }
+      ema = { id: "ema", type: "ema", period: Math.max(1, period) };
     }
-    return ind;
-  });
+  }
+
+  const out: ChartIndicator[] = [];
+  if (ema) out.push(ema);
+  if (vwap) out.push(vwap);
+  if (liquidations) out.push(liquidations);
+  return out;
 }
 
 export function CandlestickChart({
@@ -182,8 +225,8 @@ export function CandlestickChart({
   const maSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const liqSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const liqDataRef = useRef<Map<number, LiqBucket>>(new Map());
-  const barsRef = useRef<CandlestickData<UTCTimestamp>[]>([]);
-  const liveBarRef = useRef<CandlestickData<UTCTimestamp> | null>(null);
+  const ohlcvBarsRef = useRef<OhlcvBar[]>([]);
+  const liveBarRef = useRef<OhlcvBar | null>(null);
   const loadingRef = useRef(false);
   const exhaustedRef = useRef(false);
   const historyReadyRef = useRef(false);
@@ -192,8 +235,12 @@ export function CandlestickChart({
   const { subscribe } = useFeed();
 
   indicatorsRef.current = indicators;
+  const hasEma = indicators.some((i) => i.type === "ema");
   const hasLiquidations = indicators.some((i) => i.type === "liquidations");
+  const hasVwap = indicators.some((i) => i.type === "vwap");
+  const emaPeriod = getEmaPeriod(indicators);
   const liqThreshold = getLiqThreshold(indicators);
+  const vwapPeriod = getVwapPeriod(indicators);
 
   const pushLiqToSeries = useCallback(() => {
     const threshold = getLiqThreshold(indicatorsRef.current);
@@ -244,11 +291,12 @@ export function CandlestickChart({
   );
 
   const refreshMaSeries = useCallback(() => {
-    const bars = barsRef.current;
-    indicatorsRef.current.forEach((ind, idx) => {
+    const ohlcv = ohlcvBarsRef.current;
+    const candles = toCandles(ohlcv);
+    indicatorsRef.current.forEach((ind) => {
       const line = maSeriesRef.current.get(ind.id);
-      if (!line || ind.type !== "ema") return;
-      line.setData(calculateEMA(bars, ind.period));
+      if (!line || (ind.type !== "ema" && ind.type !== "vwap")) return;
+      line.setData(lineDataForIndicator(ind, candles, ohlcv));
     });
   }, []);
 
@@ -256,6 +304,8 @@ export function CandlestickChart({
     (chart: IChartApi, next: ChartIndicator[]) => {
       const prev = maSeriesRef.current;
       const nextIds = new Set(next.map((i) => i.id));
+      const ohlcv = ohlcvBarsRef.current;
+      const candles = toCandles(ohlcv);
 
       for (const [id, line] of prev) {
         if (!nextIds.has(id)) {
@@ -264,28 +314,31 @@ export function CandlestickChart({
         }
       }
 
-      next.forEach((ind, idx) => {
-        if (ind.type !== "ema") return;
+      next.forEach((ind) => {
+        if (ind.type !== "ema" && ind.type !== "vwap") return;
+        const color = indicatorLineColor(ind.type);
         let line = prev.get(ind.id);
         if (!line) {
           line = chart.addSeries(LineSeries, {
-            color: maColor(idx),
+            color,
             lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: false,
           });
           prev.set(ind.id, line);
+        } else {
+          line.applyOptions({ color });
         }
-        line.setData(calculateEMA(barsRef.current, ind.period));
+        line.setData(lineDataForIndicator(ind, candles, ohlcv));
       });
     },
     []
   );
 
-  const setCandleData = useCallback(
-    (data: CandlestickData<UTCTimestamp>[]) => {
-      barsRef.current = data;
-      seriesRef.current?.setData(data);
+  const setOhlcvData = useCallback(
+    (data: OhlcvBar[]) => {
+      ohlcvBarsRef.current = data;
+      seriesRef.current?.setData(toCandles(data));
       refreshMaSeries();
     },
     [refreshMaSeries]
@@ -295,7 +348,7 @@ export function CandlestickChart({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    barsRef.current = [];
+    ohlcvBarsRef.current = [];
     liveBarRef.current = null;
     loadingRef.current = false;
     exhaustedRef.current = false;
@@ -361,18 +414,18 @@ export function CandlestickChart({
 
     const loadOlder = async () => {
       if (loadingRef.current || exhaustedRef.current) return;
-      const oldest = barsRef.current[0]?.time as number | undefined;
+      const oldest = ohlcvBarsRef.current[0]?.time as number | undefined;
       if (oldest === undefined) return;
 
       loadingRef.current = true;
       try {
         const data = await fetchKlines(oldest);
-        const older = toCandles(data).filter((b) => (b.time as number) < oldest);
+        const older = toOhlcv(data).filter((b) => (b.time as number) < oldest);
         if (older.length === 0) {
           exhaustedRef.current = true;
           return;
         }
-        setCandleData(mergeCandles(barsRef.current, older));
+        setOhlcvData(mergeOhlcvBars(ohlcvBarsRef.current, older));
       } catch (e) {
         console.error(e);
       } finally {
@@ -398,13 +451,13 @@ export function CandlestickChart({
 
     fetchKlines()
       .then((data) => {
-        const candles = prepareHistoryCandles(data, interval, liveBarRef.current);
+        const bars = prepareHistoryBars(data, interval, liveBarRef.current);
         const bucket = currentBarBucket(interval);
-        const last = candles[candles.length - 1];
+        const last = bars[bars.length - 1];
         if (last && (last.time as number) === bucket) {
           liveBarRef.current = last;
         }
-        setCandleData(candles);
+        setOhlcvData(bars);
         historyReadyRef.current = true;
         chart.timeScale().fitContent();
       })
@@ -422,11 +475,11 @@ export function CandlestickChart({
       maSeriesRef.current.clear();
       liqSeriesRef.current = null;
       liqDataRef.current.clear();
-      barsRef.current = [];
+      ohlcvBarsRef.current = [];
       liveBarRef.current = null;
       historyReadyRef.current = false;
     };
-  }, [symbol, interval, setCandleData, syncMaSeries, syncLiqSeries]);
+  }, [symbol, interval, setOhlcvData, syncMaSeries, syncLiqSeries]);
 
   // Sync indicators when toggled from toolbar
   useEffect(() => {
@@ -466,18 +519,19 @@ export function CandlestickChart({
 
   // Live updates
   useEffect(() => {
-    const commitBar = (bar: CandlestickData<UTCTimestamp>) => {
+    const commitBar = (bar: OhlcvBar) => {
       const series = seriesRef.current;
       if (!series || !historyReadyRef.current) return;
 
-      const bars = barsRef.current;
+      const bars = ohlcvBarsRef.current;
       const idx = bars.findIndex((b) => b.time === bar.time);
       if (idx >= 0) bars[idx] = bar;
       else {
         bars.push(bar);
         bars.sort((a, b) => (a.time as number) - (b.time as number));
       }
-      series.update(bar);
+      const { time, open, high, low, close } = bar;
+      series.update({ time, open, high, low, close });
       refreshMaSeries();
     };
 
@@ -497,12 +551,13 @@ export function CandlestickChart({
         const t =
           msg.time ??
           barOpenTime(Math.floor(msg.ts / 1e9), interval);
-        const bar: CandlestickData<UTCTimestamp> = {
+        const bar: OhlcvBar = {
           time: t as UTCTimestamp,
           open: parseFloat(msg.open),
           high: parseFloat(msg.high),
           low: parseFloat(msg.low),
           close: parseFloat(msg.close),
+          volume: parseFloat(msg.volume),
         };
         liveBarRef.current = bar;
         commitBar(bar);
@@ -513,6 +568,10 @@ export function CandlestickChart({
         const price = parseFloat((msg as TradeMsg).price);
         const barTime = barOpenTime(Math.floor(msg.ts / 1e9), interval) as UTCTimestamp;
         const cur = liveBarRef.current;
+        const prevVol =
+          cur && (cur.time as number) === barTime
+            ? cur.volume
+            : ohlcvBarsRef.current.find((b) => b.time === barTime)?.volume ?? 0;
 
         if (!cur || (cur.time as number) !== barTime) {
           liveBarRef.current = {
@@ -521,6 +580,7 @@ export function CandlestickChart({
             high: price,
             low: price,
             close: price,
+            volume: prevVol,
           };
         } else {
           liveBarRef.current = {
@@ -529,6 +589,7 @@ export function CandlestickChart({
             high: Math.max(cur.high, price),
             low: Math.min(cur.low, price),
             close: price,
+            volume: cur.volume,
           };
         }
 
@@ -557,8 +618,28 @@ export function CandlestickChart({
     const added: ChartIndicator =
       preset.type === "liquidations"
         ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
-        : { id, type: "ema", period: preset.period };
+        : preset.type === "vwap"
+          ? { id, type: "vwap", period: preset.period }
+          : { id, type: "ema", period: preset.period };
     onConfigChange({ indicators: [...indicators, added] });
+  };
+
+  const setEmaPeriod = (value: number) => {
+    const next = Math.max(1, Math.floor(value) || DEFAULT_EMA_PERIOD);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "ema" ? { ...i, period: next } : i
+      ),
+    });
+  };
+
+  const setVwapPeriod = (value: number) => {
+    const next = Math.max(1, Math.floor(value) || DEFAULT_VWAP_PERIOD);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "vwap" ? { ...i, period: next } : i
+      ),
+    });
   };
 
   const setLiqThreshold = (value: number) => {
@@ -673,6 +754,34 @@ export function CandlestickChart({
                   </button>
                 );
               })}
+              {hasEma && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>EMA period (bars)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={1}
+                    step={1}
+                    value={emaPeriod}
+                    onClick={stopMenuClick}
+                    onChange={(e) => setEmaPeriod(Number(e.target.value) || DEFAULT_EMA_PERIOD)}
+                  />
+                </div>
+              )}
+              {hasVwap && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>VWAP period (bars)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={1}
+                    step={1}
+                    value={vwapPeriod}
+                    onClick={stopMenuClick}
+                    onChange={(e) => setVwapPeriod(Number(e.target.value) || DEFAULT_VWAP_PERIOD)}
+                  />
+                </div>
+              )}
               {hasLiquidations && (
                 <div className={styles.thresholdRow}>
                   <span className={styles.thresholdLabel}>Liq threshold ($)</span>

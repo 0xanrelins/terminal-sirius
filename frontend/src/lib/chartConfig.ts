@@ -30,20 +30,27 @@ export const CHART_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"
 
 export type IndicatorPreset =
   | { label: string; type: "ema"; period: number }
+  | { label: string; type: "vwap"; period: number }
   | { label: string; type: "liquidations" };
+
+export const DEFAULT_EMA_PERIOD = 20;
+export const DEFAULT_VWAP_PERIOD = 20;
 
 /** Min total liquidation notional (USD) per bar to highlight candles. */
 export const DEFAULT_LIQ_THRESHOLD = 50_000;
 
 export const INDICATOR_PRESETS: IndicatorPreset[] = [
-  { label: "EMA 7", type: "ema", period: 7 },
-  { label: "EMA 20", type: "ema", period: 20 },
-  { label: "EMA 50", type: "ema", period: 50 },
-  { label: "EMA 200", type: "ema", period: 200 },
+  { label: "EMA", type: "ema", period: DEFAULT_EMA_PERIOD },
+  { label: "VWAP", type: "vwap", period: DEFAULT_VWAP_PERIOD },
   { label: "Liquidations", type: "liquidations" },
 ];
 
 const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
+
+export const INDICATOR_LINE_COLORS = {
+  ema: "#2962FF",
+  vwap: "#f59e0b",
+} as const;
 
 export function symbolShort(symbol: string): string {
   return symbol.replace("-PERP.BINANCE", "");
@@ -51,7 +58,8 @@ export function symbolShort(symbol: string): string {
 
 export function presetId(preset: IndicatorPreset): string {
   if (preset.type === "liquidations") return "liquidations";
-  return `ema-${preset.period}`;
+  if (preset.type === "vwap") return "vwap";
+  return "ema";
 }
 
 export function isPresetActive(indicators: ChartIndicator[], preset: IndicatorPreset): boolean {
@@ -63,7 +71,18 @@ export function indicatorLabel(ind: ChartIndicator): string {
     const t = ind.threshold ?? DEFAULT_LIQ_THRESHOLD;
     return `Liquidations ($${t >= 1000 ? `${Math.round(t / 1000)}k` : t})`;
   }
+  if (ind.type === "vwap") return `VWAP ${ind.period}`;
   return `EMA ${ind.period}`;
+}
+
+export function getEmaPeriod(indicators: ChartIndicator[]): number {
+  const ema = indicators.find((i) => i.type === "ema");
+  return ema?.type === "ema" ? ema.period : DEFAULT_EMA_PERIOD;
+}
+
+export function getVwapPeriod(indicators: ChartIndicator[]): number {
+  const vwap = indicators.find((i) => i.type === "vwap");
+  return vwap?.type === "vwap" ? vwap.period : DEFAULT_VWAP_PERIOD;
 }
 
 export function getLiqThreshold(indicators: ChartIndicator[]): number {
@@ -73,4 +92,8 @@ export function getLiqThreshold(indicators: ChartIndicator[]): number {
 
 export function maColor(index: number): string {
   return MA_COLORS[index % MA_COLORS.length];
+}
+
+export function indicatorLineColor(type: "ema" | "vwap"): string {
+  return INDICATOR_LINE_COLORS[type];
 }

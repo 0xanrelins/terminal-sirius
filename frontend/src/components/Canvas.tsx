@@ -17,6 +17,7 @@ import {
   DEFAULT_MIN_NOTIONAL,
   LiquidationSignals,
 } from "./widgets/LiquidationSignals";
+import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
 import { PriceTicker } from "./widgets/PriceTicker";
 import styles from "./Canvas.module.css";
@@ -32,13 +33,15 @@ type Props = {
 function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isChart = type === "candlestick_chart" || type === "comparison_chart";
   const isLiq = type === "liquidation_signals";
-  const w = isChart ? 14 : isLiq ? 6 : 5;
-  const h = isChart ? 9 : isLiq ? 8 : type === "polymarket_ticker" ? 4 : 3;
+  const isSim = type === "simulation_panel";
+  const w = isChart ? 14 : isLiq || isSim ? 8 : 5;
+  const h = isChart ? 9 : isLiq ? 8 : isSim ? 10 : type === "polymarket_ticker" ? 4 : 3;
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
 }
 
 function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
+  if (cfg.type === "simulation_panel") return "Liq→Poly Sim";
   if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
@@ -97,6 +100,8 @@ function renderWidget(
         />
       );
     }
+    case "simulation_panel":
+      return <SimulationPanel />;
     default:
       return null;
   }
@@ -200,7 +205,7 @@ export function Canvas({ state, onChange }: Props) {
         width={window.innerWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar, .simulationToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
