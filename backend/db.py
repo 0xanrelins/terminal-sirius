@@ -362,7 +362,7 @@ async def get_simulation_bets(limit: int = 100) -> list[dict]:
         """
         SELECT b.id, b.cycle_id, b.leg, b.side, b.candle_open, b.poly_slug, b.poly_series,
                b.entry_price, b.shares, b.cost_usd, b.outcome, b.pnl_usd,
-               b.opened_at, b.settled_at, c.asset
+               b.opened_at, b.settled_at, c.asset, c.signal_time
         FROM simulation_bets b
         JOIN simulation_cycles c ON c.id = b.cycle_id
         ORDER BY b.opened_at DESC

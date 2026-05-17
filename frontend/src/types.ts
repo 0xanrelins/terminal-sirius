@@ -82,6 +82,7 @@ export type SimulationBetOpenMsg = {
   shares: number;
   cost_usd: number;
   opened_at: number;
+  signal_time?: number;
 };
 
 export type SimulationBetSettleMsg = {
@@ -127,6 +128,7 @@ export type SimulationBetRow = {
   pnl_usd: number | null;
   opened_at: number;
   settled_at: number | null;
+  signal_time: number;
   asset: string;
 };
 
@@ -243,6 +245,8 @@ export type LiquidationSignalsConfig = {
   id: string;
   type: "liquidation_signals";
   minNotional?: number;
+  /** Asset tickers to show (subset of BTC, ETH, SOL, DOGE, XRP). */
+  coins?: string[];
   history?: LiquidationSignalRow[];
   /** Bump when storage shape/filter rules change to reset persisted rows. */
   historyVersion?: number;

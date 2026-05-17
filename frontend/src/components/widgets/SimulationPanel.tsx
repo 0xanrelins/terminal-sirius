@@ -24,25 +24,40 @@ export function SimulationPanel() {
   const { subscribe, status } = useFeed();
   const [simStatus, setSimStatus] = useState<SimulationStatus | null>(null);
   const [rows, setRows] = useState<SimulationBetRow[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    fetch("/simulation/status")
-      .then((r) => r.json())
-      .then((s: SimulationStatus) => setSimStatus(s))
-      .catch(() => {});
-    fetch("/simulation/bets?limit=100")
-      .then((r) => r.json())
-      .then((b: SimulationBetRow[]) =>
+    Promise.all([
+      fetch("/simulation/status").then((r) => {
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        return r.json() as Promise<SimulationStatus>;
+      }),
+      fetch("/simulation/bets?limit=100").then((r) => {
+        if (!r.ok) throw new Error(`bets ${r.status}`);
+        return r.json() as Promise<SimulationBetRow[]>;
+      }),
+    ])
+      .then(([s, b]) => {
+        setSimStatus(s);
         setRows(
-          b.map((row) => ({ ...row, side: row.side ?? "long" })).slice(0, MAX_ROWS)
-        )
-      )
-      .catch(() => {});
+          b
+            .map((row) => ({
+              ...row,
+              side: row.side ?? "long",
+              signal_time: row.signal_time ?? row.opened_at,
+            }))
+            .slice(0, MAX_ROWS)
+        );
+        setLoadError(null);
+      })
+      .catch((e: unknown) => {
+        setLoadError(e instanceof Error ? e.message : "load failed");
+      });
   }, []);
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 30_000);
+    const t = setInterval(refresh, 5_000);
     return () => clearInterval(t);
   }, [refresh]);
 
@@ -64,6 +79,7 @@ export function SimulationPanel() {
           outcome: null,
           pnl_usd: null,
           opened_at: m.opened_at,
+          signal_time: m.signal_time ?? m.opened_at,
           settled_at: null,
           asset: m.asset,
         };
@@ -126,12 +142,19 @@ export function SimulationPanel() {
           </>
         )}
         <span className={`${styles.status} ${styles[status]}`}>{status}</span>
+        {loadError && (
+          <span className={styles.loadError} title={loadError}>
+            api err
+          </span>
+        )}
       </div>
 
       <div className={styles.list}>
         {rows.length === 0 ? (
           <p className={styles.empty}>
-            Waiting for 15m long/short liq bar signals…
+            {loadError
+              ? `Cannot load sim (${loadError}). Run frontend on :3000 with backend :8000.`
+              : "Waiting for 15m bar liq ≥ threshold (long→UP, short→DN). Chart liquidations on 3m/other intervals do not trigger sim."}
           </p>
         ) : (
           rows.map((r) => {
@@ -159,19 +182,26 @@ export function SimulationPanel() {
                   }
                 >
                   {r.outcome ?? "open"}
+                  {r.pnl_usd != null && (
+                    <span
+                      className={
+                        r.pnl_usd >= 0 ? styles.pnlInlinePos : styles.pnlInlineNeg
+                      }
+                    >
+                      {" "}
+                      {r.pnl_usd >= 0 ? "+" : ""}${r.pnl_usd.toFixed(2)}
+                    </span>
+                  )}
                 </span>
                 <span
-                  className={
-                    r.pnl_usd != null
-                      ? r.pnl_usd >= 0
-                        ? styles.outcomeWin
-                        : styles.outcomeLoss
-                      : styles.meta
+                  className={styles.time}
+                  title={
+                    r.leg > 1
+                      ? `Leg ${r.leg} opened ${formatTime(r.opened_at)} · cycle signal ${formatTime(r.signal_time)}`
+                      : `Signal ${formatTime(r.signal_time)} · opened ${formatTime(r.opened_at)}`
                   }
                 >
-                  {r.pnl_usd != null
-                    ? `${r.pnl_usd >= 0 ? "+" : ""}$${r.pnl_usd.toFixed(2)}`
-                    : formatTime(r.opened_at)}
+                  {formatTime(r.leg > 1 ? r.opened_at : r.signal_time)}
                 </span>
               </div>
             );

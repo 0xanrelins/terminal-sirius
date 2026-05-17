@@ -9,16 +9,19 @@ export const DEFAULT_MIN_NOTIONAL = 100_000;
 /** v2: majors-only ingest; store all sizes; display threshold-filtered. */
 export const LIQ_HISTORY_VERSION = 2;
 
-/** Only these perps are ingested; must match backend DEFAULT_INSTRUMENTS majors. */
-const TRACKED_LIQ_SYMBOLS = [
-  "BTCUSDT-PERP.BINANCE",
-  "ETHUSDT-PERP.BINANCE",
-  "SOLUSDT-PERP.BINANCE",
-  "DOGEUSDT-PERP.BINANCE",
-  "XRPUSDT-PERP.BINANCE",
-] as const;
+export const LIQ_MAJOR_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP"] as const;
+export type LiqMajorCoin = (typeof LIQ_MAJOR_COINS)[number];
+export const DEFAULT_LIQ_COINS: LiqMajorCoin[] = [...LIQ_MAJOR_COINS];
 
-const MAJOR_SYMBOLS = new Set(["BTC", "ETH", "SOL", "DOGE", "XRP"]);
+const MAJOR_SYMBOLS = new Set<string>(LIQ_MAJOR_COINS);
+
+const ASSET_TO_FEED_SYMBOL: Record<LiqMajorCoin, string> = {
+  BTC: "BTCUSDT-PERP.BINANCE",
+  ETH: "ETHUSDT-PERP.BINANCE",
+  SOL: "SOLUSDT-PERP.BINANCE",
+  DOGE: "DOGEUSDT-PERP.BINANCE",
+  XRP: "XRPUSDT-PERP.BINANCE",
+};
 
 const MAJOR_COLORS: Record<string, string> = {
   BTC: "#f7931a",
@@ -30,14 +33,24 @@ const MAJOR_COLORS: Record<string, string> = {
 
 type Props = {
   minNotional: number;
+  coins: LiqMajorCoin[];
   history: LiquidationSignalRow[];
   historyVersion?: number;
   onConfigChange: (patch: {
     minNotional?: number;
+    coins?: LiqMajorCoin[];
     history?: LiquidationSignalRow[];
     historyVersion?: number;
   }) => void;
 };
+
+export function normalizeLiqCoins(coins: unknown): LiqMajorCoin[] {
+  if (!Array.isArray(coins)) return DEFAULT_LIQ_COINS;
+  const picked = coins.filter(
+    (c): c is LiqMajorCoin => typeof c === "string" && MAJOR_SYMBOLS.has(c)
+  );
+  return picked.length > 0 ? picked : DEFAULT_LIQ_COINS;
+}
 
 function isValidRow(row: unknown): row is LiquidationSignalRow {
   if (!row || typeof row !== "object") return false;
@@ -70,10 +83,13 @@ function initRowSeq(history: LiquidationSignalRow[]): number {
 
 export function LiquidationSignals({
   minNotional,
+  coins,
   history,
   historyVersion,
   onConfigChange,
 }: Props) {
+  const selected = normalizeLiqCoins(coins);
+  const selectedSet = new Set<string>(selected);
   const { subscribe, status } = useFeed();
   const [rows, setRows] = useState<LiquidationSignalRow[]>(() =>
     loadHistory(history, historyVersion)
@@ -121,7 +137,7 @@ export function LiquidationSignals({
 
   const pushRow = useCallback((liq: LiquidationMsg) => {
     const asset = displaySymbol(liq.symbol);
-    if (!MAJOR_SYMBOLS.has(asset)) return;
+    if (!selected.includes(asset as LiqMajorCoin)) return;
 
     const row: LiquidationSignalRow = {
       id: `liq-${++rowSeqRef.current}`,
@@ -132,16 +148,16 @@ export function LiquidationSignals({
     };
 
     setRows((prev) => [row, ...prev].slice(0, MAX_ROWS));
-  }, []);
+  }, [selected]);
 
   useEffect(() => {
-    const unsubs = TRACKED_LIQ_SYMBOLS.map((sym) =>
-      subscribe(sym, (msg) => {
+    const unsubs = selected.map((asset) =>
+      subscribe(ASSET_TO_FEED_SYMBOL[asset], (msg) => {
         if (msg.type === "liquidation") pushRow(msg);
       })
     );
     return () => unsubs.forEach((u) => u());
-  }, [subscribe, pushRow]);
+  }, [subscribe, pushRow, selected]);
 
   const commitThreshold = () => {
     const next = Math.max(0, Number(draftThreshold.replace(/,/g, "")) || 0);
@@ -150,12 +166,43 @@ export function LiquidationSignals({
     onConfigChange({ minNotional: next });
   };
 
-  const visibleRows = rows.filter((r) => r.notional >= minNotional);
+  const visibleRows = rows.filter(
+    (r) => selectedSet.has(r.symbol) && r.notional >= minNotional
+  );
+
+  const toggleCoin = (coin: LiqMajorCoin) => {
+    const next = selectedSet.has(coin)
+      ? selected.filter((c) => c !== coin)
+      : [...selected, coin];
+    if (next.length === 0) return;
+    onConfigChange({ coins: next });
+  };
 
   return (
     <div className={styles.root}>
       <div className={`${styles.toolbar} signalsToolbar`}>
-        <span className={styles.title}>BTC · ETH · SOL · DOGE · XRP</span>
+        <div className={styles.coins}>
+          {LIQ_MAJOR_COINS.map((coin) => {
+            const on = selectedSet.has(coin);
+            const accent = MAJOR_COLORS[coin];
+            return (
+              <button
+                key={coin}
+                type="button"
+                className={`${styles.coinBtn} ${on ? styles.coinBtnOn : ""}`}
+                style={
+                  on
+                    ? { borderColor: accent, color: accent, background: `${accent}18` }
+                    : undefined
+                }
+                onClick={() => toggleCoin(coin)}
+                aria-pressed={on}
+              >
+                {coin}
+              </button>
+            );
+          })}
+        </div>
         <label className={styles.threshold}>
           <span className={styles.thresholdLabel}>Min $</span>
           <input
@@ -176,7 +223,7 @@ export function LiquidationSignals({
       <div className={styles.list}>
         {visibleRows.length === 0 ? (
           <p className={styles.empty}>
-            Waiting for {formatPairs()} liquidations ≥ {formatNotional(minNotional)}…
+            Waiting for {formatPairs(selected)} liquidations ≥ {formatNotional(minNotional)}…
           </p>
         ) : (
           visibleRows.map((row) => {
@@ -220,6 +267,6 @@ function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString("en-GB", { hour12: false });
 }
 
-function formatPairs(): string {
-  return "BTC/ETH/SOL/DOGE/XRP";
+function formatPairs(coins: readonly string[]): string {
+  return coins.join("/");
 }

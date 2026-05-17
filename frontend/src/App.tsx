@@ -8,7 +8,10 @@ import type {
   LiquidationSignalsConfig,
   WidgetConfig,
 } from "./types";
-import { LIQ_HISTORY_VERSION } from "./components/widgets/LiquidationSignals";
+import {
+  LIQ_HISTORY_VERSION,
+  normalizeLiqCoins,
+} from "./components/widgets/LiquidationSignals";
 import styles from "./App.module.css";
 
 const STORAGE_KEY = "sirius-dashboards";
@@ -32,6 +35,7 @@ function sanitizeWidget(w: WidgetConfig): WidgetConfig {
       typeof liq.minNotional === "number" && Number.isFinite(liq.minNotional)
         ? liq.minNotional
         : undefined,
+    coins: normalizeLiqCoins(liq.coins),
   };
 }
 

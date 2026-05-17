@@ -52,3 +52,10 @@ def test_short_entry_from_yes() -> None:
     shares, cost = compute_bet(0.4, 5, 1.0)  # NO @ 0.4 when YES=0.6
     assert shares == 5
     assert cost == 2.0
+
+
+def test_yes_price_from_market() -> None:
+    from adapters.polymarket.gamma import yes_price_from_market
+
+    m = {"outcomes": '["Up","Down"]', "outcomePrices": '["0.52","0.48"]'}
+    assert yes_price_from_market(m) == pytest.approx(0.52)

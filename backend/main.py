@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
 
     _simulation = SimulationEngine()
     await _simulation.load_state()
+    startup_sim = await _simulation.sync_bars_from_store()
 
     # Nautilus (daemon thread — safe to skip if nautilus_trader not installed yet)
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
@@ -63,6 +64,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
 
     asyncio.create_task(_broadcast_loop())
+    if startup_sim:
+        asyncio.create_task(_fanout_messages(startup_sim))
 
     yield
 
@@ -170,6 +173,21 @@ async def simulation_bets(limit: int = 100):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.post("/simulation/reconcile")
+async def simulation_reconcile():
+    """Re-scan 15m liq bars vs thresholds (fixes engine/chart total drift)."""
+    if _simulation is None:
+        raise HTTPException(status_code=503, detail="Simulation not running")
+    try:
+        events = await _simulation.reconcile_all_bars()
+        events += await _simulation.reconcile_settlements()
+        if events:
+            asyncio.create_task(_fanout_messages(events))
+        return {"events": len(events), "ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 class SimulationConfigBody(BaseModel):
     thresholds: dict[str, float] | None = None
     min_usd: float | None = None
@@ -237,9 +255,34 @@ async def websocket_endpoint(websocket: WebSocket, symbols: Optional[str] = None
 
 # ── Broadcast + persist loop ──────────────────────────────────────────────────
 
+async def _fanout_messages(messages: list[dict]) -> None:
+    """Push messages to all WS clients (simulation events skip symbol filters)."""
+    dead: list[tuple[WebSocket, Optional[set[str]]]] = []
+    for out in messages:
+        payload = json.dumps(out)
+        is_sim = str(out.get("type", "")).startswith("simulation")
+        symbol = out.get("symbol") or out.get("binance_symbol")
+        for ws, symbol_filter in _clients:
+            if (
+                not is_sim
+                and symbol_filter
+                and symbol
+                and symbol not in symbol_filter
+            ):
+                continue
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append((ws, symbol_filter))
+    for item in dead:
+        try:
+            _clients.remove(item)
+        except ValueError:
+            pass
+
+
 async def _broadcast_loop() -> None:
     loop = asyncio.get_running_loop()
-    dead: list[tuple[WebSocket, Optional[set[str]]]] = []
 
     while True:
         try:
@@ -270,31 +313,7 @@ async def _broadcast_loop() -> None:
             outbound.append(msg)
         outbound.extend(sim_events)
 
-        for out in outbound:
-            payload = json.dumps(out)
-            is_sim = str(out.get("type", "")).startswith("simulation")
-            symbol = out.get("symbol") or out.get("binance_symbol")
-
-            for ws, symbol_filter in _clients:
-                if (
-                    not is_sim
-                    and symbol_filter
-                    and symbol
-                    and symbol not in symbol_filter
-                ):
-                    continue
-                try:
-                    await ws.send_text(payload)
-                except Exception:
-                    dead.append((ws, symbol_filter))
-
-        if dead:
-            for item in dead:
-                try:
-                    _clients.remove(item)
-                except ValueError:
-                    pass
-            dead.clear()
+        await _fanout_messages(outbound)
 
 
 async def _persist_liquidation(msg: dict) -> None:

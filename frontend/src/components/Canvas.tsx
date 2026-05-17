@@ -16,6 +16,7 @@ import { ComparisonChart } from "./widgets/ComparisonChart";
 import {
   DEFAULT_MIN_NOTIONAL,
   LiquidationSignals,
+  normalizeLiqCoins,
 } from "./widgets/LiquidationSignals";
 import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
@@ -94,6 +95,7 @@ function renderWidget(
       return (
         <LiquidationSignals
           minNotional={liqCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
+          coins={normalizeLiqCoins(liqCfg.coins)}
           history={Array.isArray(liqCfg.history) ? liqCfg.history : []}
           historyVersion={liqCfg.historyVersion}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}

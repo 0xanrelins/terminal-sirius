@@ -50,6 +50,13 @@
   margin-left: auto;
 }
 
+.loadError {
+  font-size: 8px;
+  color: #f87171;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .status.open {
   color: #14f195;
 }
@@ -130,4 +137,19 @@
 
 .pending {
   color: #fbbf24;
+}
+
+.pnlInlinePos {
+  color: #14f195;
+  font-weight: 600;
+}
+
+.pnlInlineNeg {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.time {
+  color: #888;
+  font-variant-numeric: tabular-nums;
 }
