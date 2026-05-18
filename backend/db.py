@@ -4,11 +4,16 @@ PostgreSQL access layer (asyncpg).
 Schema:
   - `klines` — OHLCV bars (symbol, interval, time)
   - `liquidation_bars` — long/short liquidation notional per bar (symbol, interval, time)
+  - `liquidation_events` — raw Binance forceOrder JSON per event
 """
+import json
 import os
 from typing import Optional
 
 import asyncpg
+
+LIQUIDATION_EVENTS_MAX_ROWS = 50_000
+LIQUIDATION_EVENTS_RETENTION_HOURS = 48
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -65,6 +70,18 @@ async def _migrate(p: asyncpg.Pool) -> None:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS liquidation_bars_symbol_interval_time
             ON liquidation_bars (symbol, interval, time DESC)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_events (
+                id          BIGSERIAL PRIMARY KEY,
+                trade_id    BIGINT NOT NULL UNIQUE,
+                received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload     JSONB NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS liquidation_events_received_at
+            ON liquidation_events (received_at DESC)
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS simulation_cycles (
@@ -232,6 +249,73 @@ async def add_liquidation_delta(
                 short = liquidation_bars.short + EXCLUDED.short
         """,
         symbol, interval, time, long_delta, short_delta,
+    )
+
+
+async def insert_liquidation_event(trade_id: int, payload: dict) -> bool:
+    """Insert raw forceOrder item; return True if new row."""
+    row = await pool().fetchrow(
+        """
+        INSERT INTO liquidation_events (trade_id, payload)
+        VALUES ($1, $2::jsonb)
+        ON CONFLICT (trade_id) DO NOTHING
+        RETURNING id
+        """,
+        trade_id,
+        json.dumps(payload),
+    )
+    return row is not None
+
+
+async def get_liquidation_event_payloads(limit: int) -> list[dict]:
+    rows = await pool().fetch(
+        """
+        SELECT payload
+        FROM liquidation_events
+        ORDER BY id DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+    out: list[dict] = []
+    for r in rows:
+        p = r["payload"]
+        if isinstance(p, str):
+            out.append(json.loads(p))
+        else:
+            out.append(dict(p))
+    return out
+
+
+_prune_event_counter = 0
+
+
+async def maybe_prune_liquidation_events() -> None:
+    global _prune_event_counter
+    _prune_event_counter += 1
+    if _prune_event_counter % 100 != 0:
+        return
+    await prune_liquidation_events()
+
+
+async def prune_liquidation_events() -> None:
+    await pool().execute(
+        """
+        DELETE FROM liquidation_events
+        WHERE received_at < NOW() - make_interval(hours => $1::int)
+        """,
+        LIQUIDATION_EVENTS_RETENTION_HOURS,
+    )
+    await pool().execute(
+        """
+        DELETE FROM liquidation_events
+        WHERE id NOT IN (
+            SELECT id FROM liquidation_events
+            ORDER BY id DESC
+            LIMIT $1
+        )
+        """,
+        LIQUIDATION_EVENTS_MAX_ROWS,
     )
 
 

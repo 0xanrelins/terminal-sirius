@@ -12,7 +12,7 @@ import queue
 
 import websockets
 
-from liquidations import binance_to_nautilus, record_liquidation
+from liquidations import build_liquidation_message
 
 # All symbols — largest liquidation per symbol per 1s snapshot
 WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
@@ -22,7 +22,7 @@ async def run_liquidation_stream(
     data_queue: queue.Queue, symbols: tuple[str, ...]
 ) -> None:
     del symbols  # all-market stream covers every symbol
-    subscribed = set()
+    subscribed: set[str] = set()
 
     while True:
         try:
@@ -32,34 +32,27 @@ async def run_liquidation_stream(
                     envelope = json.loads(raw)
                     data = envelope.get("data", envelope)
 
-                    # All-market stream wraps events in an array
                     events = data if isinstance(data, list) else [data]
                     for item in events:
                         if item.get("e") != "forceOrder":
                             continue
 
-                        order = item["o"]
-                        symbol = binance_to_nautilus(order["s"])
-                        side = order["S"]
-                        notional = float(order["ap"]) * float(order["z"])
-                        trade_ms = int(order["T"])
+                        msg = build_liquidation_message(item)
+                        if msg is None:
+                            continue
 
-                        updates = record_liquidation(symbol, side, notional, trade_ms)
                         try:
-                            data_queue.put_nowait({
-                                "type": "liquidation",
-                                "symbol": symbol,
-                                "side": side,
-                                "notional": round(notional, 2),
-                                "time": trade_ms // 1000,
-                                "_updates": updates,
-                            })
+                            data_queue.put_nowait(msg)
                         except queue.Full:
                             pass
 
-                        if symbol not in subscribed:
-                            subscribed.add(symbol)
-                            print(f"[liquidations] {symbol} {side} ${notional:,.0f}")
+                        sym = msg["symbol"]
+                        if sym not in subscribed:
+                            subscribed.add(sym)
+                            print(
+                                f"[liquidations] {sym} {msg['side']} "
+                                f"${msg['notional']:,.0f}"
+                            )
         except Exception as e:
             print(f"[warn] liquidation stream disconnected: {e}")
             await asyncio.sleep(3)

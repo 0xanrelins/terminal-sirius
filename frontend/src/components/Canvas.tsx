@@ -70,6 +70,7 @@ function renderWidget(
           symbol={chartCfg.symbol}
           interval={chartCfg.interval}
           indicators={chartCfg.indicators ?? []}
+          initialBars={chartCfg.initialBars}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
@@ -96,7 +97,6 @@ function renderWidget(
         <LiquidationSignals
           minNotional={liqCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
           coins={normalizeLiqCoins(liqCfg.coins)}
-          history={Array.isArray(liqCfg.history) ? liqCfg.history : []}
           historyVersion={liqCfg.historyVersion}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />

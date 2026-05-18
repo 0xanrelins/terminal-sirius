@@ -9,6 +9,7 @@ export default defineConfig({
       "/ws": { target: "ws://localhost:8000", ws: true },
       "/klines": { target: "http://localhost:8000" },
       "/liquidations": { target: "http://localhost:8000" },
+      "/liquidation-events": { target: "http://localhost:8000" },
       "/polymarket": { target: "http://localhost:8000" },
       "/simulation": { target: "http://localhost:8000" },
     },

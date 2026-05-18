@@ -4,14 +4,24 @@ Binance USDT-M liquidation buckets (long / short notional per interval bar).
 Long liquidation  = force order side SELL (long position closed)
 Short liquidation = force order side BUY  (short position closed)
 
-Persisted to PostgreSQL (liquidation_bars); in-memory cache for live overlay.
+Raw forceOrder items → PostgreSQL (liquidation_events).
+Bar aggregates → liquidation_bars.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from threading import Lock
+from typing import Any
 
 import db
+
+MAJOR_NAUTILUS_SYMBOLS: frozenset[str] = frozenset({
+    "BTCUSDT-PERP.BINANCE",
+    "ETHUSDT-PERP.BINANCE",
+    "SOLUSDT-PERP.BINANCE",
+    "DOGEUSDT-PERP.BINANCE",
+    "XRPUSDT-PERP.BINANCE",
+})
 
 INTERVAL_SECONDS: dict[str, int] = {
     "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
@@ -32,6 +42,59 @@ def nautilus_to_binance(symbol: str) -> str:
 
 def binance_to_nautilus(binance_symbol: str) -> str:
     return f"{binance_symbol.upper()}-PERP.BINANCE"
+
+
+def force_order_trade_id(item: dict[str, Any]) -> int:
+    """Stable dedupe key from Binance forceOrder item."""
+    order = item.get("o") or {}
+    if order.get("i") is not None:
+        return int(order["i"])
+    sym = str(order.get("s", ""))
+    side = str(order.get("S", ""))
+    trade_ms = int(order.get("T", 0))
+    sym_tag = sum(ord(c) for c in sym) % 10_000
+    side_tag = 1 if side == "SELL" else 2
+    return trade_ms * 10_000 + sym_tag * 10 + side_tag
+
+
+def parse_force_order(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Raw Binance forceOrder item → slim liquidation fields."""
+    if item.get("e") != "forceOrder":
+        return None
+    order = item.get("o")
+    if not order:
+        return None
+    try:
+        symbol = binance_to_nautilus(str(order["s"]))
+        side = str(order["S"])
+        notional = float(order["ap"]) * float(order["z"])
+        trade_ms = int(order["T"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "type": "liquidation",
+        "trade_id": force_order_trade_id(item),
+        "symbol": symbol,
+        "side": side,
+        "notional": round(notional, 2),
+        "time": trade_ms // 1000,
+    }
+
+
+def build_liquidation_message(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse raw item and attach bar-bucket deltas for persistence."""
+    parsed = parse_force_order(item)
+    if parsed is None:
+        return None
+    trade_ms = int((item.get("o") or {})["T"])
+    updates = record_liquidation(
+        parsed["symbol"], parsed["side"], parsed["notional"], trade_ms
+    )
+    return {
+        **parsed,
+        "_payload": item,
+        "_updates": updates,
+    }
 
 
 def bucket_time(ts_ms: int, interval: str) -> int:
@@ -117,3 +180,23 @@ async def fetch_liquidation_bars(
     if len(merged) > limit:
         merged = merged[-limit:]
     return merged
+
+
+async def fetch_liquidation_events(
+    symbols: tuple[str, ...] | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Load recent raw events from DB, parse, filter by symbol set."""
+    sym_set = set(symbols) if symbols else MAJOR_NAUTILUS_SYMBOLS
+    cap = min(max(limit, 1), 500)
+    # Over-fetch so filtering majors still fills the limit.
+    payloads = await db.get_liquidation_event_payloads(cap * 20)
+    out: list[dict] = []
+    for payload in payloads:
+        parsed = parse_force_order(payload)
+        if parsed is None or parsed["symbol"] not in sym_set:
+            continue
+        out.append({k: v for k, v in parsed.items() if not k.startswith("_")})
+        if len(out) >= cap:
+            break
+    return out

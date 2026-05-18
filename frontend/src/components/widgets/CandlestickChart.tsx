@@ -19,6 +19,7 @@ import {
   DEFAULT_LIQ_THRESHOLD,
   DEFAULT_VWAP_PERIOD,
   INDICATOR_PRESETS,
+  clampInitialBars,
   getEmaPeriod,
   getLiqThreshold,
   getVwapPeriod,
@@ -43,6 +44,8 @@ type Props = {
   symbol: string;
   interval?: string;
   indicators?: ChartIndicator[];
+  /** Bar window for this widget (fetch + viewport on every symbol/interval load). */
+  initialBars?: number;
   onConfigChange: (patch: {
     symbol?: string;
     interval?: string;
@@ -122,6 +125,30 @@ function ensureFormingBar(bars: OhlcvBar[], interval: string): OhlcvBar[] {
       volume: 0,
     },
   ];
+}
+
+/** Bar count at/above this uses fitContent on first open (legacy full-chart view). */
+const FIT_CONTENT_BAR_THRESHOLD = INITIAL_LIMIT;
+
+/** Widget bar window: 500+ uses fitContent; smaller N shows last bars anchored right. */
+function applyWidgetBarViewport(
+  chart: IChartApi,
+  totalBars: number,
+  openBarCount: number
+) {
+  const ts = chart.timeScale();
+  const visible = Math.min(openBarCount, totalBars);
+
+  if (openBarCount >= FIT_CONTENT_BAR_THRESHOLD || visible >= totalBars) {
+    ts.fitContent();
+    return;
+  }
+
+  ts.setVisibleLogicalRange({
+    from: totalBars - visible,
+    to: totalBars - 1,
+  });
+  ts.scrollToRealTime();
 }
 
 function mergeWithLiveBar(bars: OhlcvBar[], live: OhlcvBar | null): OhlcvBar[] {
@@ -216,6 +243,7 @@ export function CandlestickChart({
   symbol,
   interval = "1m",
   indicators: indicatorsProp = [],
+  initialBars: initialBarsProp,
   onConfigChange,
 }: Props) {
   const indicators = normalizeIndicators(indicatorsProp);
@@ -230,6 +258,8 @@ export function CandlestickChart({
   const loadingRef = useRef(false);
   const exhaustedRef = useRef(false);
   const historyReadyRef = useRef(false);
+  const chartEffectGenRef = useRef(0);
+  const openBarCountRef = useRef(clampInitialBars(initialBarsProp));
   const indicatorsRef = useRef(indicators);
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const { subscribe } = useFeed();
@@ -348,6 +378,11 @@ export function CandlestickChart({
   useEffect(() => {
     if (!containerRef.current) return;
 
+    let cancelled = false;
+    let historyScrollEnabled = false;
+    const effectGen = ++chartEffectGenRef.current;
+    const barLimit = openBarCountRef.current;
+
     ohlcvBarsRef.current = [];
     liveBarRef.current = null;
     loadingRef.current = false;
@@ -404,7 +439,7 @@ export function CandlestickChart({
       const params = new URLSearchParams({
         symbol,
         interval,
-        limit: String(before === undefined ? INITIAL_LIMIT : PAGE_SIZE),
+        limit: String(before === undefined ? barLimit : PAGE_SIZE),
       });
       if (before !== undefined) params.set("before", String(before));
       const r = await fetch(`/klines?${params}`);
@@ -434,7 +469,7 @@ export function CandlestickChart({
     };
 
     const onVisibleRangeChange = (range: LogicalRange | null) => {
-      if (!range || range.from >= LOAD_THRESHOLD) return;
+      if (!historyScrollEnabled || !range || range.from >= LOAD_THRESHOLD) return;
       void loadOlder();
     };
 
@@ -449,8 +484,13 @@ export function CandlestickChart({
     });
     ro.observe(containerRef.current);
 
+    const isStale = () =>
+      cancelled || chartRef.current !== chart || effectGen !== chartEffectGenRef.current;
+
     fetchKlines()
       .then((data) => {
+        if (isStale()) return;
+
         const bars = prepareHistoryBars(data, interval, liveBarRef.current);
         const bucket = currentBarBucket(interval);
         const last = bars[bars.length - 1];
@@ -459,14 +499,26 @@ export function CandlestickChart({
         }
         setOhlcvData(bars);
         historyReadyRef.current = true;
-        chart.timeScale().fitContent();
+
+        requestAnimationFrame(() => {
+          if (isStale()) return;
+
+          applyWidgetBarViewport(chart, bars.length, barLimit);
+
+          if (!isStale()) {
+            historyScrollEnabled = true;
+          }
+        });
       })
       .catch((e) => {
+        if (isStale()) return;
         console.error(e);
         historyReadyRef.current = true;
       });
 
     return () => {
+      cancelled = true;
+      chartEffectGenRef.current += 1;
       ro.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
       chart.remove();
@@ -497,10 +549,11 @@ export function CandlestickChart({
   useEffect(() => {
     if (!hasLiquidations) return;
 
+    let cancelled = false;
     const params = new URLSearchParams({
       symbol,
       interval,
-      limit: String(INITIAL_LIMIT),
+      limit: String(openBarCountRef.current),
     });
     fetch(`/liquidations?${params}`)
       .then((r) => {
@@ -508,6 +561,7 @@ export function CandlestickChart({
         return r.json() as Promise<LiquidationBar[]>;
       })
       .then((data) => {
+        if (cancelled) return;
         liqDataRef.current.clear();
         for (const b of data) {
           liqDataRef.current.set(b.time, { long: b.long, short: b.short });
@@ -515,6 +569,10 @@ export function CandlestickChart({
         pushLiqToSeries();
       })
       .catch(console.error);
+
+    return () => {
+      cancelled = true;
+    };
   }, [symbol, interval, hasLiquidations, pushLiqToSeries]);
 
   // Live updates

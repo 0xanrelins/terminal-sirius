@@ -49,6 +49,7 @@ export type LiquidationMsg = {
   side: string;
   notional: number;
   time: number;
+  trade_id?: number;
 };
 
 export type SimulationSide = "long" | "short";
@@ -217,6 +218,8 @@ export type CandlestickChartConfig = {
   symbol: string;
   interval: string;
   indicators?: ChartIndicator[];
+  /** Candles to load/show on first open only. Default 500. */
+  initialBars?: number;
 };
 
 export type ComparisonChartConfig = {

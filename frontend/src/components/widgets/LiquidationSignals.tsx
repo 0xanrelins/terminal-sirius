@@ -4,10 +4,9 @@ import type { LiquidationMsg, LiquidationSignalRow } from "../../types";
 import styles from "./LiquidationSignals.module.css";
 
 const MAX_ROWS = 200;
-const PERSIST_DEBOUNCE_MS = 400;
 export const DEFAULT_MIN_NOTIONAL = 100_000;
-/** v2: majors-only ingest; store all sizes; display threshold-filtered. */
-export const LIQ_HISTORY_VERSION = 2;
+/** v3: history from backend raw events; display threshold-filtered. */
+export const LIQ_HISTORY_VERSION = 3;
 
 export const LIQ_MAJOR_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP"] as const;
 export type LiqMajorCoin = (typeof LIQ_MAJOR_COINS)[number];
@@ -34,12 +33,10 @@ const MAJOR_COLORS: Record<string, string> = {
 type Props = {
   minNotional: number;
   coins: LiqMajorCoin[];
-  history: LiquidationSignalRow[];
   historyVersion?: number;
   onConfigChange: (patch: {
     minNotional?: number;
     coins?: LiqMajorCoin[];
-    history?: LiquidationSignalRow[];
     historyVersion?: number;
   }) => void;
 };
@@ -52,102 +49,104 @@ export function normalizeLiqCoins(coins: unknown): LiqMajorCoin[] {
   return picked.length > 0 ? picked : DEFAULT_LIQ_COINS;
 }
 
-function isValidRow(row: unknown): row is LiquidationSignalRow {
-  if (!row || typeof row !== "object") return false;
-  const r = row as LiquidationSignalRow;
-  return (
-    typeof r.id === "string" &&
-    typeof r.symbol === "string" &&
-    MAJOR_SYMBOLS.has(r.symbol) &&
-    (r.side === "LONG" || r.side === "SHORT") &&
-    typeof r.notional === "number" &&
-    Number.isFinite(r.notional) &&
-    typeof r.time === "number"
-  );
+function displaySymbol(symbol: string): string {
+  return symbol.replace("-PERP.BINANCE", "").replace("USDT", "");
 }
 
-function loadHistory(history: unknown, version?: number): LiquidationSignalRow[] {
-  if (version !== LIQ_HISTORY_VERSION) return [];
-  if (!Array.isArray(history)) return [];
-  return history.filter(isValidRow).slice(0, MAX_ROWS);
+function msgToRow(liq: LiquidationMsg): LiquidationSignalRow | null {
+  const asset = displaySymbol(liq.symbol);
+  if (!MAJOR_SYMBOLS.has(asset)) return null;
+  const id =
+    liq.trade_id != null
+      ? `liq-${liq.trade_id}`
+      : `liq-${liq.time}-${liq.side}-${Math.round(liq.notional)}`;
+  return {
+    id,
+    symbol: asset,
+    side: liq.side === "SELL" ? "LONG" : "SHORT",
+    notional: liq.notional,
+    time: liq.time,
+  };
 }
 
-function initRowSeq(history: LiquidationSignalRow[]): number {
-  let max = 0;
-  for (const row of history) {
-    const m = /^liq-(\d+)$/.exec(row.id);
-    if (m) max = Math.max(max, Number(m[1]));
+function mergeRows(
+  prev: LiquidationSignalRow[],
+  incoming: LiquidationSignalRow[]
+): LiquidationSignalRow[] {
+  const seen = new Set<string>();
+  const out: LiquidationSignalRow[] = [];
+  for (const row of [...incoming, ...prev]) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+    if (out.length >= MAX_ROWS) break;
   }
-  return max;
+  return out;
 }
 
 export function LiquidationSignals({
   minNotional,
   coins,
-  history,
   historyVersion,
   onConfigChange,
 }: Props) {
   const selected = normalizeLiqCoins(coins);
   const selectedSet = new Set<string>(selected);
   const { subscribe, status } = useFeed();
-  const [rows, setRows] = useState<LiquidationSignalRow[]>(() =>
-    loadHistory(history, historyVersion)
-  );
+  const [rows, setRows] = useState<LiquidationSignalRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [draftThreshold, setDraftThreshold] = useState(String(minNotional));
-  const thresholdRef = useRef(minNotional);
-  const rowSeqRef = useRef(initRowSeq(loadHistory(history, historyVersion)));
   const onConfigChangeRef = useRef(onConfigChange);
   onConfigChangeRef.current = onConfigChange;
-  const skipPersistRef = useRef(true);
-  const lastPersistedRef = useRef("");
 
   useEffect(() => {
-    thresholdRef.current = minNotional;
     setDraftThreshold(String(minNotional));
   }, [minNotional]);
 
   useEffect(() => {
     if (historyVersion === LIQ_HISTORY_VERSION) return;
-    setRows([]);
-    rowSeqRef.current = 0;
-    skipPersistRef.current = true;
-    lastPersistedRef.current = "";
-    onConfigChangeRef.current({
-      history: [],
-      historyVersion: LIQ_HISTORY_VERSION,
-    });
+    onConfigChangeRef.current({ historyVersion: LIQ_HISTORY_VERSION });
   }, [historyVersion]);
 
-  useEffect(() => {
-    if (skipPersistRef.current) {
-      skipPersistRef.current = false;
-      return;
-    }
-    const payload = { history: rows, historyVersion: LIQ_HISTORY_VERSION };
-    const key = JSON.stringify(payload);
-    if (key === lastPersistedRef.current) return;
+  const symbolsParam = selected.map((c) => ASSET_TO_FEED_SYMBOL[c]).join(",");
 
-    const t = setTimeout(() => {
-      lastPersistedRef.current = key;
-      onConfigChangeRef.current(payload);
-    }, PERSIST_DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [rows]);
+  useEffect(() => {
+    let cancelled = false;
+    setRows([]);
+    setHistoryLoading(true);
+
+    const params = new URLSearchParams({
+      symbols: symbolsParam,
+      limit: String(MAX_ROWS),
+    });
+    fetch(`/liquidation-events?${params}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`liquidation-events ${r.status}`);
+        return r.json() as Promise<LiquidationMsg[]>;
+      })
+      .then((events) => {
+        if (cancelled) return;
+        const incoming = events
+          .map((e) => msgToRow({ ...e, type: "liquidation" }))
+          .filter((r): r is LiquidationSignalRow => r !== null);
+        setRows((prev) => mergeRows(prev, incoming));
+      })
+      .catch(() => {
+        /* backend may be offline — live WS still works */
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbolsParam]);
 
   const pushRow = useCallback((liq: LiquidationMsg) => {
-    const asset = displaySymbol(liq.symbol);
-    if (!selected.includes(asset as LiqMajorCoin)) return;
-
-    const row: LiquidationSignalRow = {
-      id: `liq-${++rowSeqRef.current}`,
-      symbol: asset,
-      side: liq.side === "SELL" ? "LONG" : "SHORT",
-      notional: liq.notional,
-      time: liq.time,
-    };
-
-    setRows((prev) => [row, ...prev].slice(0, MAX_ROWS));
+    const row = msgToRow(liq);
+    if (!row || !selected.includes(row.symbol as LiqMajorCoin)) return;
+    setRows((prev) => mergeRows(prev, [row]));
   }, [selected]);
 
   useEffect(() => {
@@ -161,7 +160,6 @@ export function LiquidationSignals({
 
   const commitThreshold = () => {
     const next = Math.max(0, Number(draftThreshold.replace(/,/g, "")) || 0);
-    thresholdRef.current = next;
     setDraftThreshold(String(next));
     onConfigChange({ minNotional: next });
   };
@@ -221,7 +219,9 @@ export function LiquidationSignals({
       </div>
 
       <div className={styles.list}>
-        {visibleRows.length === 0 ? (
+        {historyLoading && visibleRows.length === 0 ? (
+          <p className={styles.empty}>Loading history…</p>
+        ) : visibleRows.length === 0 ? (
           <p className={styles.empty}>
             Waiting for {formatPairs(selected)} liquidations ≥ {formatNotional(minNotional)}…
           </p>
@@ -251,10 +251,6 @@ export function LiquidationSignals({
       </div>
     </div>
   );
-}
-
-function displaySymbol(symbol: string): string {
-  return symbol.replace("-PERP.BINANCE", "").replace("USDT", "");
 }
 
 function formatNotional(n: number): string {

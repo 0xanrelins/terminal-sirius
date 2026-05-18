@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  CANDLESTICK_BAR_PRESETS,
+  DEFAULT_CANDLESTICK_BARS,
+  clampInitialBars,
+} from "../lib/chartConfig";
 import { POLYMARKET_15M_PRESETS, seriesToSymbol, type PolymarketPreset } from "../lib/polymarketPresets";
 import {
   DEFAULT_LIQ_COINS,
@@ -20,6 +25,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
 
   const [binanceType, setBinanceType] = useState<WidgetType>("price_ticker");
   const [symbol, setSymbol] = useState("BTCUSDT-PERP.BINANCE");
+  const [initialBars, setInitialBars] = useState(DEFAULT_CANDLESTICK_BARS);
 
   const [pmPresets, setPmPresets] = useState<PolymarketPreset[]>([]);
   const [pmSelected, setPmSelected] = useState<PolymarketPreset | null>(null);
@@ -66,6 +72,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           symbol: "BTCUSDT-PERP.BINANCE",
           interval: "1m",
           indicators: [],
+          initialBars: clampInitialBars(initialBars),
         });
       } else if (binanceType === "comparison_chart") {
         onAdd({
@@ -79,7 +86,6 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           type: "liquidation_signals",
           minNotional: DEFAULT_MIN_NOTIONAL,
           coins: [...DEFAULT_LIQ_COINS],
-          history: [],
           historyVersion: LIQ_HISTORY_VERSION,
         });
       } else if (binanceType === "simulation_panel") {
@@ -189,9 +195,37 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               )}
 
               {binanceType === "candlestick_chart" && (
-                <p className={styles.hint}>
-                  Pair, timeframe and indicators can be changed from the chart toolbar.
-                </p>
+                <>
+                  <label className={styles.label}>
+                    <span>Candles on first open</span>
+                    <div className={styles.intervalRow}>
+                      {CANDLESTICK_BAR_PRESETS.map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className={`${styles.intervalBtn} ${initialBars === n ? styles.active : ""}`}
+                          onClick={() => setInitialBars(n)}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      className={styles.input}
+                      type="number"
+                      min={10}
+                      max={1000}
+                      step={1}
+                      value={initialBars}
+                      onChange={(e) =>
+                        setInitialBars(clampInitialBars(Number(e.target.value)))
+                      }
+                    />
+                  </label>
+                  <p className={styles.hint}>
+                    Only the first time the chart opens. Pair, timeframe and indicators are in the chart toolbar; history and zoom stay as today.
+                  </p>
+                </>
               )}
 
               {binanceType === "comparison_chart" && (

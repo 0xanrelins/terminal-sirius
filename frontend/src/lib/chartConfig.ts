@@ -28,6 +28,16 @@ export const COMPARISON_COLORS: Record<(typeof COMPARISON_SYMBOLS)[number], stri
 
 export const CHART_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 
+/** Default candles on first chart open (matches legacy INITIAL_LIMIT). */
+export const DEFAULT_CANDLESTICK_BARS = 500;
+export const MAX_CANDLESTICK_BARS = 1000;
+export const CANDLESTICK_BAR_PRESETS = [50, 100, 200, 500, 1000] as const;
+
+export function clampInitialBars(value?: number): number {
+  const n = value ?? DEFAULT_CANDLESTICK_BARS;
+  return Math.min(MAX_CANDLESTICK_BARS, Math.max(10, Math.floor(n)));
+}
+
 export type IndicatorPreset =
   | { label: string; type: "ema"; period: number }
   | { label: string; type: "vwap"; period: number }

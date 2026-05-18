@@ -34,7 +34,11 @@ from adapters.polymarket.gamma import get_market_by_slug, get_token_ids, search_
 from adapters.polymarket.rolling import PRESET_15M_SERIES, series_symbol, slug_for_series
 from bar_time import bar_open_time_ns
 from klines import fetch_klines
-from liquidations import fetch_liquidation_bars
+from liquidations import (
+    MAJOR_NAUTILUS_SYMBOLS,
+    fetch_liquidation_bars,
+    fetch_liquidation_events,
+)
 from liquidation_stream import run_liquidation_stream
 from simulation.engine import SimulationEngine
 
@@ -64,6 +68,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
 
     asyncio.create_task(_broadcast_loop())
+    asyncio.create_task(_liquidation_events_retention_loop())
     if startup_sim:
         asyncio.create_task(_fanout_messages(startup_sim))
 
@@ -106,6 +111,22 @@ async def liquidations_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+
+
+@app.get("/liquidation-events")
+async def liquidation_events_endpoint(
+    symbols: Optional[str] = None,
+    limit: int = 200,
+):
+    """Recent liquidation events parsed from raw Binance forceOrder payloads."""
+    try:
+        if symbols:
+            sym_tuple = tuple(s.strip() for s in symbols.split(",") if s.strip())
+        else:
+            sym_tuple = tuple(MAJOR_NAUTILUS_SYMBOLS)
+        return await fetch_liquidation_events(sym_tuple, min(limit, 500))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ── Polymarket ───────────────────────────────────────────────────────────────
@@ -318,6 +339,14 @@ async def _broadcast_loop() -> None:
 
 async def _persist_liquidation(msg: dict) -> None:
     try:
+        payload = msg.get("_payload")
+        if payload is not None:
+            from liquidations import force_order_trade_id
+
+            trade_id = force_order_trade_id(payload)
+            if await db.insert_liquidation_event(trade_id, payload):
+                await db.maybe_prune_liquidation_events()
+
         updates = msg.get("_updates") or []
         for u in updates:
             await db.add_liquidation_delta(
@@ -329,6 +358,15 @@ async def _persist_liquidation(msg: dict) -> None:
             )
     except Exception as e:
         print(f"[warn] liquidation persist failed: {e}")
+
+
+async def _liquidation_events_retention_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            await db.prune_liquidation_events()
+        except Exception as e:
+            print(f"[warn] liquidation_events retention failed: {e}")
 
 
 async def _persist_bar(msg: dict) -> None:

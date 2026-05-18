@@ -25,12 +25,10 @@ const DEFAULT_CANVAS: CanvasState = {
 function sanitizeWidget(w: WidgetConfig): WidgetConfig {
   if (w.type !== "liquidation_signals") return w;
   const liq = w as LiquidationSignalsConfig;
-  const history = Array.isArray(liq.history) ? liq.history : [];
+  const { history: _history, ...rest } = liq;
   return {
-    ...liq,
-    history: liq.historyVersion === LIQ_HISTORY_VERSION ? history : [],
-    historyVersion:
-      liq.historyVersion === LIQ_HISTORY_VERSION ? LIQ_HISTORY_VERSION : undefined,
+    ...rest,
+    historyVersion: LIQ_HISTORY_VERSION,
     minNotional:
       typeof liq.minNotional === "number" && Number.isFinite(liq.minNotional)
         ? liq.minNotional
