@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useFeed } from "../../context/FeedContext";
 import type {
   FeedMsg,
-  SimulationBetOpenMsg,
-  SimulationBetRow,
-  SimulationBetSettleMsg,
+  LiveBetOpenMsg,
+  LiveBetRow,
+  LiveBetSettleMsg,
+  LiveStatus,
   SimulationSide,
-  SimulationStatus,
 } from "../../types";
 import {
   betTimeTooltip,
@@ -14,7 +14,7 @@ import {
   liqBarOpen,
   signalTimestamp,
 } from "../../lib/betTiming";
-import styles from "./SimulationPanel.module.css";
+import styles from "./LiveTradePanel.module.css";
 
 const MAX_ROWS = 150;
 
@@ -26,25 +26,32 @@ function legLabel(side: SimulationSide, leg: number): string {
   return `${side === "long" ? "L" : "S"}${leg}`;
 }
 
-export function SimulationPanel() {
+function formatThreshold(thresholds: Record<string, number> | undefined): string {
+  if (!thresholds) return "";
+  return Object.entries(thresholds)
+    .map(([a, v]) => `${a} $${(v / 1000).toFixed(0)}k`)
+    .join(" · ");
+}
+
+export function LiveTradePanel() {
   const { subscribe, status } = useFeed();
-  const [simStatus, setSimStatus] = useState<SimulationStatus | null>(null);
-  const [rows, setRows] = useState<SimulationBetRow[]>([]);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [rows, setRows] = useState<LiveBetRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     Promise.all([
-      fetch("/simulation/status").then((r) => {
+      fetch("/live/status").then((r) => {
         if (!r.ok) throw new Error(`status ${r.status}`);
-        return r.json() as Promise<SimulationStatus>;
+        return r.json() as Promise<LiveStatus>;
       }),
-      fetch("/simulation/bets?limit=100").then((r) => {
+      fetch("/live/bets?limit=100").then((r) => {
         if (!r.ok) throw new Error(`bets ${r.status}`);
-        return r.json() as Promise<SimulationBetRow[]>;
+        return r.json() as Promise<LiveBetRow[]>;
       }),
     ])
       .then(([s, b]) => {
-        setSimStatus(s);
+        setLiveStatus(s);
         setRows(
           b
             .map((row) => ({
@@ -69,9 +76,9 @@ export function SimulationPanel() {
 
   useEffect(() => {
     return subscribe("*", (msg: FeedMsg) => {
-      if (msg.type === "simulation_bet_open") {
-        const m = msg as SimulationBetOpenMsg;
-        const row: SimulationBetRow = {
+      if (msg.type === "live_bet_open") {
+        const m = msg as LiveBetOpenMsg;
+        const row: LiveBetRow = {
           id: m.bet_id,
           cycle_id: m.cycle_id,
           side: m.side,
@@ -89,11 +96,13 @@ export function SimulationPanel() {
           liq_bar_open: m.liq_bar_open,
           settled_at: null,
           asset: m.asset,
+          order_id: m.order_id,
+          clob_status: m.clob_status,
         };
         setRows((prev) => [row, ...prev.filter((r) => r.id !== row.id)].slice(0, MAX_ROWS));
         refresh();
-      } else if (msg.type === "simulation_bet_settle") {
-        const m = msg as SimulationBetSettleMsg;
+      } else if (msg.type === "live_bet_settle") {
+        const m = msg as LiveBetSettleMsg;
         setRows((prev) =>
           prev.map((r) =>
             r.id === m.bet_id
@@ -108,37 +117,41 @@ export function SimulationPanel() {
         );
         refresh();
       } else if (
-        msg.type === "simulation_signal" ||
-        msg.type === "simulation_cycle_closed"
+        msg.type === "live_signal" ||
+        msg.type === "live_cycle_closed" ||
+        msg.type === "live_order_error"
       ) {
         refresh();
       }
     });
   }, [subscribe, refresh]);
 
-  const pnl = simStatus?.total_pnl_usd ?? 0;
+  const pnl = liveStatus?.total_pnl_usd ?? 0;
   const pnlClass = pnl >= 0 ? styles.pnlPos : styles.pnlNeg;
-  const longStats = simStatus?.by_side?.long;
-  const shortStats = simStatus?.by_side?.short;
+  const longStats = liveStatus?.by_side?.long;
+  const shortStats = liveStatus?.by_side?.short;
+  const ordersOff = liveStatus && !liveStatus.orders_enabled;
 
   return (
     <div className={styles.root}>
-      <div className={`${styles.toolbar} simulationToolbar`}>
-        <span className={styles.title}>Liq → Poly Sim</span>
-        {simStatus && (
+      <div className={`${styles.toolbar} liveTradeToolbar`}>
+        <span className={styles.title}>SOL · DOGE</span>
+        <span className={styles.liveBadge}>LIVE</span>
+        {liveStatus?.thresholds && (
+          <span className={styles.threshold}>
+            {formatThreshold(liveStatus.thresholds)}
+          </span>
+        )}
+        {liveStatus && (
           <>
-            <span className={styles.stat}>
-              Trades{" "}
-              <strong>{simStatus.total_bets + simStatus.open_bets}</strong>
-            </span>
             <span className={styles.stat}>
               PnL <strong className={pnlClass}>${pnl.toFixed(2)}</strong>
             </span>
             <span className={styles.stat}>
-              WR <strong>{simStatus.win_rate.toFixed(0)}%</strong>
+              WR <strong>{liveStatus.win_rate.toFixed(0)}%</strong>
             </span>
             <span className={styles.stat}>
-              Open <strong>{simStatus.open_bets}</strong>
+              Open <strong>{liveStatus.open_bets}</strong>
             </span>
             {longStats && (
               <span className={styles.stat}>
@@ -152,6 +165,11 @@ export function SimulationPanel() {
             )}
           </>
         )}
+        {ordersOff && (
+          <span className={styles.ordersOff} title="LIVE_ENABLED=false or missing API creds">
+            orders off
+          </span>
+        )}
         <span className={`${styles.status} ${styles[status]}`}>{status}</span>
         {loadError && (
           <span className={styles.loadError} title={loadError}>
@@ -164,8 +182,8 @@ export function SimulationPanel() {
         {rows.length === 0 ? (
           <p className={styles.empty}>
             {loadError
-              ? `Cannot load sim (${loadError}). Run frontend on :3000 with backend :8000.`
-              : "Waiting for 15m bar liq ≥ threshold (long→UP, short→DN). Chart liquidations on 3m/other intervals do not trigger sim."}
+              ? `Cannot load live (${loadError}). Run frontend :3000 + backend :8000.`
+              : "SOL & DOGE 15m liq ≥ $200k → real Polymarket UP/DN. Sim panel runs in parallel at lower thresholds."}
           </p>
         ) : (
           rows.map((r) => {
@@ -204,11 +222,14 @@ export function SimulationPanel() {
                     </span>
                   )}
                 </span>
+                <span className={styles.orderId} title={r.order_id ?? ""}>
+                  {r.order_id ? r.order_id.slice(0, 8) : "—"}
+                </span>
                 <span
                   className={styles.timeBlock}
                   title={
                     r.leg > 1
-                      ? `${betTimeTooltip(r)} · leg ${r.leg}`
+                      ? `${betTimeTooltip(r)} · leg ${r.leg} · order ${r.order_id ?? "—"}`
                       : betTimeTooltip(r)
                   }
                 >

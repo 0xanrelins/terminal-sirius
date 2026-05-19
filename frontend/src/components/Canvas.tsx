@@ -12,12 +12,14 @@ import type {
 } from "../types";
 import { AddWidgetModal } from "./AddWidgetModal";
 import { CandlestickChart } from "./widgets/CandlestickChart";
+import { normalizeComparisonSymbols } from "../lib/chartConfig";
 import { ComparisonChart } from "./widgets/ComparisonChart";
 import {
   DEFAULT_MIN_NOTIONAL,
   LiquidationSignals,
   normalizeLiqCoins,
 } from "./widgets/LiquidationSignals";
+import { LiveTradePanel } from "./widgets/LiveTradePanel";
 import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
 import { PriceTicker } from "./widgets/PriceTicker";
@@ -34,7 +36,7 @@ type Props = {
 function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isChart = type === "candlestick_chart" || type === "comparison_chart";
   const isLiq = type === "liquidation_signals";
-  const isSim = type === "simulation_panel";
+  const isSim = type === "simulation_panel" || type === "live_trade_panel";
   const w = isChart ? 14 : isLiq || isSim ? 8 : 5;
   const h = isChart ? 9 : isLiq ? 8 : isSim ? 10 : type === "polymarket_ticker" ? 4 : 3;
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
@@ -43,6 +45,7 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
 function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
   if (cfg.type === "simulation_panel") return "Liq→Poly Sim";
+  if (cfg.type === "live_trade_panel") return "Live Trade";
   if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
@@ -80,6 +83,7 @@ function renderWidget(
       return (
         <ComparisonChart
           interval={cmpCfg.interval}
+          symbols={normalizeComparisonSymbols(cmpCfg.symbols)}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
@@ -104,6 +108,8 @@ function renderWidget(
     }
     case "simulation_panel":
       return <SimulationPanel />;
+    case "live_trade_panel":
+      return <LiveTradePanel />;
     default:
       return null;
   }

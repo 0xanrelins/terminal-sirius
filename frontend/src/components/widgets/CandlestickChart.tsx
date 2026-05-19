@@ -17,11 +17,13 @@ import {
   CHART_SYMBOLS,
   DEFAULT_EMA_PERIOD,
   DEFAULT_LIQ_THRESHOLD,
+  DEFAULT_ROLLING_VWAP_PERIOD,
   DEFAULT_VWAP_PERIOD,
   INDICATOR_PRESETS,
   clampInitialBars,
   getEmaPeriod,
   getLiqThreshold,
+  getRollingVwapPeriod,
   getVwapPeriod,
   type IndicatorPreset,
   indicatorLineColor,
@@ -30,7 +32,13 @@ import {
   symbolShort,
 } from "../../lib/chartConfig";
 import { barOpenTime, currentBarBucket } from "../../lib/barTime";
-import { calculateEMA, calculateVWAP, type OhlcvBar } from "../../lib/chartIndicators";
+import {
+  calculateEMA,
+  calculateSessionVWAPSegments,
+  calculateVWAP,
+  isAnchoredVwapType,
+  type OhlcvBar,
+} from "../../lib/chartIndicators";
 import type {
   ChartIndicator,
   Kline,
@@ -71,6 +79,12 @@ const LIQ_MUTED_COLOR = "#4a4a55";
 type OpenMenu = "symbol" | "interval" | "indicators" | null;
 
 type LiqBucket = { long: number; short: number };
+
+const VWAP_SEG = ":seg:";
+
+function vwapSegmentKey(baseId: string, index: number): string {
+  return `${baseId}${VWAP_SEG}${index}`;
+}
 
 function liqHistColor(long: number, short: number, threshold: number): string {
   const total = long + short;
@@ -188,16 +202,26 @@ function mergeOhlcvBars(existing: OhlcvBar[], older: OhlcvBar[]): OhlcvBar[] {
 function lineDataForIndicator(
   ind: ChartIndicator,
   candles: CandlestickData<UTCTimestamp>[],
-  ohlcv: OhlcvBar[]
+  ohlcv: OhlcvBar[],
+  chartInterval: string
 ) {
   if (ind.type === "ema") return calculateEMA(candles, ind.period);
-  if (ind.type === "vwap") return calculateVWAP(ohlcv, ind.period);
+  if (ind.type === "rolling_vwap") return calculateVWAP(ohlcv, ind.period);
   return [];
+}
+
+function anchoredVwapSegments(
+  ohlcv: OhlcvBar[],
+  period: number,
+  chartInterval: string
+) {
+  return calculateSessionVWAPSegments(ohlcv, period, chartInterval);
 }
 
 function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   let ema: ChartIndicator | null = null;
   let vwap: ChartIndicator | null = null;
+  let rollingVwap: ChartIndicator | null = null;
   let liquidations: ChartIndicator | null = null;
 
   for (const ind of raw) {
@@ -218,6 +242,26 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
       vwap = { id: "vwap", type: "vwap", period: Math.max(1, period) };
       continue;
     }
+    if (t === "session_vwap") {
+      const period =
+        "period" in ind && typeof ind.period === "number"
+          ? ind.period
+          : DEFAULT_VWAP_PERIOD;
+      vwap = { id: "vwap", type: "vwap", period: Math.max(1, period) };
+      continue;
+    }
+    if (t === "rolling_vwap") {
+      const period =
+        "period" in ind && typeof ind.period === "number"
+          ? ind.period
+          : DEFAULT_ROLLING_VWAP_PERIOD;
+      rollingVwap = {
+        id: "rolling_vwap",
+        type: "rolling_vwap",
+        period: Math.max(1, period),
+      };
+      continue;
+    }
     if (t === "ema" || t === "sma") {
       let period =
         "period" in ind && typeof ind.period === "number"
@@ -235,6 +279,7 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   const out: ChartIndicator[] = [];
   if (ema) out.push(ema);
   if (vwap) out.push(vwap);
+  if (rollingVwap) out.push(rollingVwap);
   if (liquidations) out.push(liquidations);
   return out;
 }
@@ -268,9 +313,11 @@ export function CandlestickChart({
   const hasEma = indicators.some((i) => i.type === "ema");
   const hasLiquidations = indicators.some((i) => i.type === "liquidations");
   const hasVwap = indicators.some((i) => i.type === "vwap");
+  const hasRollingVwap = indicators.some((i) => i.type === "rolling_vwap");
   const emaPeriod = getEmaPeriod(indicators);
   const liqThreshold = getLiqThreshold(indicators);
   const vwapPeriod = getVwapPeriod(indicators);
+  const rollingVwapPeriod = getRollingVwapPeriod(indicators);
 
   const pushLiqToSeries = useCallback(() => {
     const threshold = getLiqThreshold(indicatorsRef.current);
@@ -320,50 +367,92 @@ export function CandlestickChart({
     [pushLiqToSeries]
   );
 
-  const refreshMaSeries = useCallback(() => {
-    const ohlcv = ohlcvBarsRef.current;
-    const candles = toCandles(ohlcv);
-    indicatorsRef.current.forEach((ind) => {
-      const line = maSeriesRef.current.get(ind.id);
-      if (!line || (ind.type !== "ema" && ind.type !== "vwap")) return;
-      line.setData(lineDataForIndicator(ind, candles, ohlcv));
-    });
-  }, []);
+  const applyMaIndicator = useCallback(
+    (
+      chart: IChartApi,
+      ind: ChartIndicator,
+      ohlcv: OhlcvBar[],
+      candles: CandlestickData<UTCTimestamp>[],
+      activeKeys: Set<string>
+    ) => {
+      const prev = maSeriesRef.current;
+      const color = indicatorLineColor(ind.type);
+
+      if (isAnchoredVwapType(ind.type)) {
+        const segments = anchoredVwapSegments(ohlcv, ind.period, interval);
+        segments.forEach((data, segIdx) => {
+          const key = vwapSegmentKey(ind.id, segIdx);
+          activeKeys.add(key);
+          let line = prev.get(key);
+          if (!line) {
+            line = chart.addSeries(LineSeries, {
+              color,
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+            prev.set(key, line);
+          } else {
+            line.applyOptions({ color });
+          }
+          line.setData(data);
+        });
+        return;
+      }
+
+      if (ind.type !== "ema" && ind.type !== "rolling_vwap") return;
+
+      activeKeys.add(ind.id);
+      let line = prev.get(ind.id);
+      if (!line) {
+        line = chart.addSeries(LineSeries, {
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        prev.set(ind.id, line);
+      } else {
+        line.applyOptions({ color });
+      }
+      line.setData(lineDataForIndicator(ind, candles, ohlcv, interval));
+    },
+    [interval]
+  );
 
   const syncMaSeries = useCallback(
     (chart: IChartApi, next: ChartIndicator[]) => {
       const prev = maSeriesRef.current;
-      const nextIds = new Set(next.map((i) => i.id));
       const ohlcv = ohlcvBarsRef.current;
       const candles = toCandles(ohlcv);
-
-      for (const [id, line] of prev) {
-        if (!nextIds.has(id)) {
-          chart.removeSeries(line);
-          prev.delete(id);
-        }
-      }
+      const activeKeys = new Set<string>();
 
       next.forEach((ind) => {
-        if (ind.type !== "ema" && ind.type !== "vwap") return;
-        const color = indicatorLineColor(ind.type);
-        let line = prev.get(ind.id);
-        if (!line) {
-          line = chart.addSeries(LineSeries, {
-            color,
-            lineWidth: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-          });
-          prev.set(ind.id, line);
-        } else {
-          line.applyOptions({ color });
+        if (
+          ind.type !== "ema" &&
+          ind.type !== "vwap" &&
+          ind.type !== "session_vwap" &&
+          ind.type !== "rolling_vwap"
+        ) {
+          return;
         }
-        line.setData(lineDataForIndicator(ind, candles, ohlcv));
+        applyMaIndicator(chart, ind, ohlcv, candles, activeKeys);
       });
+
+      for (const [key, line] of prev) {
+        if (activeKeys.has(key)) continue;
+        chart.removeSeries(line);
+        prev.delete(key);
+      }
     },
-    []
+    [applyMaIndicator]
   );
+
+  const refreshMaSeries = useCallback(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    syncMaSeries(chart, indicatorsRef.current);
+  }, [syncMaSeries]);
 
   const setOhlcvData = useCallback(
     (data: OhlcvBar[]) => {
@@ -678,7 +767,9 @@ export function CandlestickChart({
         ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
         : preset.type === "vwap"
           ? { id, type: "vwap", period: preset.period }
-          : { id, type: "ema", period: preset.period };
+          : preset.type === "rolling_vwap"
+            ? { id, type: "rolling_vwap", period: preset.period }
+            : { id, type: "ema", period: preset.period };
     onConfigChange({ indicators: [...indicators, added] });
   };
 
@@ -696,6 +787,15 @@ export function CandlestickChart({
     onConfigChange({
       indicators: indicators.map((i) =>
         i.type === "vwap" ? { ...i, period: next } : i
+      ),
+    });
+  };
+
+  const setRollingVwapPeriod = (value: number) => {
+    const next = Math.max(1, Math.floor(value) || DEFAULT_ROLLING_VWAP_PERIOD);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "rolling_vwap" ? { ...i, period: next } : i
       ),
     });
   };
@@ -828,7 +928,7 @@ export function CandlestickChart({
               )}
               {hasVwap && (
                 <div className={styles.thresholdRow}>
-                  <span className={styles.thresholdLabel}>VWAP period (bars)</span>
+                  <span className={styles.thresholdLabel}>VWAP session (bars)</span>
                   <input
                     type="number"
                     className={styles.thresholdInput}
@@ -837,6 +937,24 @@ export function CandlestickChart({
                     value={vwapPeriod}
                     onClick={stopMenuClick}
                     onChange={(e) => setVwapPeriod(Number(e.target.value) || DEFAULT_VWAP_PERIOD)}
+                  />
+                </div>
+              )}
+              {hasRollingVwap && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>Rolling VWAP period (bars)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={1}
+                    step={1}
+                    value={rollingVwapPeriod}
+                    onClick={stopMenuClick}
+                    onChange={(e) =>
+                      setRollingVwapPeriod(
+                        Number(e.target.value) || DEFAULT_ROLLING_VWAP_PERIOD
+                      )
+                    }
                   />
                 </div>
               )}

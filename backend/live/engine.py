@@ -1,5 +1,5 @@
 """
-Liquidation bar-aggregate → Polymarket UP/DOWN paper simulation engine.
+Liquidation bar-aggregate → Polymarket UP/DOWN live trading engine.
 """
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ from dataclasses import dataclass
 
 import db
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket import orders
 from adapters.polymarket.rolling import WINDOW_SEC, slug_for_series
 from klines import fetch_klines
 from liquidations import fetch_liquidation_bars, get_memory_bars
-from simulation import config
-from simulation.config import Side
+from live import config
+from live.config import Side
 from simulation.pricing import resolve_entry_price
 from simulation.sizing import (
     compute_bet,
@@ -34,6 +35,7 @@ class _OpenBet:
     entry_price: float
     shares: float
     cost_usd: float
+    order_id: str | None
 
 
 def _bet_key(binance_symbol: str, side: Side, candle_open: int) -> tuple[str, str, int]:
@@ -54,8 +56,9 @@ def _candle_won(side: Side, open_p: float, close_p: float) -> bool:
     return close_p < open_p
 
 
-class SimulationEngine:
+class LiveTradingEngine:
     def __init__(self) -> None:
+        self._assets = config.active_assets()
         self._thresholds = config.thresholds()
         self._min_usd = config.min_usd()
         self._min_shares_default = config.min_shares_default()
@@ -68,34 +71,14 @@ class SimulationEngine:
         self._loaded = False
         self._bars_synced = False
 
-    async def reset_history(self) -> dict[str, int]:
-        """Clear DB sim history and in-memory cycles, bets, and signal dedupe."""
-        counts = await db.clear_simulation_history()
-        self._bar_long.clear()
-        self._bar_short.clear()
-        self._signaled.clear()
-        self._poly_yes.clear()
-        self._active_cycle.clear()
-        self._open_bets.clear()
-        self._loaded = False
-        self._bars_synced = False
-        self._thresholds = config.thresholds()
-        self._min_usd = config.min_usd()
-        self._min_shares_default = config.min_shares_default()
-        print(
-            f"[simulation] history cleared "
-            f"({counts['bets_deleted']} bets, {counts['cycles_deleted']} cycles)"
-        )
-        return counts
-
     async def load_state(self) -> None:
         if self._loaded:
             return
-        cycles = await db.get_open_simulation_cycles()
+        cycles = await db.get_open_live_cycles()
         for c in cycles:
             side = c.get("side") or "long"
             self._active_cycle[_cycle_key(c["asset"], side)] = int(c["id"])
-        bets = await db.get_open_bets_for_cycles()
+        bets = await db.get_open_live_bets_for_cycles()
         for b in bets:
             side = b.get("side") or "long"
             key = _bet_key(b["binance_symbol"], side, int(b["candle_open"]))
@@ -111,30 +94,36 @@ class SimulationEngine:
                 entry_price=float(b["entry_price"]),
                 shares=float(b["shares"]),
                 cost_usd=float(b["cost_usd"]),
+                order_id=b.get("order_id"),
             )
         self._loaded = True
-        print(f"[simulation] restored {len(cycles)} cycle(s), {len(bets)} open bet(s)")
+        print(f"[live] restored {len(cycles)} cycle(s), {len(bets)} open bet(s)")
         missed = await self.reconcile_settlements()
         if missed:
-            print(f"[simulation] startup: {len(missed)} missed settlement(s) applied")
+            print(f"[live] startup: {len(missed)} missed settlement(s) applied")
 
     async def sync_bars_from_store(self) -> list[dict]:
-        """Seed in-memory 15m totals from DB+memory and fire signals if already over threshold."""
         if self._bars_synced:
             return []
         self._bars_synced = True
         await self.load_state()
         events = await self.reconcile_all_bars()
         if events:
-            print(f"[simulation] sync: {len(events)} event(s) from stored 15m bars")
+            print(f"[live] sync: {len(events)} event(s) from stored 15m bars")
         return events
 
+    def clear_signal_cache(self) -> None:
+        """Drop in-memory per-bar signal keys (e.g. after dry-run or missed order)."""
+        n = len(self._signaled)
+        self._signaled.clear()
+        if n:
+            print(f"[live] cleared {n} signal cache key(s)")
+
     async def reconcile_all_bars(self) -> list[dict]:
-        """Re-read authoritative 15m totals and emit any missing signals."""
         await self.load_state()
         events: list[dict] = []
         signal_ts = int(time.time())
-        for asset, meta in config.ASSETS.items():
+        for asset, meta in self._assets.items():
             symbol = meta["binance_symbol"]
             bars = await fetch_liquidation_bars(symbol, "15m", limit=1)
             if not bars:
@@ -166,7 +155,6 @@ class SimulationEngine:
     async def _reconcile_15m_bar(
         self, symbol: str, bar_open: int
     ) -> tuple[float, float]:
-        """Match chart/API totals: engine deltas + liquidation buckets + DB."""
         lk = (symbol, bar_open)
         long_t = self._bar_long.get(lk, 0.0)
         short_t = self._bar_short.get(lk, 0.0)
@@ -199,6 +187,8 @@ class SimulationEngine:
         series = msg.get("series")
         if not series or series not in config.SERIES_TO_ASSET:
             return []
+        if series not in {v["poly_series"] for v in self._assets.values()}:
+            return []
         price = float(msg.get("yes_price") or 0)
         if price > 0:
             self._poly_yes[series] = price
@@ -208,30 +198,29 @@ class SimulationEngine:
         symbol = msg.get("symbol")
         if not symbol or symbol not in config.BINANCE_TO_ASSET:
             return []
-
         asset = config.BINANCE_TO_ASSET[symbol]
+        if asset not in self._assets:
+            return []
+
         updates = msg.get("_updates") or []
         events: list[dict] = []
         signal_ts = int(msg.get("time") or time.time())
-
         touched: set[int] = set()
         for u in updates:
             if u.get("interval") != "15m":
                 continue
             bar_open = int(u["time"])
             touched.add(bar_open)
+            lk = (symbol, bar_open)
             long_delta = float(u.get("long_delta") or 0)
             short_delta = float(u.get("short_delta") or 0)
-            lk = (symbol, bar_open)
             if long_delta > 0:
                 self._bar_long[lk] = self._bar_long.get(lk, 0.0) + long_delta
             if short_delta > 0:
                 self._bar_short[lk] = self._bar_short.get(lk, 0.0) + short_delta
 
         for bar_open in touched:
-            long_total, short_total = await self._reconcile_15m_bar(
-                symbol, bar_open
-            )
+            long_total, short_total = await self._reconcile_15m_bar(symbol, bar_open)
             if long_total > 0:
                 events.extend(
                     await self._maybe_fire_signal(
@@ -254,7 +243,6 @@ class SimulationEngine:
                         signal_ts=signal_ts,
                     )
                 )
-
         return events
 
     async def _maybe_fire_signal(
@@ -267,7 +255,7 @@ class SimulationEngine:
         total: float,
         signal_ts: int,
     ) -> list[dict]:
-        threshold = self._thresholds.get(asset, config.DEFAULT_THRESHOLDS[asset])
+        threshold = self._thresholds.get(asset, config.DEFAULT_THRESHOLDS.get(asset, 0))
         sk = _signal_key(symbol, bar_open, side)
         if (
             total < threshold
@@ -277,6 +265,32 @@ class SimulationEngine:
             return []
 
         target_open = config.bet_window_open(bar_open)
+
+        if not orders.can_place_orders():
+            # Do not mark _signaled — allow retry when creds/enabled later
+            side_label = "long" if side == "long" else "short"
+            print(
+                f"[live] signal (dry) {asset} {side_label} bar {bar_open} "
+                f"${total:,.0f}≥${threshold:,.0f} — orders disabled"
+            )
+            evt: dict = {
+                "type": "live_signal",
+                "side": side,
+                "asset": asset,
+                "binance_symbol": symbol,
+                "poly_series": self._assets[asset]["poly_series"],
+                "signal_time": signal_ts,
+                "threshold": threshold,
+                "liq_bar_open": bar_open,
+                "target_candle_open": target_open,
+                "dry_run": True,
+            }
+            if side == "long":
+                evt["signal_long_notional"] = total
+            else:
+                evt["signal_short_notional"] = total
+            return [evt]
+
         evs = await self._open_bet(
             side=side,
             asset=asset,
@@ -293,22 +307,19 @@ class SimulationEngine:
         else:
             side_label = "long" if side == "long" else "short"
             print(
-                f"[simulation] {side_label} signal {asset} bar {bar_open} "
+                f"[live] {side_label} signal {asset} bar {bar_open} "
                 f"${total:,.0f}≥${threshold:,.0f} — bet not opened"
             )
         return evs
 
     async def reconcile_settlements(self) -> list[dict]:
-        """Settle open bets whose Binance 15m window ended (e.g. missed on restart)."""
         await self.load_state()
         events: list[dict] = []
         now = int(time.time())
-
         for bet in list(self._open_bets.values()):
             bar_open = bet.candle_open
             if now < bar_open + WINDOW_SEC:
                 continue
-
             bars = await fetch_klines(
                 bet.binance_symbol,
                 "15m",
@@ -318,7 +329,6 @@ class SimulationEngine:
             target = next((b for b in bars if int(b["time"]) == bar_open), None)
             if not target:
                 continue
-
             events.extend(
                 await self._settle_bet(
                     bet,
@@ -327,7 +337,6 @@ class SimulationEngine:
                     float(target["close"]),
                 )
             )
-
         return events
 
     async def _settle_bet(
@@ -345,7 +354,7 @@ class SimulationEngine:
         settled_at = int(time.time())
         outcome = "win" if won else "loss"
         pnl = pnl_for_outcome(bet.shares, bet.cost_usd, won)
-        await db.settle_simulation_bet(bet.bet_id, outcome, pnl, settled_at)
+        await db.settle_live_bet(bet.bet_id, outcome, pnl, settled_at)
         del self._open_bets[key]
 
         events: list[dict] = [
@@ -365,20 +374,20 @@ class SimulationEngine:
             )
             events.extend(evs)
             if not evs:
-                await db.close_simulation_cycle(bet.cycle_id)
+                await db.close_live_cycle(bet.cycle_id)
                 self._active_cycle.pop(ck, None)
         else:
-            await db.close_simulation_cycle(bet.cycle_id)
+            await db.close_live_cycle(bet.cycle_id)
             self._active_cycle.pop(ck, None)
             events.append({
-                "type": "simulation_cycle_closed",
+                "type": "live_cycle_closed",
                 "cycle_id": bet.cycle_id,
                 "asset": bet.asset,
                 "side": bet.side,
             })
 
         print(
-            f"[simulation] settle {bet.asset} {bet.side} leg{bet.leg} "
+            f"[live] settle {bet.asset} {bet.side} leg{bet.leg} "
             f"{outcome} pnl=${pnl:.2f} bar O={o} C={c}"
         )
         return events
@@ -387,18 +396,19 @@ class SimulationEngine:
         symbol = msg.get("symbol")
         if not symbol or symbol not in config.BINANCE_TO_ASSET:
             return []
+        asset = config.BINANCE_TO_ASSET[symbol]
+        if asset not in self._assets:
+            return []
 
         bar_open = int(msg.get("time") or 0)
         o, c = float(msg["open"]), float(msg["close"])
         events: list[dict] = []
-
         for side in config.SIDES:
             key = _bet_key(symbol, side, bar_open)
             bet = self._open_bets.get(key)
             if not bet:
                 continue
             events.extend(await self._settle_bet(bet, bar_open, o, c))
-
         return events
 
     async def _open_bet(
@@ -415,7 +425,7 @@ class SimulationEngine:
         cycle_id: int | None = None,
         liq_bar_open: int | None = None,
     ) -> list[dict]:
-        meta = config.ASSETS[asset]
+        meta = self._assets[asset]
         series = meta["poly_series"]
         slug = slug_for_series(series, ts=candle_open)
         opened_at = int(time.time())
@@ -423,8 +433,8 @@ class SimulationEngine:
         quote = await resolve_entry_price(slug, side)
         if quote is None:
             print(
-                f"[simulation] skip {asset} {side} leg{leg}: "
-                f"no real price for {slug!r} (CLOB ask or non-placeholder Gamma)"
+                f"[live] skip {asset} {side} leg{leg}: "
+                f"no real price for {slug!r}"
             )
             return []
 
@@ -432,27 +442,63 @@ class SimulationEngine:
         yes_price = quote.yes_price
         price_source = quote.source
 
+        token_id: str | None = None
         min_shares = self._min_shares_default
         try:
             info = await get_token_ids(slug)
             if info:
                 token = info.get("yes") if side == "long" else info.get("no")
                 if token:
+                    token_id = str(token)
                     min_shares = await fetch_min_order_size(
-                        token, self._min_shares_default
+                        token_id, self._min_shares_default
                     )
         except Exception:
             pass
 
+        if not token_id:
+            print(f"[live] skip {asset} {side} leg{leg}: no token for {slug!r}")
+            return []
+
         try:
             shares, cost_usd = compute_bet(entry_price, min_shares, self._min_usd)
         except ValueError as e:
-            print(f"[simulation] sizing error {asset} {side}: {e}")
+            print(f"[live] sizing error {asset} {side}: {e}")
             return []
+
+        order_id: str | None = None
+        clob_status: str | None = None
+        fill_price: float | None = None
+
+        if not orders.can_place_orders():
+            return []
+
+        try:
+            order = await orders.place_market_buy(token_id, cost_usd)
+            order_id = order.order_id or None
+            clob_status = order.clob_status
+            fill_price = order.fill_price
+            if order.shares:
+                shares = order.shares
+            if order.cost_usd:
+                cost_usd = order.cost_usd
+            if fill_price and fill_price > 0:
+                entry_price = fill_price
+        except Exception as e:
+            err = str(e)
+            print(f"[live-order] failed {asset} {side} leg{leg} {slug}: {err}")
+            return [{
+                "type": "live_order_error",
+                "asset": asset,
+                "side": side,
+                "leg": leg,
+                "poly_slug": slug,
+                "error": err,
+            }]
 
         ck = _cycle_key(asset, side)
         if cycle_id is None:
-            cycle_id = await db.create_simulation_cycle(
+            cycle_id = await db.create_live_cycle(
                 asset=asset,
                 binance_symbol=binance_symbol,
                 poly_series=series,
@@ -464,7 +510,7 @@ class SimulationEngine:
             )
             self._active_cycle[ck] = cycle_id
 
-        bet_id = await db.insert_simulation_bet(
+        bet_id = await db.insert_live_bet(
             cycle_id=cycle_id,
             leg=leg,
             side=side,
@@ -475,6 +521,9 @@ class SimulationEngine:
             shares=shares,
             cost_usd=cost_usd,
             opened_at=opened_at,
+            order_id=order_id,
+            clob_status=clob_status,
+            fill_price=fill_price,
         )
 
         bkey = _bet_key(binance_symbol, side, candle_open)
@@ -490,13 +539,14 @@ class SimulationEngine:
             entry_price=entry_price,
             shares=shares,
             cost_usd=cost_usd,
+            order_id=order_id,
         )
 
         direction = "UP" if side == "long" else "DN"
         events: list[dict] = []
         if leg == 1:
             sig_evt: dict = {
-                "type": "simulation_signal",
+                "type": "live_signal",
                 "side": side,
                 "asset": asset,
                 "cycle_id": cycle_id,
@@ -506,6 +556,7 @@ class SimulationEngine:
                 "liq_bar_open": liq_bar_open or (candle_open - WINDOW_SEC),
                 "threshold": threshold,
                 "target_candle_open": candle_open,
+                "dry_run": False,
             }
             if side == "long":
                 sig_evt["signal_long_notional"] = signal_notional
@@ -514,7 +565,7 @@ class SimulationEngine:
             events.append(sig_evt)
 
         events.append({
-            "type": "simulation_bet_open",
+            "type": "live_bet_open",
             "bet_id": bet_id,
             "cycle_id": cycle_id,
             "side": side,
@@ -532,12 +583,14 @@ class SimulationEngine:
             "opened_at": opened_at,
             "signal_time": signal_time or opened_at,
             "liq_bar_open": liq_bar_open or (candle_open - WINDOW_SEC),
+            "order_id": order_id,
+            "clob_status": clob_status,
         })
         up_s = f"{yes_price:.3f}" if yes_price is not None else "?"
         print(
-            f"[simulation] {asset} {side} leg{leg} {direction} @ {entry_price:.3f} "
+            f"[live] {asset} {side} leg{leg} {direction} @ {entry_price:.3f} "
             f"(UP {up_s} via {price_source}) {shares:.0f} sh ${cost_usd:.2f} "
-            f"slug={slug}"
+            f"slug={slug} order={order_id}"
         )
         return events
 
@@ -553,7 +606,7 @@ class SimulationEngine:
     ) -> dict:
         green = bar_close >= bar_open
         return {
-            "type": "simulation_bet_settle",
+            "type": "live_bet_settle",
             "bet_id": bet.bet_id,
             "cycle_id": bet.cycle_id,
             "side": bet.side,
@@ -567,4 +620,5 @@ class SimulationEngine:
             "bar_close": bar_close,
             "candle_green": green,
             "settled_at": settled_at,
+            "order_id": bet.order_id,
         }

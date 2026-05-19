@@ -69,6 +69,8 @@ Başlat:
 uvicorn main:app --reload --port 8000
 ```
 
+**Likidasyon ham arşiv (uvicorn gerekmez):** Binance `!forceOrder@arr` → NDJSON (`backend/scripts/record_binance_liquidations.py`), isteğe bağlı Postgres aynası ve NDJSON→DB import (`backend/scripts/import_liquidation_ndjson.py`). Komutlar ve env anahtarları için [BASLAT.md](BASLAT.md) içindeki “Likidasyon ham kayıt” bölümüne bak.
+
 ### 3. Frontend
 
 ```bash

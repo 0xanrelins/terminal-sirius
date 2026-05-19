@@ -65,6 +65,7 @@ export type SimulationSignalMsg = {
   signal_long_notional?: number;
   signal_short_notional?: number;
   threshold: number;
+  liq_bar_open?: number;
   target_candle_open: number;
 };
 
@@ -84,6 +85,7 @@ export type SimulationBetOpenMsg = {
   cost_usd: number;
   opened_at: number;
   signal_time?: number;
+  liq_bar_open?: number;
 };
 
 export type SimulationBetSettleMsg = {
@@ -114,6 +116,82 @@ export type SimulationMsg =
   | SimulationBetSettleMsg
   | SimulationCycleClosedMsg;
 
+export type LiveSignalMsg = {
+  type: "live_signal";
+  side: SimulationSide;
+  asset: string;
+  cycle_id?: number;
+  binance_symbol: string;
+  poly_series: string;
+  signal_time: number;
+  signal_long_notional?: number;
+  signal_short_notional?: number;
+  threshold: number;
+  liq_bar_open?: number;
+  target_candle_open: number;
+  dry_run?: boolean;
+};
+
+export type LiveBetOpenMsg = {
+  type: "live_bet_open";
+  bet_id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  asset: string;
+  leg: number;
+  binance_symbol: string;
+  poly_series: string;
+  poly_slug: string;
+  candle_open: number;
+  entry_price: number;
+  shares: number;
+  cost_usd: number;
+  opened_at: number;
+  signal_time?: number;
+  liq_bar_open?: number;
+  order_id?: string | null;
+  clob_status?: string | null;
+};
+
+export type LiveBetSettleMsg = {
+  type: "live_bet_settle";
+  bet_id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  asset: string;
+  leg: number;
+  candle_open: number;
+  outcome: "win" | "loss";
+  pnl_usd: number;
+  won: boolean;
+  candle_green: boolean;
+  settled_at: number;
+  order_id?: string | null;
+};
+
+export type LiveCycleClosedMsg = {
+  type: "live_cycle_closed";
+  cycle_id: number;
+  asset: string;
+  side: SimulationSide;
+};
+
+export type LiveOrderErrorMsg = {
+  type: "live_order_error";
+  asset: string;
+  side: SimulationSide;
+  leg: number;
+  poly_slug: string;
+  error: string;
+};
+
+export type LiveMsg =
+  | LiveSignalMsg
+  | LiveBetOpenMsg
+  | LiveBetSettleMsg
+  | LiveCycleClosedMsg
+  | LiveOrderErrorMsg;
+
 export type SimulationBetRow = {
   id: number;
   cycle_id: number;
@@ -130,6 +208,7 @@ export type SimulationBetRow = {
   opened_at: number;
   settled_at: number | null;
   signal_time: number;
+  liq_bar_open?: number | null;
   asset: string;
 };
 
@@ -157,13 +236,55 @@ export type SimulationStatus = {
   min_shares?: number;
 };
 
+export type LiveBetRow = {
+  id: number;
+  cycle_id: number;
+  side: SimulationSide;
+  leg: number;
+  candle_open: number;
+  poly_slug: string;
+  poly_series: string;
+  entry_price: number;
+  shares: number;
+  cost_usd: number;
+  outcome: string | null;
+  pnl_usd: number | null;
+  opened_at: number;
+  settled_at: number | null;
+  signal_time: number;
+  liq_bar_open?: number | null;
+  asset: string;
+  order_id?: string | null;
+  clob_status?: string | null;
+  fill_price?: number | null;
+};
+
+export type LiveStatus = {
+  total_bets: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_pnl_usd: number;
+  open_bets: number;
+  active_cycles: number;
+  by_side?: Record<string, SimulationSideStats>;
+  enabled?: boolean;
+  orders_enabled?: boolean;
+  credentials_configured?: boolean;
+  thresholds?: Record<string, number>;
+  assets?: string[];
+  min_usd?: number;
+  min_shares?: number;
+};
+
 export type FeedMsg =
   | TradeMsg
   | QuoteMsg
   | BarMsg
   | PolymarketMsg
   | LiquidationMsg
-  | SimulationMsg;
+  | SimulationMsg
+  | LiveMsg;
 
 export type Kline = {
   time: number;
@@ -188,7 +309,8 @@ export type WidgetType =
   | "comparison_chart"
   | "polymarket_ticker"
   | "liquidation_signals"
-  | "simulation_panel";
+  | "simulation_panel"
+  | "live_trade_panel";
 
 export type PriceTickerConfig = {
   id: string;
@@ -204,6 +326,8 @@ export type PriceTickerConfig = {
 export type ChartIndicator =
   | { id: string; type: "ema"; period: number }
   | { id: string; type: "vwap"; period: number }
+  | { id: string; type: "rolling_vwap"; period: number }
+  | { id: string; type: "session_vwap"; period: number }
   | { id: string; type: "liquidations"; threshold?: number };
 
 export type LiquidationBar = {
@@ -226,6 +350,8 @@ export type ComparisonChartConfig = {
   id: string;
   type: "comparison_chart";
   interval: string;
+  /** Feed symbols shown on the chart (subset of COMPARISON_SYMBOLS). */
+  symbols?: string[];
 };
 
 export type PolymarketTickerConfig = {
@@ -260,13 +386,19 @@ export type SimulationPanelConfig = {
   type: "simulation_panel";
 };
 
+export type LiveTradePanelConfig = {
+  id: string;
+  type: "live_trade_panel";
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
   | ComparisonChartConfig
   | PolymarketTickerConfig
   | LiquidationSignalsConfig
-  | SimulationPanelConfig;
+  | SimulationPanelConfig
+  | LiveTradePanelConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

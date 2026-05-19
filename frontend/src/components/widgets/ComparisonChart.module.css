@@ -104,8 +104,23 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 2px 6px;
   font-size: 10px;
+  font-weight: 500;
   color: #888;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.legendItem:hover {
+  background: #1e1e28;
+}
+
+.legendItemOff {
+  color: #555;
 }
 
 .legendDot {
@@ -113,22 +128,6 @@
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-}
-
-.rtBtn {
-  padding: 3px 10px;
-  font-size: 10px;
-  font-weight: 500;
-  color: #c8c8d0;
-  background: #1a1a22;
-  border: 1px solid #2a2a35;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.rtBtn:hover {
-  background: #22222c;
-  border-color: #3a3a48;
 }
 
 .chart {

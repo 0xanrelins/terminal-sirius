@@ -19,9 +19,19 @@
 .title {
   font-size: 10px;
   font-weight: 600;
-  color: #7c6aff;
+  color: #f59e0b;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.liveBadge {
+  font-size: 8px;
+  font-weight: 700;
+  color: #0a0a0c;
+  background: #f59e0b;
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.08em;
 }
 
 .stat {
@@ -32,6 +42,11 @@
 .stat strong {
   color: #e2e2e2;
   font-weight: 600;
+}
+
+.threshold {
+  font-size: 9px;
+  color: #666;
 }
 
 .pnlPos {
@@ -55,6 +70,12 @@
   color: #f87171;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.ordersOff {
+  font-size: 8px;
+  color: #fbbf24;
+  text-transform: uppercase;
 }
 
 .status.open {
@@ -81,7 +102,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: 42px 32px 28px 52px 1fr 56px 76px;
+  grid-template-columns: 42px 32px 28px 52px 1fr 56px 48px 76px;
   gap: 6px;
   align-items: center;
   padding: 5px 8px;
@@ -120,6 +141,14 @@
 
 .meta {
   color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orderId {
+  color: #555;
+  font-size: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

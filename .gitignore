@@ -31,3 +31,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Standalone liquidation recorder output
+backend/data/liq_raw/

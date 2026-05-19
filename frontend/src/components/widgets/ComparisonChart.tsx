@@ -13,6 +13,7 @@ import {
   CHART_INTERVALS,
   COMPARISON_COLORS,
   COMPARISON_SYMBOLS,
+  type ComparisonSymbol,
   symbolShort,
 } from "../../lib/chartConfig";
 import { barOpenTime, currentBarBucket } from "../../lib/barTime";
@@ -25,7 +26,8 @@ import styles from "./ComparisonChart.module.css";
 
 type Props = {
   interval?: string;
-  onConfigChange: (patch: { interval?: string }) => void;
+  symbols: ComparisonSymbol[];
+  onConfigChange: (patch: { interval?: string; symbols?: string[] }) => void;
 };
 
 type RawBar = { time: number; close: number };
@@ -108,6 +110,7 @@ function mergeWithLive(bars: RawBar[], live: RawBar | null): RawBar[] {
 
 export function ComparisonChart({
   interval = "1m",
+  symbols,
   onConfigChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -116,6 +119,7 @@ export function ComparisonChart({
   const rawRef = useRef<Map<string, RawBar[]>>(new Map());
   const liveRef = useRef<Map<string, RawBar | null>>(new Map());
   const baselineRef = useRef<Map<string, number>>(new Map());
+  const enabledSymbolsRef = useRef(new Set<string>(symbols));
   const loadingRef = useRef(false);
   const exhaustedRef = useRef<Set<string>>(new Set());
   const historyReadyRef = useRef(false);
@@ -124,6 +128,8 @@ export function ComparisonChart({
   const [openIntervalMenu, setOpenIntervalMenu] = useState(false);
   const [loading, setLoading] = useState(true);
   const { subscribe } = useFeed();
+  const enabledSet = new Set(symbols);
+  enabledSymbolsRef.current = enabledSet;
 
   // Chart init, history load, infinite scroll, visible rebasing
   useEffect(() => {
@@ -202,6 +208,7 @@ export function ComparisonChart({
       if (!range) return;
 
       for (const sym of COMPARISON_SYMBOLS) {
+        if (!enabledSymbolsRef.current.has(sym)) continue;
         const raw = rawRef.current.get(sym) ?? [];
         const baseline = baselineFromIndex(raw, range.from);
         if (baseline <= 0) continue;
@@ -304,12 +311,16 @@ export function ComparisonChart({
 
         // Seed series so the time scale can scroll, then rebase to visible left edge.
         for (const sym of COMPARISON_SYMBOLS) {
+          const series = seriesRef.current.get(sym);
+          if (!series) continue;
+          series.applyOptions({ visible: enabledSymbolsRef.current.has(sym) });
+          if (!enabledSymbolsRef.current.has(sym)) continue;
           const raw = rawRef.current.get(sym) ?? [];
           const seedIdx = Math.max(0, raw.length - 80);
           const seedBaseline = raw[seedIdx]?.close ?? raw[0]?.close ?? 0;
           if (seedBaseline > 0) {
             baselineRef.current.set(sym, seedBaseline);
-            seriesRef.current.get(sym)?.setData(toPercentLine(raw, seedBaseline));
+            series.setData(toPercentLine(raw, seedBaseline));
           }
         }
 
@@ -370,6 +381,8 @@ export function ComparisonChart({
         sessionBreaksRef.current?.setBoundaries(computeUtcDayBoundaries(bars));
       }
 
+      if (!enabledSymbolsRef.current.has(symbol)) return;
+
       const baseline = baselineRef.current.get(symbol);
       if (!baseline || baseline <= 0) return;
       series.update({
@@ -404,6 +417,23 @@ export function ComparisonChart({
   }, [interval, subscribe]);
 
   useEffect(() => {
+    enabledSymbolsRef.current = new Set(symbols);
+    if (!historyReadyRef.current) return;
+    for (const sym of COMPARISON_SYMBOLS) {
+      const series = seriesRef.current.get(sym);
+      if (!series) continue;
+      const visible = enabledSymbolsRef.current.has(sym);
+      series.applyOptions({ visible });
+      if (!visible) continue;
+      const raw = rawRef.current.get(sym) ?? [];
+      const baseline = baselineRef.current.get(sym);
+      if (baseline && baseline > 0) {
+        series.setData(toPercentLine(raw, baseline));
+      }
+    }
+  }, [symbols]);
+
+  useEffect(() => {
     if (!openIntervalMenu) return;
     const close = () => setOpenIntervalMenu(false);
     window.addEventListener("click", close);
@@ -414,8 +444,15 @@ export function ComparisonChart({
     chartRef.current?.timeScale().scrollToRealTime();
     requestAnimationFrame(() => sessionBreaksRef.current?.refresh());
   };
-
   const stopMenuClick = (e: React.MouseEvent) => e.stopPropagation();
+
+  const toggleSymbol = (sym: ComparisonSymbol) => {
+    const next = enabledSet.has(sym)
+      ? symbols.filter((s) => s !== sym)
+      : [...symbols, sym];
+    if (next.length === 0) return;
+    onConfigChange({ symbols: next });
+  };
 
   return (
     <div className={styles.wrapper}>
@@ -457,20 +494,31 @@ export function ComparisonChart({
         </div>
 
         <div className={styles.legend}>
-          {COMPARISON_SYMBOLS.map((sym) => (
-            <span key={sym} className={styles.legendItem}>
-              <span
-                className={styles.legendDot}
-                style={{ background: COMPARISON_COLORS[sym] }}
-              />
-              {symbolShort(sym).replace("USDT", "")}
-            </span>
-          ))}
+          {COMPARISON_SYMBOLS.map((sym) => {
+            const on = enabledSet.has(sym);
+            const accent = COMPARISON_COLORS[sym];
+            return (
+              <button
+                key={sym}
+                type="button"
+                className={`${styles.legendItem} ${on ? styles.legendItemOn : styles.legendItemOff}`}
+                style={
+                  on
+                    ? { borderColor: accent, color: accent, background: `${accent}18` }
+                    : undefined
+                }
+                onClick={() => toggleSymbol(sym)}
+                aria-pressed={on}
+              >
+                <span
+                  className={styles.legendDot}
+                  style={{ background: accent, opacity: on ? 1 : 0.35 }}
+                />
+                {symbolShort(sym).replace("USDT", "")}
+              </button>
+            );
+          })}
         </div>
-
-        <button type="button" className={styles.rtBtn} onClick={scrollToRealtime}>
-          Go to realtime
-        </button>
       </div>
 
       <div className={styles.chartWrap}>

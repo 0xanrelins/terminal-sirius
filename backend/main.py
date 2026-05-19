@@ -12,6 +12,11 @@ Endpoints:
   GET  /polymarket/markets?q=…        — search Polymarket markets
   POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
+
+Liquidation raw archive:
+  Use `scripts/record_binance_liquidations.py` (no uvicorn) for NDJSON + optional DB.
+  Set PERSIST_LIQUIDATION_EVENTS_TO_DB=0 to skip writing `liquidation_events` here while
+  still updating `liquidation_bars` from the live stream (recorder / import owns events).
 """
 import asyncio
 import json
@@ -21,12 +26,15 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 sys.path.insert(0, ".")
 
 import db
@@ -40,22 +48,28 @@ from liquidations import (
     fetch_liquidation_events,
 )
 from liquidation_stream import run_liquidation_stream
+from live.engine import LiveTradingEngine
 from simulation.engine import SimulationEngine
 
 data_queue: queue.Queue = queue.Queue(maxsize=10_000)
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
 _simulation: SimulationEngine | None = None
+_live: LiveTradingEngine | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _simulation
+    global _simulation, _live
     # DB
     await db.init()
 
     _simulation = SimulationEngine()
     await _simulation.load_state()
     startup_sim = await _simulation.sync_bars_from_store()
+
+    _live = LiveTradingEngine()
+    await _live.load_state()
+    startup_live = await _live.sync_bars_from_store()
 
     # Nautilus (daemon thread — safe to skip if nautilus_trader not installed yet)
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
@@ -71,6 +85,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_liquidation_events_retention_loop())
     if startup_sim:
         asyncio.create_task(_fanout_messages(startup_sim))
+    if startup_live:
+        asyncio.create_task(_fanout_messages(startup_live))
 
     yield
 
@@ -209,6 +225,18 @@ async def simulation_reconcile():
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.post("/simulation/reset")
+async def simulation_reset():
+    """Wipe paper-sim bet/cycle history and reset in-memory engine state."""
+    if _simulation is None:
+        raise HTTPException(status_code=503, detail="Simulation not running")
+    try:
+        counts = await _simulation.reset_history()
+        return {"ok": True, **counts}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 class SimulationConfigBody(BaseModel):
     thresholds: dict[str, float] | None = None
     min_usd: float | None = None
@@ -232,6 +260,82 @@ async def simulation_config(body: SimulationConfigBody):
         _simulation._thresholds = sim_cfg.thresholds()
         _simulation._min_usd = sim_cfg.min_usd()
     return await simulation_status()
+
+
+# ── Live trading ─────────────────────────────────────────────────────────────
+
+@app.get("/live/status")
+async def live_status():
+    try:
+        from live import config as live_cfg
+        from adapters.polymarket import orders as poly_orders
+
+        status = await db.get_live_status()
+        status["enabled"] = live_cfg.is_enabled()
+        status["orders_enabled"] = poly_orders.can_place_orders()
+        status["credentials_configured"] = poly_orders.credentials_configured()
+        status["thresholds"] = live_cfg.thresholds()
+        status["assets"] = list(live_cfg.active_assets().keys())
+        status["min_usd"] = live_cfg.min_usd()
+        status["min_shares"] = live_cfg.min_shares_default()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/live/bets")
+async def live_bets(limit: int = 100):
+    try:
+        return await db.get_live_bets(min(limit, 500))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/live/reconcile")
+async def live_reconcile(reset_signaled: bool = False):
+    if _live is None:
+        raise HTTPException(status_code=503, detail="Live trading not running")
+    try:
+        if reset_signaled:
+            _live.clear_signal_cache()
+        events = await _live.reconcile_all_bars()
+        events += await _live.reconcile_settlements()
+        if events:
+            asyncio.create_task(_fanout_messages(events))
+        return {
+            "events": len(events),
+            "ok": True,
+            "reset_signaled": reset_signaled,
+            "event_types": [e.get("type") for e in events],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class LiveConfigBody(BaseModel):
+    thresholds: dict[str, float] | None = None
+    min_usd: float | None = None
+    enabled: bool | None = None
+
+
+@app.post("/live/config")
+async def live_config(body: LiveConfigBody):
+    import json
+    import os
+
+    if body.thresholds is not None:
+        os.environ["LIVE_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
+    if body.min_usd is not None:
+        os.environ["LIVE_MIN_USD"] = str(body.min_usd)
+    if body.enabled is not None:
+        os.environ["LIVE_ENABLED"] = "true" if body.enabled else "false"
+    if _live is not None:
+        from live import config as live_cfg
+
+        _live._assets = live_cfg.active_assets()
+        _live._thresholds = live_cfg.thresholds()
+        _live._min_usd = live_cfg.min_usd()
+    return await live_status()
 
 
 @app.post("/polymarket/subscribe")
@@ -277,15 +381,16 @@ async def websocket_endpoint(websocket: WebSocket, symbols: Optional[str] = None
 # ── Broadcast + persist loop ──────────────────────────────────────────────────
 
 async def _fanout_messages(messages: list[dict]) -> None:
-    """Push messages to all WS clients (simulation events skip symbol filters)."""
+    """Push messages to all WS clients (sim/live events skip symbol filters)."""
     dead: list[tuple[WebSocket, Optional[set[str]]]] = []
     for out in messages:
         payload = json.dumps(out)
-        is_sim = str(out.get("type", "")).startswith("simulation")
+        mtype = str(out.get("type", ""))
+        is_global = mtype.startswith("simulation") or mtype.startswith("live")
         symbol = out.get("symbol") or out.get("binance_symbol")
         for ws, symbol_filter in _clients:
             if (
-                not is_sim
+                not is_global
                 and symbol_filter
                 and symbol
                 and symbol not in symbol_filter
@@ -324,7 +429,14 @@ async def _broadcast_loop() -> None:
             except Exception as e:
                 print(f"[warn] simulation error: {e}")
 
-        if not _clients and not sim_events:
+        live_events: list[dict] = []
+        if _live is not None:
+            try:
+                live_events = await _live.on_message(msg)
+            except Exception as e:
+                print(f"[warn] live trading error: {e}")
+
+        if not _clients and not sim_events and not live_events:
             continue
 
         outbound: list[dict] = []
@@ -333,14 +445,20 @@ async def _broadcast_loop() -> None:
         else:
             outbound.append(msg)
         outbound.extend(sim_events)
+        outbound.extend(live_events)
 
         await _fanout_messages(outbound)
+
+
+def _persist_liquidation_events_to_db_enabled() -> bool:
+    v = os.environ.get("PERSIST_LIQUIDATION_EVENTS_TO_DB", "1").lower()
+    return v not in ("0", "false", "no", "off")
 
 
 async def _persist_liquidation(msg: dict) -> None:
     try:
         payload = msg.get("_payload")
-        if payload is not None:
+        if payload is not None and _persist_liquidation_events_to_db_enabled():
             from liquidations import force_order_trade_id
 
             trade_id = force_order_trade_id(payload)

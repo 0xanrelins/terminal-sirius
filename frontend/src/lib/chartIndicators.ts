@@ -1,4 +1,5 @@
 import type { CandlestickData, LineData, UTCTimestamp } from "lightweight-charts";
+import { sessionBucketOpen } from "./barTime";
 
 export type OhlcvBar = {
   time: UTCTimestamp;
@@ -65,4 +66,63 @@ export function calculateVWAP(
     }
   }
   return out;
+}
+
+/** Anchored VWAP: UTC session buckets (period × chart interval), one point per bar. */
+export function calculateSessionVWAP(
+  bars: OhlcvBar[],
+  period: number,
+  chartInterval: string
+): LineData<UTCTimestamp>[] {
+  return calculateSessionVWAPSegments(bars, period, chartInterval).flat();
+}
+
+/**
+ * Same as session VWAP but one LineSeries per session so segments never connect across boundaries.
+ */
+export function calculateSessionVWAPSegments(
+  bars: OhlcvBar[],
+  period: number,
+  chartInterval: string
+): LineData<UTCTimestamp>[][] {
+  const p = Math.max(1, Math.floor(period));
+  const segments: LineData<UTCTimestamp>[][] = [];
+  let current: LineData<UTCTimestamp>[] = [];
+
+  let sumPv = 0;
+  let sumV = 0;
+  let currentBucket: number | null = null;
+
+  const flush = () => {
+    if (current.length > 0) {
+      segments.push(current);
+      current = [];
+    }
+  };
+
+  for (const b of bars) {
+    const bucket = sessionBucketOpen(b.time as number, chartInterval, p);
+    if (currentBucket !== null && bucket !== currentBucket) {
+      flush();
+      sumPv = 0;
+      sumV = 0;
+    }
+    currentBucket = bucket;
+
+    const vol = b.volume;
+    if (vol > 0) {
+      const tp = (b.high + b.low + b.close) / 3;
+      sumPv += tp * vol;
+      sumV += vol;
+    }
+    if (sumV > 0) {
+      current.push({ time: b.time, value: sumPv / sumV });
+    }
+  }
+  flush();
+  return segments;
+}
+
+export function isAnchoredVwapType(type: string): boolean {
+  return type === "vwap" || type === "session_vwap";
 }
