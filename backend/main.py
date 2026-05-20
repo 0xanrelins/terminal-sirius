@@ -13,10 +13,9 @@ Endpoints:
   POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
-Liquidation raw archive (default: backend does NOT write raw events):
-  Run `scripts/record_binance_liquidations.py` for NDJSON; use `--postgres` or import for
-  `liquidation_events`. Backend stream still updates `liquidation_bars` + live WS.
-  Set PERSIST_LIQUIDATION_EVENTS_TO_DB=1 only if uvicorn should also mirror raw events.
+Liquidation raw: recorder (NDJSON + Postgres mirror when DATABASE_URL set) fills
+`liquidation_events`; uvicorn keeps PERSIST_LIQUIDATION_EVENTS_TO_DB=0 and only updates
+`liquidation_bars` + live WS from its stream.
 """
 import asyncio
 import json

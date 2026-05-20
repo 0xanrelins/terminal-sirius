@@ -5,11 +5,13 @@ Standalone Binance USDT-M liquidation WebSocket recorder (!forceOrder@arr).
 Runs without uvicorn/Nautilus. Writes NDJSON lines:
   {"received_at": "<ISO8601 UTC>", "raw": <parsed WS JSON>}
 
-Primary raw archive. Optional `--postgres` mirrors into `liquidation_events` (uvicorn does not write raw by default).
+Primary raw archive (NDJSON). When DATABASE_URL is set, also mirrors into
+`liquidation_events` by default so Liq Signals + /liquidation-events work while
+PERSIST_LIQUIDATION_EVENTS_TO_DB=0 on uvicorn. Override with LIQ_RECORDER_POSTGRES=0.
 
 Usage (from repo backend/, venv active):
   python scripts/record_binance_liquidations.py
-  python scripts/record_binance_liquidations.py --postgres
+  python scripts/record_binance_liquidations.py --no-postgres
   python scripts/record_binance_liquidations.py --output-dir /var/log/liq_raw --shard hourly
 """
 from __future__ import annotations
@@ -24,12 +26,14 @@ from pathlib import Path
 
 # Allow `import db` / `import liquidations` when run as script
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _BACKEND_ROOT.parent
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 import websockets
 from dotenv import load_dotenv
 
+load_dotenv(_REPO_ROOT / ".env")
 load_dotenv(_BACKEND_ROOT / ".env")
 
 WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
@@ -68,7 +72,7 @@ async def run_recorder(
 ) -> None:
     if postgres:
         import db
-        from liquidations import force_order_trade_id, maybe_prune_liquidation_events
+        from liquidations import force_order_trade_id
 
         await db.init()
     prune_counter = [0]
@@ -114,7 +118,7 @@ async def run_recorder(
                                 if await db.insert_liquidation_event(tid, item):
                                     prune_counter[0] += 1
                                     if prune_counter[0] % 100 == 0:
-                                        await maybe_prune_liquidation_events()
+                                        await db.maybe_prune_liquidation_events()
             except Exception as e:
                 print(f"[liq-recorder] disconnected: {e}", flush=True)
                 await asyncio.sleep(3)
@@ -145,12 +149,18 @@ def main() -> None:
         default=shard_env,
         help="Log file rotation: one file per UTC day or per UTC hour",
     )
-    env_pg = os.environ.get("LIQ_RECORDER_POSTGRES", "").lower() in ("1", "true", "yes")
+    _pg = os.environ.get("LIQ_RECORDER_POSTGRES", "").strip().lower()
+    if _pg in ("0", "false", "no", "off"):
+        env_pg = False
+    elif _pg in ("1", "true", "yes", "on"):
+        env_pg = True
+    else:
+        env_pg = bool(os.environ.get("DATABASE_URL", "").strip())
     parser.add_argument(
         "--postgres",
         dest="postgres",
         action="store_true",
-        help="Also insert into liquidation_events (needs DATABASE_URL)",
+        help="Insert into liquidation_events (default: on if DATABASE_URL set; else off)",
     )
     parser.add_argument(
         "--no-postgres",
@@ -161,6 +171,11 @@ def main() -> None:
     parser.set_defaults(postgres=env_pg)
     args = parser.parse_args()
     out = Path(args.output_dir).expanduser().resolve()
+
+    if args.postgres:
+        print("[liq-recorder] NDJSON + PostgreSQL liquidation_events", flush=True)
+    else:
+        print("[liq-recorder] NDJSON only (no liquidation_events mirror)", flush=True)
 
     asyncio.run(
         run_recorder(
