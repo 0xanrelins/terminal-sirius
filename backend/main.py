@@ -13,9 +13,9 @@ Endpoints:
   POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
-Liquidation raw: recorder (NDJSON + Postgres mirror when DATABASE_URL set) fills
-`liquidation_events`; uvicorn keeps PERSIST_LIQUIDATION_EVENTS_TO_DB=0 and only updates
-`liquidation_bars` + live WS from its stream.
+Liquidation: single writer via `liquidation_stream` (or Nautilus LiquidationActor) →
+`liquidation_bars` + optional `liquidation_events` / watchlist when
+PERSIST_LIQUIDATION_EVENTS_TO_DB=1 (default). External recorder scripts are not used.
 """
 import asyncio
 import json
@@ -70,21 +70,28 @@ async def lifespan(app: FastAPI):
     await _live.load_state()
     startup_live = await _live.sync_bars_from_store()
 
-    # Nautilus (daemon thread — safe to skip if nautilus_trader not installed yet)
+    # Nautilus (daemon thread — LiquidationActor when available)
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
 
+    nautilus_ok = False
     try:
         run_node_in_thread(data_queue)
+        nautilus_ok = True
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
 
-    asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
+    if not nautilus_ok:
+        asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
+        print("[liquidations] fallback: standalone liquidation_stream (no Nautilus)")
     if _persist_liquidation_events_to_db_enabled():
-        print("[liquidations] raw events: backend → liquidation_events")
+        print(
+            "[liquidations] single writer: stream → bars + liquidation_events "
+            "(watchlist trigger)"
+        )
     else:
         print(
-            "[liquidations] raw events: off (use record_binance_liquidations.py); "
-            "bars + WS from backend stream"
+            "[liquidations] single writer: stream → liquidation_bars + WS only "
+            "(PERSIST_LIQUIDATION_EVENTS_TO_DB=0)"
         )
 
     asyncio.create_task(_broadcast_loop())
@@ -152,7 +159,7 @@ async def liquidation_events_endpoint(
     symbols: Optional[str] = None,
     limit: int = 200,
 ):
-    """Recent major-coin liquidations from `liquidation_watchlist_events` (fed by DB trigger on raw inserts)."""
+    """Recent major-coin liquidations from `liquidation_watchlist_events` (backend stream persist only)."""
     try:
         if symbols:
             sym_tuple = tuple(s.strip() for s in symbols.split(",") if s.strip())
@@ -469,7 +476,7 @@ async def _broadcast_loop() -> None:
 
 
 def _persist_liquidation_events_to_db_enabled() -> bool:
-    v = os.environ.get("PERSIST_LIQUIDATION_EVENTS_TO_DB", "0").lower()
+    v = os.environ.get("PERSIST_LIQUIDATION_EVENTS_TO_DB", "1").lower()
     return v in ("1", "true", "yes", "on")
 
 

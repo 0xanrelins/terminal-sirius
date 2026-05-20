@@ -8,10 +8,9 @@ Bloomberg tarzı, kişisel kullanım için tasarlanmış trading terminali. Sabi
 
 ```
 Nautilus Trader (Python)
-  ├── BridgeActor      → Binance Futures USDT-M canlı feed
-  │     trade tick / quote tick / 1m-1d bar
-  └── PolymarketActor  → Polymarket CLOB WebSocket
-        price_change / book events
+  ├── BridgeActor        → Binance Futures USDT-M canlı feed
+  ├── PolymarketActor    → Polymarket CLOB WebSocket
+  └── LiquidationActor   → Binance !forceOrder@arr (tek liq writer)
 
         ↓  thread-safe Queue
         
@@ -19,6 +18,8 @@ FastAPI (Python)
   ├── GET  /klines          → tarihsel OHLCV (PostgreSQL-first, Binance fallback)
   ├── GET  /polymarket/markets?q=  → Gamma API market arama
   ├── POST /polymarket/subscribe   → runtime slug ekleme
+  ├── GET  /liquidations    → 15m liq bar totals
+  ├── GET  /liquidation-events → major-coin liq list (backend persist)
   └── WS   /ws              → tüm canlı veriyi browser'a yayınlar
 
         ↓  WebSocket
@@ -69,7 +70,7 @@ Başlat:
 uvicorn main:app --reload --port 8000
 ```
 
-**Likidasyon ham arşiv (uvicorn gerekmez):** Binance `!forceOrder@arr` → NDJSON (`backend/scripts/record_binance_liquidations.py`), isteğe bağlı Postgres aynası ve NDJSON→DB import (`backend/scripts/import_liquidation_ndjson.py`). Komutlar ve env anahtarları için [BASLAT.md](BASLAT.md) içindeki “Likidasyon ham kayıt” bölümüne bak.
+**Likidasyon:** Tek yazıcı = backend stream (`liquidation_stream` veya Nautilus `LiquidationActor`). `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (varsayılan) ile `liquidation_bars`, ham events ve Liq Signals geçmişi aynı hat üzerinden dolar.
 
 ### 3. Frontend
 
@@ -129,17 +130,18 @@ Terminal Sirius/
 ├── docker-compose.yml
 ├── .env
 │
+├── docs/
+│   └── architecture.md           # Katmanlar, tek liq writer, API sözleşmesi
 ├── backend/
-│   ├── main.py                   # FastAPI app + WebSocket bridge
-│   ├── node.py                   # Nautilus TradingNode factory
-│   ├── bridge_actor.py           # Binance → data_queue (Nautilus Actor)
-│   ├── db.py                     # asyncpg pool + klines schema
-│   ├── klines.py                 # DB-first OHLCV, Binance fallback
-│   ├── requirements.txt
-│   └── adapters/
-│       └── polymarket/
-│           ├── actor.py          # Polymarket CLOB WS (Nautilus Actor)
-│           └── gamma.py          # Gamma API REST client
+│   ├── main.py                   # FastAPI BFF + WS + sim/live fan-out
+│   ├── node.py                   # Nautilus TradingNode
+│   ├── bridge_actor.py           # Binance bars/ticks
+│   ├── liquidation_actor.py      # Binance !forceOrder (tek liq writer)
+│   ├── liquidations.py           # Parse + bar aggregate
+│   ├── db.py                     # PostgreSQL schema + queries
+│   ├── simulation/               # Liq→Poly paper engine
+│   ├── live/                     # Liq→Poly live engine
+│   └── adapters/polymarket/
 │
 └── frontend/
     ├── vite.config.ts
@@ -164,8 +166,8 @@ Terminal Sirius/
 ### Canlı veri
 
 ```
-Binance WS / Polymarket CLOB WS
-  → Nautilus Actor (BridgeActor / PolymarketActor)
+Binance WS / Polymarket CLOB WS / !forceOrder
+  → Nautilus Actors (Bridge / Polymarket / Liquidation)
     → data_queue (thread-safe Queue)
       → FastAPI broadcast loop
         → WebSocket /ws
@@ -190,8 +192,11 @@ Binance WS / Polymarket CLOB WS
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://sirius:sirius@localhost:5432/sirius` | PostgreSQL bağlantısı |
-| `POLYMARKET_SLUGS` | _(boş)_ | Boot'ta subscribe olunacak slug'lar |
+| `DATABASE_URL` | `postgresql://sirius:sirius@localhost:5432/sirius` | PostgreSQL |
+| `PERSIST_LIQUIDATION_EVENTS_TO_DB` | `1` | Ham liq + Liq Signals geçmişi |
+| `POLYMARKET_SLUGS` | _(boş)_ | Boot Polymarket slug'ları |
+| `SIM_THRESHOLDS_JSON` | config defaults | Paper sim eşikleri |
+| `LIVE_ENABLED` | `false` | Canlı Poly emirleri |
 
 ---
 

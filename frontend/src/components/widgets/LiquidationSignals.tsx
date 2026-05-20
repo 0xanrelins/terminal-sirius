@@ -5,7 +5,7 @@ import styles from "./LiquidationSignals.module.css";
 
 const MAX_ROWS = 200;
 export const DEFAULT_MIN_NOTIONAL = 100_000;
-/** v4: history from liquidation_watchlist_events (major coins only). */
+/** History from liquidation_watchlist_events (backend stream persist). */
 export const LIQ_HISTORY_VERSION = 4;
 
 export const LIQ_MAJOR_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "HYPE", "BNB"] as const;

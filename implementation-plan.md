@@ -1,5 +1,16 @@
 # Trading Terminal — Implementation Plan
 
+## Mimari (güncel)
+
+Tek kaynak likidasyon + Nautilus Actors. Detay: [docs/architecture.md](docs/architecture.md).
+
+- **Engine:** `BridgeActor`, `PolymarketActor`, `LiquidationActor` → `data_queue`
+- **API:** FastAPI — UI yalnızca HTTP/WS sözleşmesi
+- **Likidasyon:** Tek writer (Actor veya fallback stream); `PERSIST_LIQUIDATION_EVENTS_TO_DB=1`
+- **Sim/Live:** `liquidation_bars` + DB dedup `(symbol, liq_bar_open, side)`
+
+---
+
 ## Faz 1: Temel Altyapı
 
 **Hedef:** Her şeyin konuştuğu iskelet ayağa kalksın.

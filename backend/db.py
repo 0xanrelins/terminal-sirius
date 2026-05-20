@@ -39,6 +39,46 @@ def pool() -> asyncpg.Pool:
 
 # ── Schema ──────────────────────────────────────────────────────────────────
 
+async def _dedupe_cycles_before_unique_index(conn: asyncpg.Connection, prefix: str) -> None:
+    """Drop duplicate (binance_symbol, liq_bar_open, side) cycles; keep lowest id."""
+    bets = f"{prefix}_bets"
+    cycles = f"{prefix}_cycles"
+    await conn.execute(
+        f"""
+        DELETE FROM {bets} b
+        USING {cycles} c
+        WHERE b.cycle_id = c.id
+          AND c.id IN (
+            SELECT id FROM (
+              SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY binance_symbol, liq_bar_open, side
+                  ORDER BY id
+                ) AS rn
+              FROM {cycles}
+              WHERE liq_bar_open IS NOT NULL
+            ) t WHERE rn > 1
+          )
+        """
+    )
+    await conn.execute(
+        f"""
+        DELETE FROM {cycles}
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT id,
+              ROW_NUMBER() OVER (
+                PARTITION BY binance_symbol, liq_bar_open, side
+                ORDER BY id
+              ) AS rn
+            FROM {cycles}
+            WHERE liq_bar_open IS NOT NULL
+          ) t WHERE rn > 1
+        )
+        """
+    )
+
+
 async def _migrate(p: asyncpg.Pool) -> None:
     async with p.acquire() as conn:
         await conn.execute("""
@@ -281,6 +321,18 @@ async def _migrate(p: asyncpg.Pool) -> None:
         await conn.execute("""
             ALTER TABLE live_cycles
             ADD COLUMN IF NOT EXISTS liq_bar_open BIGINT
+        """)
+        await _dedupe_cycles_before_unique_index(conn, "simulation")
+        await _dedupe_cycles_before_unique_index(conn, "live")
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS simulation_cycles_liq_bar_side_uniq
+            ON simulation_cycles (binance_symbol, liq_bar_open, side)
+            WHERE liq_bar_open IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS live_cycles_liq_bar_side_uniq
+            ON live_cycles (binance_symbol, liq_bar_open, side)
+            WHERE liq_bar_open IS NOT NULL
         """)
 
 
@@ -623,6 +675,37 @@ async def settle_simulation_bet(
         pnl_usd,
         settled_at,
     )
+
+
+async def get_simulation_signaled_keys(since_liq_bar_open: int) -> list[tuple[str, int, str]]:
+    """(binance_symbol, liq_bar_open, side) for dedupe restore after restart."""
+    rows = await pool().fetch(
+        """
+        SELECT binance_symbol, liq_bar_open, side
+        FROM simulation_cycles
+        WHERE liq_bar_open IS NOT NULL AND liq_bar_open >= $1
+        """,
+        since_liq_bar_open,
+    )
+    return [
+        (str(r["binance_symbol"]), int(r["liq_bar_open"]), str(r["side"] or "long"))
+        for r in rows
+    ]
+
+
+async def get_live_signaled_keys(since_liq_bar_open: int) -> list[tuple[str, int, str]]:
+    rows = await pool().fetch(
+        """
+        SELECT binance_symbol, liq_bar_open, side
+        FROM live_cycles
+        WHERE liq_bar_open IS NOT NULL AND liq_bar_open >= $1
+        """,
+        since_liq_bar_open,
+    )
+    return [
+        (str(r["binance_symbol"]), int(r["liq_bar_open"]), str(r["side"] or "long"))
+        for r in rows
+    ]
 
 
 async def get_open_simulation_cycles() -> list[dict]:

@@ -112,8 +112,14 @@ class SimulationEngine:
                 shares=float(b["shares"]),
                 cost_usd=float(b["cost_usd"]),
             )
+        since = int(time.time()) - 7 * 86400
+        for sym, bar_open, side in await db.get_simulation_signaled_keys(since):
+            self._signaled.add(_signal_key(sym, bar_open, side))
         self._loaded = True
-        print(f"[simulation] restored {len(cycles)} cycle(s), {len(bets)} open bet(s)")
+        print(
+            f"[simulation] restored {len(cycles)} cycle(s), {len(bets)} open bet(s), "
+            f"{len(self._signaled)} signaled key(s)"
+        )
         missed = await self.reconcile_settlements()
         if missed:
             print(f"[simulation] startup: {len(missed)} missed settlement(s) applied")
@@ -133,13 +139,13 @@ class SimulationEngine:
         """Re-read authoritative 15m totals and emit any missing signals."""
         await self.load_state()
         events: list[dict] = []
-        signal_ts = int(time.time())
         for asset, meta in config.ASSETS.items():
             symbol = meta["binance_symbol"]
             bars = await fetch_liquidation_bars(symbol, "15m", limit=1)
             if not bars:
                 continue
             bar_open = int(bars[-1]["time"])
+            signal_ts = bar_open + WINDOW_SEC
             long_total, short_total = await self._reconcile_15m_bar(symbol, bar_open)
             events.extend(
                 await self._maybe_fire_signal(

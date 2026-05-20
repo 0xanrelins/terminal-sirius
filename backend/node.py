@@ -47,6 +47,7 @@ from nautilus_trader.live.node import TradingNode
 
 from adapters.polymarket.actor import PolymarketActor, PolymarketActorConfig
 from bridge_actor import BridgeActor, BridgeActorConfig
+from liquidation_actor import LiquidationActor, LiquidationActorConfig
 
 DEFAULT_INSTRUMENTS = (
     "BTCUSDT-PERP.BINANCE",
@@ -100,6 +101,7 @@ def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_I
         initial_slugs=_polymarket_slugs(),
         initial_series=_polymarket_series(),
     )
+    liq_cfg = LiquidationActorConfig(component_id="LiquidationActor-001")
 
     config = TradingNodeConfig(
         trader_id="TERMINAL-SIRIUS-001",
@@ -125,6 +127,9 @@ def build_node(data_queue: queue.Queue, instruments: tuple[str, ...] = DEFAULT_I
     pm_actor = PolymarketActor(config=pm_cfg, data_queue=data_queue)
     node.trader.add_actor(pm_actor)
     _polymarket_actor = pm_actor
+
+    liq_actor = LiquidationActor(config=liq_cfg, data_queue=data_queue)
+    node.trader.add_actor(liq_actor)
 
     node.build()
     return node

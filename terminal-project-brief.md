@@ -22,22 +22,16 @@ Kullanıcı boş bir kanvasa gelir. Chart mı ister, fiyat ekranı mı, orderboo
 ## Mimari
 
 ```
-Nautilus Trader (Python)
-  └── MessageBus → FastAPI WebSocket Bridge → Browser
-
-Browser (React)
-  └── react-grid-layout
-        └── Widget[]
-              └── TradingView Lightweight Chart
-              └── Orderbook Table
-              └── Price Ticker
-              └── News Feed
-              └── ...
+Nautilus (BridgeActor, PolymarketActor, LiquidationActor)
+  → data_queue → FastAPI (HTTP + /ws) → React (react-grid-layout + widgets)
+  → PostgreSQL (klines, liquidation_bars, sim/live)
 ```
+
+Detay: `docs/architecture.md`.
 
 ## Veri Akışı
 
-Nautilus Trader merkezi veri motoru olarak çalışır. Binance ve Polymarket adapter'ları üzerinden veri alır, internal `MessageBus` üzerinden dağıtır. FastAPI üzerindeki ince bir WebSocket bridge bu veriyi browser'a iletir. Her widget ilgili veri kanalına subscribe olur.
+Nautilus Actors canlı veriyi işler; FastAPI ince köprü olarak UI'a sabit JSON sözleşmesi sunar. Likidasyon tek yazıcı hat (`LiquidationActor` veya fallback stream) → `liquidation_bars` + events. UI yalnızca FastAPI'yi bilir; Postgres/Nautilus'a doğrudan bağlanmaz.
 
 ## State Yönetimi
 

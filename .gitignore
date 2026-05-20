@@ -32,5 +32,5 @@ Thumbs.db
 # Logs
 *.log
 
-# Standalone liquidation recorder output
-backend/data/liq_raw/
+# Local data (SQLite experiments, old NDJSON — not used by main app)
+backend/data/
