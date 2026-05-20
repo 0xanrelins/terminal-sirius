@@ -685,12 +685,10 @@ export function CandlestickChart({
     const unsub = subscribe(symbol, (msg) => {
       if (msg.type === "liquidation") {
         const liq = msg as LiquidationMsg;
-        const barSec = INTERVAL_SECONDS[interval] ?? 60;
-        const t = Math.floor(liq.time / barSec) * barSec;
-        const cur = { ...(liqDataRef.current.get(t) ?? { long: 0, short: 0 }) };
-        if (liq.side === "SELL") cur.long += liq.notional;
-        else cur.short += liq.notional;
-        applyLiqBar(t, cur.long, cur.short);
+        const snap = liq.bars?.find((b) => b.interval === interval);
+        if (snap) {
+          applyLiqBar(snap.time, snap.long, snap.short);
+        }
         return;
       }
 

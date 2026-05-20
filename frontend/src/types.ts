@@ -43,6 +43,13 @@ export type PolymarketMsg = {
   ts: number;
 };
 
+export type LiquidationBarSnapshot = {
+  interval: string;
+  time: number;
+  long: number;
+  short: number;
+};
+
 export type LiquidationMsg = {
   type: "liquidation";
   symbol: string;
@@ -50,6 +57,7 @@ export type LiquidationMsg = {
   notional: number;
   time: number;
   trade_id?: number;
+  bars?: LiquidationBarSnapshot[];
 };
 
 export type SimulationSide = "long" | "short";

@@ -90,8 +90,19 @@ def build_liquidation_message(item: dict[str, Any]) -> dict[str, Any] | None:
     updates = record_liquidation(
         parsed["symbol"], parsed["side"], parsed["notional"], trade_ms
     )
+    bar_snapshots: list[dict[str, Any]] = []
+    with _lock:
+        for u in updates:
+            bucket = _buckets[(u["symbol"], u["interval"], u["time"])]
+            bar_snapshots.append({
+                "interval": u["interval"],
+                "time": u["time"],
+                "long": round(bucket["long"], 2),
+                "short": round(bucket["short"], 2),
+            })
     return {
         **parsed,
+        "bars": bar_snapshots,
         "_payload": item,
         "_updates": updates,
     }
