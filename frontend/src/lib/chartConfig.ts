@@ -7,6 +7,7 @@ export const CHART_SYMBOLS = [
   "XRPUSDT-PERP.BINANCE",
   "DOGEUSDT-PERP.BINANCE",
   "HYPEUSDT-PERP.BINANCE",
+  "BNBUSDT-PERP.BINANCE",
 ] as const;
 
 /** Binance perps used in the multi-series comparison widget. */

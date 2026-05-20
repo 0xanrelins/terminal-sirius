@@ -152,7 +152,7 @@ async def liquidation_events_endpoint(
     symbols: Optional[str] = None,
     limit: int = 200,
 ):
-    """Recent raw forceOrder events (from recorder/import → liquidation_events, not uvicorn)."""
+    """Recent major-coin liquidations from `liquidation_watchlist_events` (fed by DB trigger on raw inserts)."""
     try:
         if symbols:
             sym_tuple = tuple(s.strip() for s in symbols.split(",") if s.strip())

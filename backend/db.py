@@ -5,6 +5,7 @@ Schema:
   - `klines` — OHLCV bars (symbol, interval, time)
   - `liquidation_bars` — long/short liquidation notional per bar (symbol, interval, time)
   - `liquidation_events` — raw Binance forceOrder JSON per event
+  - `liquidation_watchlist_events` — denormalized major-coin liqs (trigger from liquidation_events)
 """
 import json
 import os
@@ -82,6 +83,92 @@ async def _migrate(p: asyncpg.Pool) -> None:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS liquidation_events_received_at
             ON liquidation_events (received_at DESC)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_watchlist_events (
+                trade_id    BIGINT NOT NULL PRIMARY KEY,
+                symbol      TEXT NOT NULL,
+                side        TEXT NOT NULL,
+                notional    DOUBLE PRECISION NOT NULL,
+                time        BIGINT NOT NULL,
+                received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS liquidation_watchlist_events_symbol_time
+            ON liquidation_watchlist_events (symbol, time DESC)
+        """)
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION trg_liquidation_events_to_watchlist()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                bin_sym text;
+                apv text;
+                zv text;
+                tv text;
+                notional double precision;
+                tsec bigint;
+            BEGIN
+                bin_sym := NEW.payload->'o'->>'s';
+                IF bin_sym IS NULL THEN
+                    RETURN NEW;
+                END IF;
+                IF bin_sym NOT IN (
+                    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'DOGEUSDT', 'XRPUSDT',
+                    'HYPEUSDT', 'BNBUSDT'
+                ) THEN
+                    RETURN NEW;
+                END IF;
+                apv := NEW.payload->'o'->>'ap';
+                zv := NEW.payload->'o'->>'z';
+                tv := NEW.payload->'o'->>'T';
+                IF apv IS NULL OR zv IS NULL OR tv IS NULL THEN
+                    RETURN NEW;
+                END IF;
+                BEGIN
+                    notional := apv::double precision * zv::double precision;
+                    tsec := (tv::bigint / 1000);
+                EXCEPTION WHEN OTHERS THEN
+                    RETURN NEW;
+                END;
+                INSERT INTO liquidation_watchlist_events (
+                    trade_id, symbol, side, notional, time, received_at
+                )
+                VALUES (
+                    NEW.trade_id,
+                    bin_sym || '-PERP.BINANCE',
+                    COALESCE(NEW.payload->'o'->>'S', ''),
+                    notional,
+                    tsec,
+                    NEW.received_at
+                )
+                ON CONFLICT (trade_id) DO NOTHING;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """)
+        await conn.execute("""
+            DROP TRIGGER IF EXISTS liquidation_events_watchlist ON liquidation_events
+        """)
+        await conn.execute("""
+            CREATE TRIGGER liquidation_events_watchlist
+            AFTER INSERT ON liquidation_events
+            FOR EACH ROW EXECUTE FUNCTION trg_liquidation_events_to_watchlist()
+        """)
+        await conn.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'liquidation_watchlist_events_trade_id_fkey'
+                ) THEN
+                    ALTER TABLE liquidation_watchlist_events
+                        ADD CONSTRAINT liquidation_watchlist_events_trade_id_fkey
+                        FOREIGN KEY (trade_id)
+                        REFERENCES liquidation_events (trade_id)
+                        ON DELETE CASCADE;
+                END IF;
+            END $$;
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS simulation_cycles (
@@ -381,6 +468,34 @@ async def get_liquidation_event_payloads(limit: int) -> list[dict]:
         else:
             out.append(dict(p))
     return out
+
+
+async def get_liquidation_watchlist_events(
+    symbols: list[str], limit: int
+) -> list[dict]:
+    """Recent denormalized liqs for watchlist symbols (time desc)."""
+    rows = await pool().fetch(
+        """
+        SELECT trade_id, symbol, side, notional, time
+        FROM liquidation_watchlist_events
+        WHERE symbol = ANY($1::text[])
+        ORDER BY time DESC
+        LIMIT $2
+        """,
+        symbols,
+        limit,
+    )
+    return [
+        {
+            "type": "liquidation",
+            "trade_id": int(r["trade_id"]),
+            "symbol": r["symbol"],
+            "side": r["side"],
+            "notional": round(float(r["notional"]), 2),
+            "time": int(r["time"]),
+        }
+        for r in rows
+    ]
 
 
 _prune_event_counter = 0

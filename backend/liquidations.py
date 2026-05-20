@@ -21,6 +21,8 @@ MAJOR_NAUTILUS_SYMBOLS: frozenset[str] = frozenset({
     "SOLUSDT-PERP.BINANCE",
     "DOGEUSDT-PERP.BINANCE",
     "XRPUSDT-PERP.BINANCE",
+    "HYPEUSDT-PERP.BINANCE",
+    "BNBUSDT-PERP.BINANCE",
 })
 
 INTERVAL_SECONDS: dict[str, int] = {
@@ -239,17 +241,7 @@ async def fetch_liquidation_events(
     symbols: tuple[str, ...] | None = None,
     limit: int = 200,
 ) -> list[dict]:
-    """Load recent raw events from DB, parse, filter by symbol set."""
-    sym_set = set(symbols) if symbols else MAJOR_NAUTILUS_SYMBOLS
+    """Load recent watchlist liqs from DB (denormalized table, time desc)."""
+    sym_list = list(symbols) if symbols else sorted(MAJOR_NAUTILUS_SYMBOLS)
     cap = min(max(limit, 1), 500)
-    # Over-fetch so filtering majors still fills the limit.
-    payloads = await db.get_liquidation_event_payloads(cap * 20)
-    out: list[dict] = []
-    for payload in payloads:
-        parsed = parse_force_order(payload)
-        if parsed is None or parsed["symbol"] not in sym_set:
-            continue
-        out.append({k: v for k, v in parsed.items() if not k.startswith("_")})
-        if len(out) >= cap:
-            break
-    return out
+    return await db.get_liquidation_watchlist_events(sym_list, cap)

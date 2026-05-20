@@ -5,10 +5,10 @@ import styles from "./LiquidationSignals.module.css";
 
 const MAX_ROWS = 200;
 export const DEFAULT_MIN_NOTIONAL = 100_000;
-/** v3: history from backend raw events; display threshold-filtered. */
-export const LIQ_HISTORY_VERSION = 3;
+/** v4: history from liquidation_watchlist_events (major coins only). */
+export const LIQ_HISTORY_VERSION = 4;
 
-export const LIQ_MAJOR_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP"] as const;
+export const LIQ_MAJOR_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "HYPE", "BNB"] as const;
 export type LiqMajorCoin = (typeof LIQ_MAJOR_COINS)[number];
 export const DEFAULT_LIQ_COINS: LiqMajorCoin[] = [...LIQ_MAJOR_COINS];
 
@@ -20,6 +20,8 @@ const ASSET_TO_FEED_SYMBOL: Record<LiqMajorCoin, string> = {
   SOL: "SOLUSDT-PERP.BINANCE",
   DOGE: "DOGEUSDT-PERP.BINANCE",
   XRP: "XRPUSDT-PERP.BINANCE",
+  HYPE: "HYPEUSDT-PERP.BINANCE",
+  BNB: "BNBUSDT-PERP.BINANCE",
 };
 
 const MAJOR_COLORS: Record<string, string> = {
@@ -28,6 +30,8 @@ const MAJOR_COLORS: Record<string, string> = {
   SOL: "#14f195",
   DOGE: "#c2a633",
   XRP: "#38bdf8",
+  HYPE: "#7c3aed",
+  BNB: "#f0b90b",
 };
 
 type Props = {
