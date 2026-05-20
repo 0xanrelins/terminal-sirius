@@ -199,6 +199,26 @@ function mergeOhlcvBars(existing: OhlcvBar[], older: OhlcvBar[]): OhlcvBar[] {
   );
 }
 
+const LIQ_FETCH_LIMIT = 10_000;
+
+async function fetchLiquidationsForRange(
+  symbol: string,
+  interval: string,
+  fromTime: number,
+  toTime: number
+): Promise<LiquidationBar[]> {
+  const params = new URLSearchParams({
+    symbol,
+    interval,
+    from: String(fromTime),
+    to: String(toTime),
+    limit: String(LIQ_FETCH_LIMIT),
+  });
+  const r = await fetch(`/liquidations?${params}`);
+  if (!r.ok) throw new Error(`liquidations ${r.status}`);
+  return r.json() as Promise<LiquidationBar[]>;
+}
+
 function lineDataForIndicator(
   ind: ChartIndicator,
   candles: CandlestickData<UTCTimestamp>[],
@@ -301,6 +321,7 @@ export function CandlestickChart({
   const ohlcvBarsRef = useRef<OhlcvBar[]>([]);
   const liveBarRef = useRef<OhlcvBar | null>(null);
   const loadingRef = useRef(false);
+  const liqLoadingRef = useRef(false);
   const exhaustedRef = useRef(false);
   const historyReadyRef = useRef(false);
   const chartEffectGenRef = useRef(0);
@@ -463,6 +484,33 @@ export function CandlestickChart({
     [refreshMaSeries]
   );
 
+  const loadLiqForOhlcv = useCallback(async () => {
+    if (!indicatorsRef.current.some((i) => i.type === "liquidations")) return;
+    const bars = ohlcvBarsRef.current;
+    if (bars.length === 0 || liqLoadingRef.current) return;
+
+    const fromTime = bars[0].time as number;
+    const toTime = bars[bars.length - 1].time as number;
+    liqLoadingRef.current = true;
+    try {
+      const data = await fetchLiquidationsForRange(
+        symbol,
+        interval,
+        fromTime,
+        toTime
+      );
+      liqDataRef.current.clear();
+      for (const b of data) {
+        liqDataRef.current.set(b.time, { long: b.long, short: b.short });
+      }
+      pushLiqToSeries();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      liqLoadingRef.current = false;
+    }
+  }, [symbol, interval, pushLiqToSeries]);
+
   // Chart init + history + infinite scroll
   useEffect(() => {
     if (!containerRef.current) return;
@@ -475,6 +523,7 @@ export function CandlestickChart({
     ohlcvBarsRef.current = [];
     liveBarRef.current = null;
     loadingRef.current = false;
+    liqLoadingRef.current = false;
     exhaustedRef.current = false;
     historyReadyRef.current = false;
     maSeriesRef.current.clear();
@@ -550,6 +599,7 @@ export function CandlestickChart({
           return;
         }
         setOhlcvData(mergeOhlcvBars(ohlcvBarsRef.current, older));
+        void loadLiqForOhlcv();
       } catch (e) {
         console.error(e);
       } finally {
@@ -587,6 +637,7 @@ export function CandlestickChart({
           liveBarRef.current = last;
         }
         setOhlcvData(bars);
+        void loadLiqForOhlcv();
         historyReadyRef.current = true;
 
         requestAnimationFrame(() => {
@@ -620,7 +671,7 @@ export function CandlestickChart({
       liveBarRef.current = null;
       historyReadyRef.current = false;
     };
-  }, [symbol, interval, setOhlcvData, syncMaSeries, syncLiqSeries]);
+  }, [symbol, interval, setOhlcvData, syncMaSeries, syncLiqSeries, loadLiqForOhlcv]);
 
   // Sync indicators when toggled from toolbar
   useEffect(() => {
@@ -634,35 +685,11 @@ export function CandlestickChart({
     if (hasLiquidations) pushLiqToSeries();
   }, [hasLiquidations, liqThreshold, pushLiqToSeries]);
 
-  // Load liquidation history
+  // Reload liq when indicator enabled and OHLCV already loaded
   useEffect(() => {
-    if (!hasLiquidations) return;
-
-    let cancelled = false;
-    const params = new URLSearchParams({
-      symbol,
-      interval,
-      limit: String(openBarCountRef.current),
-    });
-    fetch(`/liquidations?${params}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`liquidations ${r.status}`);
-        return r.json() as Promise<LiquidationBar[]>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        liqDataRef.current.clear();
-        for (const b of data) {
-          liqDataRef.current.set(b.time, { long: b.long, short: b.short });
-        }
-        pushLiqToSeries();
-      })
-      .catch(console.error);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [symbol, interval, hasLiquidations, pushLiqToSeries]);
+    if (!hasLiquidations || ohlcvBarsRef.current.length === 0) return;
+    void loadLiqForOhlcv();
+  }, [hasLiquidations, loadLiqForOhlcv]);
 
   // Live updates
   useEffect(() => {

@@ -5,7 +5,7 @@ Standalone Binance USDT-M liquidation WebSocket recorder (!forceOrder@arr).
 Runs without uvicorn/Nautilus. Writes NDJSON lines:
   {"received_at": "<ISO8601 UTC>", "raw": <parsed WS JSON>}
 
-Optional: mirror forceOrder rows into PostgreSQL `liquidation_events` (same schema as main app).
+Primary raw archive. Optional `--postgres` mirrors into `liquidation_events` (uvicorn does not write raw by default).
 
 Usage (from repo backend/, venv active):
   python scripts/record_binance_liquidations.py

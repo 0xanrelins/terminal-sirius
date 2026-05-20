@@ -141,6 +141,34 @@ def record_liquidation(
     return updates
 
 
+def get_memory_bars_range(
+    symbol: str,
+    interval: str,
+    from_time: int,
+    to_time: int | None,
+    limit: int,
+) -> list[dict]:
+    if interval not in INTERVAL_SECONDS:
+        raise ValueError(f"Invalid interval: {interval!r}")
+
+    with _lock:
+        items = [
+            (t, b["long"], b["short"])
+            for (sym, iv, t), b in _buckets.items()
+            if sym == symbol
+            and iv == interval
+            and t >= from_time
+            and (to_time is None or t <= to_time)
+        ]
+    items.sort(key=lambda x: x[0])
+    if len(items) > limit:
+        items = items[-limit:]
+    return [
+        {"time": t, "long": round(long_v, 2), "short": round(short_v, 2)}
+        for t, long_v, short_v in items
+    ]
+
+
 def get_memory_bars(
     symbol: str, interval: str, limit: int, before: int | None = None
 ) -> list[dict]:
@@ -180,16 +208,30 @@ def _merge_db_and_memory(db_bars: list[dict], mem_bars: list[dict]) -> list[dict
 
 
 async def fetch_liquidation_bars(
-    symbol: str, interval: str, limit: int, before: int | None = None
+    symbol: str,
+    interval: str,
+    limit: int,
+    before: int | None = None,
+    from_time: int | None = None,
+    to_time: int | None = None,
 ) -> list[dict]:
     if interval not in INTERVAL_SECONDS:
         raise ValueError(f"Invalid interval: {interval!r}")
 
-    db_bars = await db.get_liquidation_bars(symbol, interval, limit, before=before)
-    mem_bars = get_memory_bars(symbol, interval, limit, before=before)
+    cap = min(max(limit, 1), 10_000)
+
+    if from_time is not None:
+        db_bars = await db.get_liquidation_bars_range(
+            symbol, interval, from_time, to_time, cap
+        )
+        mem_bars = get_memory_bars_range(symbol, interval, from_time, to_time, cap)
+        return _merge_db_and_memory(db_bars, mem_bars)
+
+    db_bars = await db.get_liquidation_bars(symbol, interval, cap, before=before)
+    mem_bars = get_memory_bars(symbol, interval, cap, before=before)
     merged = _merge_db_and_memory(db_bars, mem_bars)
-    if len(merged) > limit:
-        merged = merged[-limit:]
+    if len(merged) > cap:
+        merged = merged[-cap:]
     return merged
 
 

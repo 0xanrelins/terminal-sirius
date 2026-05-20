@@ -287,6 +287,48 @@ async def get_liquidation_bars(
     ]
 
 
+async def get_liquidation_bars_range(
+    symbol: str,
+    interval: str,
+    from_time: int,
+    to_time: int | None,
+    limit: int,
+) -> list[dict]:
+    if to_time is not None:
+        rows = await pool().fetch(
+            """
+            SELECT time, long, short
+            FROM liquidation_bars
+            WHERE symbol = $1 AND interval = $2 AND time >= $3 AND time <= $4
+            ORDER BY time ASC
+            LIMIT $5
+            """,
+            symbol,
+            interval,
+            from_time,
+            to_time,
+            limit,
+        )
+    else:
+        rows = await pool().fetch(
+            """
+            SELECT time, long, short
+            FROM liquidation_bars
+            WHERE symbol = $1 AND interval = $2 AND time >= $3
+            ORDER BY time ASC
+            LIMIT $4
+            """,
+            symbol,
+            interval,
+            from_time,
+            limit,
+        )
+    return [
+        {"time": r["time"], "long": float(r["long"]), "short": float(r["short"])}
+        for r in rows
+    ]
+
+
 async def add_liquidation_delta(
     symbol: str,
     interval: str,

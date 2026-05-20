@@ -13,10 +13,10 @@ Endpoints:
   POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
-Liquidation raw archive:
-  Use `scripts/record_binance_liquidations.py` (no uvicorn) for NDJSON + optional DB.
-  Set PERSIST_LIQUIDATION_EVENTS_TO_DB=0 to skip writing `liquidation_events` here while
-  still updating `liquidation_bars` from the live stream (recorder / import owns events).
+Liquidation raw archive (default: backend does NOT write raw events):
+  Run `scripts/record_binance_liquidations.py` for NDJSON; use `--postgres` or import for
+  `liquidation_events`. Backend stream still updates `liquidation_bars` + live WS.
+  Set PERSIST_LIQUIDATION_EVENTS_TO_DB=1 only if uvicorn should also mirror raw events.
 """
 import asyncio
 import json
@@ -29,7 +29,7 @@ from typing import Optional
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -80,6 +80,13 @@ async def lifespan(app: FastAPI):
         print(f"[warn] Nautilus not available, market data disabled: {e}")
 
     asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
+    if _persist_liquidation_events_to_db_enabled():
+        print("[liquidations] raw events: backend → liquidation_events")
+    else:
+        print(
+            "[liquidations] raw events: off (use record_binance_liquidations.py); "
+            "bars + WS from backend stream"
+        )
 
     asyncio.create_task(_broadcast_loop())
     asyncio.create_task(_liquidation_events_retention_loop())
@@ -119,10 +126,22 @@ async def klines_endpoint(
 
 @app.get("/liquidations")
 async def liquidations_endpoint(
-    symbol: str, interval: str = "1m", limit: int = 500, before: Optional[int] = None
+    symbol: str,
+    interval: str = "1m",
+    limit: int = 500,
+    before: Optional[int] = None,
+    from_time: Optional[int] = Query(None, alias="from"),
+    to_time: Optional[int] = Query(None, alias="to"),
 ):
     try:
-        return await fetch_liquidation_bars(symbol, interval, min(limit, 1000), before=before)
+        return await fetch_liquidation_bars(
+            symbol,
+            interval,
+            min(limit, 10_000),
+            before=before,
+            from_time=from_time,
+            to_time=to_time,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -134,7 +153,7 @@ async def liquidation_events_endpoint(
     symbols: Optional[str] = None,
     limit: int = 200,
 ):
-    """Recent liquidation events parsed from raw Binance forceOrder payloads."""
+    """Recent raw forceOrder events (from recorder/import → liquidation_events, not uvicorn)."""
     try:
         if symbols:
             sym_tuple = tuple(s.strip() for s in symbols.split(",") if s.strip())
@@ -451,8 +470,8 @@ async def _broadcast_loop() -> None:
 
 
 def _persist_liquidation_events_to_db_enabled() -> bool:
-    v = os.environ.get("PERSIST_LIQUIDATION_EVENTS_TO_DB", "1").lower()
-    return v not in ("0", "false", "no", "off")
+    v = os.environ.get("PERSIST_LIQUIDATION_EVENTS_TO_DB", "0").lower()
+    return v in ("1", "true", "yes", "on")
 
 
 async def _persist_liquidation(msg: dict) -> None:
