@@ -310,7 +310,8 @@ export type WidgetType =
   | "polymarket_ticker"
   | "liquidation_signals"
   | "simulation_panel"
-  | "live_trade_panel";
+  | "live_trade_panel"
+  | "market_times";
 
 export type PriceTickerConfig = {
   id: string;
@@ -391,6 +392,11 @@ export type LiveTradePanelConfig = {
   type: "live_trade_panel";
 };
 
+export type MarketTimesConfig = {
+  id: string;
+  type: "market_times";
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
@@ -398,7 +404,8 @@ export type WidgetConfig =
   | PolymarketTickerConfig
   | LiquidationSignalsConfig
   | SimulationPanelConfig
-  | LiveTradePanelConfig;
+  | LiveTradePanelConfig
+  | MarketTimesConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

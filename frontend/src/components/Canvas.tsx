@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import GridLayout, { type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -20,6 +20,7 @@ import {
   normalizeLiqCoins,
 } from "./widgets/LiquidationSignals";
 import { LiveTradePanel } from "./widgets/LiveTradePanel";
+import { MarketTimes } from "./widgets/MarketTimes";
 import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
 import { PriceTicker } from "./widgets/PriceTicker";
@@ -37,8 +38,9 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isChart = type === "candlestick_chart" || type === "comparison_chart";
   const isLiq = type === "liquidation_signals";
   const isSim = type === "simulation_panel" || type === "live_trade_panel";
-  const w = isChart ? 14 : isLiq || isSim ? 8 : 5;
-  const h = isChart ? 9 : isLiq ? 8 : isSim ? 10 : type === "polymarket_ticker" ? 4 : 3;
+  const isMarketTimes = type === "market_times";
+  const w = isChart ? 14 : isLiq || isSim ? 8 : isMarketTimes ? 6 : 5;
+  const h = isChart ? 9 : isLiq ? 8 : isSim ? 10 : isMarketTimes ? 6 : type === "polymarket_ticker" ? 4 : 3;
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
 }
 
@@ -46,6 +48,7 @@ function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
   if (cfg.type === "simulation_panel") return "Liq→Poly Sim";
   if (cfg.type === "live_trade_panel") return "Live Trade";
+  if (cfg.type === "market_times") return "Market Times";
   if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
@@ -110,6 +113,8 @@ function renderWidget(
       return <SimulationPanel />;
     case "live_trade_panel":
       return <LiveTradePanel />;
+    case "market_times":
+      return <MarketTimes />;
     default:
       return null;
   }
@@ -182,9 +187,22 @@ export function Canvas({ state, onChange }: Props) {
     [state, emit]
   );
 
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const update = () => setGridWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   if (state.widgets.length === 0) {
     return (
-      <div className={styles.canvas}>
+      <div ref={canvasRef} className={styles.canvas}>
         {showModal && (
           <AddWidgetModal onAdd={addWidget} onClose={() => setShowModal(false)} />
         )}
@@ -200,17 +218,18 @@ export function Canvas({ state, onChange }: Props) {
   }
 
   return (
-    <div className={styles.canvas}>
+    <div ref={canvasRef} className={styles.canvas}>
       {showModal && (
         <AddWidgetModal onAdd={addWidget} onClose={() => setShowModal(false)} />
       )}
 
+      {gridWidth > 0 && (
       <GridLayout
         className="layout"
         layout={state.layout}
         cols={COLS}
         rowHeight={ROW_HEIGHT}
-        width={window.innerWidth}
+        width={gridWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
         draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar, .simulationToolbar`}
@@ -244,6 +263,7 @@ export function Canvas({ state, onChange }: Props) {
           </div>
         ))}
       </GridLayout>
+      )}
 
       <button className={styles.addBtn} onClick={() => setShowModal(true)} title="Add widget">
         +

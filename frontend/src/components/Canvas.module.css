@@ -1,6 +1,6 @@
 .canvas {
   width: 100%;
-  min-height: calc(100vh - 44px);
+  min-height: 100%;
   background: #0d0d0f;
   padding: 6px;
   position: relative;

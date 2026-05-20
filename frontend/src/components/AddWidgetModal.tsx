@@ -92,6 +92,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "simulation_panel" });
       } else if (binanceType === "live_trade_panel") {
         onAdd({ id, type: "live_trade_panel" });
+      } else if (binanceType === "market_times") {
+        onAdd({ id, type: "market_times" });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -119,6 +121,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
       ? binanceType === "liquidation_signals" ||
         binanceType === "simulation_panel" ||
         binanceType === "live_trade_panel" ||
+        binanceType === "market_times" ||
         binanceType === "comparison_chart" ||
         binanceType === "candlestick_chart" ||
         !!symbol.trim()
@@ -162,6 +165,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "liquidation_signals",
                       "simulation_panel",
                       "live_trade_panel",
+                      "market_times",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -180,7 +184,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                               ? "Liq→Poly Sim"
                               : t === "live_trade_panel"
                                 ? "Live Trade"
-                                : "Liq Signals"}
+                                : t === "market_times"
+                                  ? "Market Times"
+                                  : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -255,6 +261,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "live_trade_panel" && (
                 <p className={styles.hint}>
                   Real Polymarket orders for SOL and DOGE. Default threshold $200k per pair on 15m liquidation bars. Requires POLYMARKET_* creds in backend .env.
+                </p>
+              )}
+
+              {binanceType === "market_times" && (
+                <p className={styles.hint}>
+                  NYSE, LSE, TSE, ASX, CME — local time and session open/close countdown.
                 </p>
               )}
             </>

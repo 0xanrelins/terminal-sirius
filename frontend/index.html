@@ -7,6 +7,9 @@
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #root { width: 100%; height: 100%; background: #0d0d0f; color: #e2e2e2; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+      /* Hide native scrollbars; wheel / trackpad scrolling still works */
+      * { scrollbar-width: none; -ms-overflow-style: none; }
+      *::-webkit-scrollbar { display: none; }
     </style>
   </head>
   <body>
