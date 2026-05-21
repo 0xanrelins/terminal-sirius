@@ -228,9 +228,14 @@ async def simulation_status():
 
 
 @app.get("/simulation/bets")
-async def simulation_bets(limit: int = 100):
+async def simulation_bets(limit: int = 100, assets: str | None = None):
     try:
-        return await db.get_simulation_bets(min(limit, 500))
+        asset_list = (
+            [a.strip().upper() for a in assets.split(",") if a.strip()]
+            if assets
+            else None
+        )
+        return await db.get_simulation_bets(min(limit, 500), asset_list)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -309,9 +314,14 @@ async def live_status():
 
 
 @app.get("/live/bets")
-async def live_bets(limit: int = 100):
+async def live_bets(limit: int = 100, assets: str | None = None):
     try:
-        return await db.get_live_bets(min(limit, 500))
+        asset_list = (
+            [a.strip().upper() for a in assets.split(",") if a.strip()]
+            if assets
+            else None
+        )
+        return await db.get_live_bets(min(limit, 500), asset_list)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

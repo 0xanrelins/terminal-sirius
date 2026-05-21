@@ -6,8 +6,17 @@ import type {
   CanvasState,
   DashboardsStorage,
   LiquidationSignalsConfig,
+  LiveTradePanelConfig,
+  SimulationPanelConfig,
   WidgetConfig,
 } from "./types";
+import {
+  DEFAULT_LIVE_COINS,
+  DEFAULT_SIM_COINS,
+  LIVE_COINS,
+  normalizeCoins,
+  SIM_COINS,
+} from "./lib/liqCoins";
 import {
   LIQ_HISTORY_VERSION,
   normalizeLiqCoins,
@@ -23,18 +32,28 @@ const DEFAULT_CANVAS: CanvasState = {
 };
 
 function sanitizeWidget(w: WidgetConfig): WidgetConfig {
-  if (w.type !== "liquidation_signals") return w;
-  const liq = w as LiquidationSignalsConfig;
-  const { history: _history, ...rest } = liq;
-  return {
-    ...rest,
-    historyVersion: LIQ_HISTORY_VERSION,
-    minNotional:
-      typeof liq.minNotional === "number" && Number.isFinite(liq.minNotional)
-        ? liq.minNotional
-        : undefined,
-    coins: normalizeLiqCoins(liq.coins),
-  };
+  if (w.type === "liquidation_signals") {
+    const liq = w as LiquidationSignalsConfig;
+    const { history: _history, ...rest } = liq;
+    return {
+      ...rest,
+      historyVersion: LIQ_HISTORY_VERSION,
+      minNotional:
+        typeof liq.minNotional === "number" && Number.isFinite(liq.minNotional)
+          ? liq.minNotional
+          : undefined,
+      coins: normalizeLiqCoins(liq.coins),
+    };
+  }
+  if (w.type === "simulation_panel") {
+    const sim = w as SimulationPanelConfig;
+    return { ...sim, coins: normalizeCoins(sim.coins, SIM_COINS, DEFAULT_SIM_COINS) };
+  }
+  if (w.type === "live_trade_panel") {
+    const live = w as LiveTradePanelConfig;
+    return { ...live, coins: normalizeCoins(live.coins, LIVE_COINS, DEFAULT_LIVE_COINS) };
+  }
+  return w;
 }
 
 function sanitizeStorage(storage: DashboardsStorage): DashboardsStorage {

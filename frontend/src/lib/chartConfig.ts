@@ -77,9 +77,12 @@ const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
 
 export const INDICATOR_LINE_COLORS = {
   ema: "#2962FF",
-  vwap: "#f59e0b",
+  vwap: "#ffffff",
   rolling_vwap: "#a78bfa",
 } as const;
+
+/** Line width for session-anchored VWAP segments on the candlestick chart. */
+export const VWAP_LINE_WIDTH = 2;
 
 export function symbolShort(symbol: string): string {
   return symbol.replace("-PERP.BINANCE", "");

@@ -94,6 +94,7 @@ export type SimulationBetOpenMsg = {
   opened_at: number;
   signal_time?: number;
   liq_bar_open?: number;
+  threshold?: number;
 };
 
 export type SimulationBetSettleMsg = {
@@ -157,6 +158,7 @@ export type LiveBetOpenMsg = {
   opened_at: number;
   signal_time?: number;
   liq_bar_open?: number;
+  threshold?: number;
   order_id?: string | null;
   clob_status?: string | null;
 };
@@ -218,6 +220,7 @@ export type SimulationBetRow = {
   signal_time: number;
   liq_bar_open?: number | null;
   asset: string;
+  threshold?: number | null;
 };
 
 export type SimulationSideStats = {
@@ -238,6 +241,8 @@ export type SimulationStatus = {
   open_bets: number;
   active_cycles: number;
   by_side?: Record<string, SimulationSideStats>;
+  by_asset?: Record<string, SimulationSideStats>;
+  by_asset_side?: Record<string, Record<string, SimulationSideStats>>;
   enabled?: boolean;
   thresholds?: Record<string, number>;
   min_usd?: number;
@@ -265,6 +270,7 @@ export type LiveBetRow = {
   order_id?: string | null;
   clob_status?: string | null;
   fill_price?: number | null;
+  threshold?: number | null;
 };
 
 export type LiveStatus = {
@@ -276,6 +282,8 @@ export type LiveStatus = {
   open_bets: number;
   active_cycles: number;
   by_side?: Record<string, SimulationSideStats>;
+  by_asset?: Record<string, SimulationSideStats>;
+  by_asset_side?: Record<string, Record<string, SimulationSideStats>>;
   enabled?: boolean;
   orders_enabled?: boolean;
   credentials_configured?: boolean;
@@ -393,11 +401,13 @@ export type LiquidationSignalsConfig = {
 export type SimulationPanelConfig = {
   id: string;
   type: "simulation_panel";
+  coins?: string[];
 };
 
 export type LiveTradePanelConfig = {
   id: string;
   type: "live_trade_panel";
+  coins?: string[];
 };
 
 export type MarketTimesConfig = {

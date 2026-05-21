@@ -1,0 +1,38 @@
+/**
+ * Liste widget tipografi ve spacing token'ları.
+ * --list-scale: 1 → eski boyut; 1.2 → ~%20 büyük (varsayılan).
+ */
+:root {
+  --list-scale: 1.2;
+
+  --list-font-micro: calc(7px * var(--list-scale));
+  --list-font-xs: calc(8px * var(--list-scale));
+  --list-font-sm: calc(9px * var(--list-scale));
+  --list-font-md: calc(10px * var(--list-scale));
+  --list-font-lg: calc(11px * var(--list-scale));
+
+  --list-gap-toolbar: calc(8px * var(--list-scale));
+  --list-pad-toolbar: calc(4px * var(--list-scale)) calc(8px * var(--list-scale));
+  --list-gap-coins: calc(3px * var(--list-scale));
+  --list-pad-coin: calc(2px * var(--list-scale)) calc(5px * var(--list-scale));
+  --list-gap-inline: calc(4px * var(--list-scale));
+  --list-pad-input: calc(2px * var(--list-scale)) calc(6px * var(--list-scale));
+  --list-input-width: calc(72px * var(--list-scale));
+
+  --list-gap-row: calc(6px * var(--list-scale));
+  --list-gap-row-tight: calc(4px * var(--list-scale));
+  --list-pad-row: calc(5px * var(--list-scale)) calc(8px * var(--list-scale));
+  --list-pad-row-tight: calc(3px * var(--list-scale)) calc(8px * var(--list-scale));
+  --list-pad-empty: calc(16px * var(--list-scale));
+  --list-pad-empty-tight: calc(12px * var(--list-scale)) calc(10px * var(--list-scale));
+
+  --list-gap-time: calc(3px * var(--list-scale));
+  --list-gap-time-tight: calc(1px * var(--list-scale));
+  --list-pad-badge: calc(1px * var(--list-scale)) calc(5px * var(--list-scale));
+  --list-time-label-min: calc(14px * var(--list-scale));
+
+  --list-pad-market-row: calc(8px * var(--list-scale)) calc(10px * var(--list-scale));
+  --list-gap-market-row: calc(8px * var(--list-scale)) calc(12px * var(--list-scale));
+  --list-gap-market-left: calc(8px * var(--list-scale));
+  --list-dot-offset: calc(4px * var(--list-scale));
+}

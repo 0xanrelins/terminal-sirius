@@ -30,6 +30,7 @@ import {
   isPresetActive,
   presetId,
   symbolShort,
+  VWAP_LINE_WIDTH,
 } from "../../lib/chartConfig";
 import { barOpenTime, currentBarBucket } from "../../lib/barTime";
 import {
@@ -408,13 +409,13 @@ export function CandlestickChart({
           if (!line) {
             line = chart.addSeries(LineSeries, {
               color,
-              lineWidth: 1,
+              lineWidth: VWAP_LINE_WIDTH,
               priceLineVisible: false,
               lastValueVisible: false,
             });
             prev.set(key, line);
           } else {
-            line.applyOptions({ color });
+            line.applyOptions({ color, lineWidth: VWAP_LINE_WIDTH });
           }
           line.setData(data);
         });

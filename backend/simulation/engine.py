@@ -538,6 +538,7 @@ class SimulationEngine:
             "opened_at": opened_at,
             "signal_time": signal_time or opened_at,
             "liq_bar_open": liq_bar_open or (candle_open - WINDOW_SEC),
+            "threshold": threshold,
         })
         up_s = f"{yes_price:.3f}" if yes_price is not None else "?"
         print(

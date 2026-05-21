@@ -7,9 +7,18 @@ import type {
   CandlestickChartConfig,
   ComparisonChartConfig,
   LiquidationSignalsConfig,
+  LiveTradePanelConfig,
   PolymarketTickerConfig,
+  SimulationPanelConfig,
   WidgetConfig,
 } from "../types";
+import {
+  DEFAULT_LIVE_COINS,
+  DEFAULT_SIM_COINS,
+  LIVE_COINS,
+  normalizeCoins,
+  SIM_COINS,
+} from "../lib/liqCoins";
 import { AddWidgetModal } from "./AddWidgetModal";
 import { CandlestickChart } from "./widgets/CandlestickChart";
 import { normalizeComparisonSymbols } from "../lib/chartConfig";
@@ -109,10 +118,24 @@ function renderWidget(
         />
       );
     }
-    case "simulation_panel":
-      return <SimulationPanel />;
-    case "live_trade_panel":
-      return <LiveTradePanel />;
+    case "simulation_panel": {
+      const simCfg = cfg as SimulationPanelConfig;
+      return (
+        <SimulationPanel
+          coins={normalizeCoins(simCfg.coins, SIM_COINS, DEFAULT_SIM_COINS)}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    }
+    case "live_trade_panel": {
+      const liveCfg = cfg as LiveTradePanelConfig;
+      return (
+        <LiveTradePanel
+          coins={normalizeCoins(liveCfg.coins, LIVE_COINS, DEFAULT_LIVE_COINS)}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    }
     case "market_times":
       return <MarketTimes />;
     default:
@@ -232,7 +255,7 @@ export function Canvas({ state, onChange }: Props) {
         width={gridWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar, .simulationToolbar`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar, .simulationToolbar, .liveTradeToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >

@@ -9,33 +9,55 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
+  gap: var(--list-gap-toolbar);
+  padding: var(--list-pad-toolbar);
   border-bottom: 1px solid #1e1e28;
   flex-shrink: 0;
   flex-wrap: wrap;
 }
 
-.title {
-  font-size: 10px;
+.coins {
+  display: flex;
+  align-items: center;
+  gap: var(--list-gap-coins);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.coinBtn {
+  padding: var(--list-pad-coin);
+  font-size: var(--list-font-sm);
   font-weight: 600;
-  color: #f59e0b;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-family: inherit;
+  letter-spacing: 0.03em;
+  color: #666;
+  background: #0d0d0f;
+  border: 1px solid #2a2a35;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
+}
+.coinBtn:hover {
+  color: #a8a8b0;
+  border-color: #3a3a48;
+}
+.coinBtnOn {
+  font-weight: 700;
 }
 
 .liveBadge {
-  font-size: 8px;
+  font-size: var(--list-font-xs);
   font-weight: 700;
   color: #0a0a0c;
   background: #f59e0b;
-  padding: 1px 5px;
+  padding: var(--list-pad-badge);
   border-radius: 2px;
   letter-spacing: 0.08em;
 }
 
 .stat {
-  font-size: 10px;
+  font-size: var(--list-font-md);
   color: #888;
 }
 
@@ -45,7 +67,7 @@
 }
 
 .threshold {
-  font-size: 9px;
+  font-size: var(--list-font-sm);
   color: #666;
 }
 
@@ -58,7 +80,7 @@
 }
 
 .status {
-  font-size: 8px;
+  font-size: var(--list-font-xs);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #444;
@@ -66,14 +88,14 @@
 }
 
 .loadError {
-  font-size: 8px;
+  font-size: var(--list-font-xs);
   color: #f87171;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .ordersOff {
-  font-size: 8px;
+  font-size: var(--list-font-xs);
   color: #fbbf24;
   text-transform: uppercase;
 }
@@ -94,8 +116,8 @@
 }
 
 .empty {
-  padding: 16px;
-  font-size: 11px;
+  padding: var(--list-pad-empty);
+  font-size: var(--list-font-lg);
   color: #555;
   text-align: center;
 }
@@ -103,10 +125,10 @@
 .row {
   display: grid;
   grid-template-columns: 42px 32px 28px 52px 1fr 56px 48px 76px;
-  gap: 6px;
+  gap: var(--list-gap-row);
   align-items: center;
-  padding: 5px 8px;
-  font-size: 10px;
+  padding: var(--list-pad-row);
+  font-size: var(--list-font-md);
   border-bottom: 1px solid #141418;
 }
 
@@ -122,13 +144,13 @@
 .sideUp {
   color: #14f195;
   font-weight: 700;
-  font-size: 9px;
+  font-size: var(--list-font-sm);
 }
 
 .sideDn {
   color: #f87171;
   font-weight: 700;
-  font-size: 9px;
+  font-size: var(--list-font-sm);
 }
 
 .leg {
@@ -146,9 +168,14 @@
   white-space: nowrap;
 }
 
+.rowThreshold {
+  color: #555;
+  font-weight: 400;
+}
+
 .orderId {
   color: #555;
-  font-size: 8px;
+  font-size: var(--list-font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -182,7 +209,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 1px;
+  gap: var(--list-gap-time-tight);
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
@@ -191,8 +218,8 @@
 .timeSig {
   display: flex;
   align-items: baseline;
-  gap: 3px;
-  font-size: 9px;
+  gap: var(--list-gap-time);
+  font-size: var(--list-font-sm);
 }
 
 .timeLiq {
@@ -204,10 +231,10 @@
 }
 
 .timeLabel {
-  font-size: 7px;
+  font-size: var(--list-font-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #555;
-  min-width: 14px;
+  min-width: var(--list-time-label-min);
 }

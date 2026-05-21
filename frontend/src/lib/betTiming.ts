@@ -21,6 +21,13 @@ export function signalTimestamp(row: {
   return row.signal_time ?? row.opened_at;
 }
 
+/** Cycle liq threshold at signal time (e.g. ≥$200k). */
+export function formatLiqThreshold(usd: number): string {
+  if (usd >= 1_000_000) return `≥$${(usd / 1_000_000).toFixed(1)}M`;
+  if (usd >= 1_000) return `≥$${Math.round(usd / 1_000)}k`;
+  return `≥$${Math.round(usd)}`;
+}
+
 export function formatBarTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString("en-GB", {
     hour: "2-digit",

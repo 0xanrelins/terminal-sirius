@@ -591,6 +591,7 @@ class LiveTradingEngine:
             "opened_at": opened_at,
             "signal_time": signal_time or opened_at,
             "liq_bar_open": liq_bar_open or (candle_open - WINDOW_SEC),
+            "threshold": threshold,
             "order_id": order_id,
             "clob_status": clob_status,
         })

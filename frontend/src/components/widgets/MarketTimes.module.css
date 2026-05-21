@@ -15,15 +15,15 @@
 .row {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 8px 12px;
+  gap: var(--list-gap-market-row);
   align-items: start;
-  padding: 8px 10px;
+  padding: var(--list-pad-market-row);
   border-bottom: 1px solid #16161c;
 }
 
 .left {
   display: flex;
-  gap: 8px;
+  gap: var(--list-gap-market-left);
   min-width: 0;
 }
 
@@ -31,7 +31,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  margin-top: 4px;
+  margin-top: var(--list-dot-offset);
   flex-shrink: 0;
 }
 
@@ -50,7 +50,7 @@
 }
 
 .name {
-  font-size: 11px;
+  font-size: var(--list-font-lg);
   font-weight: 500;
   color: #e8e8ec;
   line-height: 1.3;
@@ -60,10 +60,10 @@
 }
 
 .localTime {
-  font-size: 10px;
+  font-size: var(--list-font-md);
   color: #666;
   font-variant-numeric: tabular-nums;
-  margin-top: 2px;
+  margin-top: calc(2px * var(--list-scale));
 }
 
 .right {
@@ -72,23 +72,23 @@
 }
 
 .statusOpen {
-  font-size: 10px;
+  font-size: var(--list-font-md);
   font-weight: 600;
   color: #22c55e;
   letter-spacing: 0.02em;
 }
 
 .statusClosed {
-  font-size: 10px;
+  font-size: var(--list-font-md);
   font-weight: 600;
   color: #888;
   letter-spacing: 0.02em;
 }
 
 .countdown {
-  font-size: 9px;
+  font-size: var(--list-font-sm);
   color: #555;
-  margin-top: 2px;
+  margin-top: calc(2px * var(--list-scale));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -99,7 +99,7 @@
   background: #1a1a22;
   border-radius: 1px;
   overflow: hidden;
-  margin-top: 2px;
+  margin-top: calc(2px * var(--list-scale));
 }
 
 .progressFill {
