@@ -59,14 +59,18 @@ export function PriceTicker({ symbol, source, label }: Props) {
 
   return (
     <div className={styles.ticker}>
-      <span className={styles.symbol}>
-        {isPolymarket && <span className={styles.pmBadge}>POLY</span>}
-        {displayLabel}
-      </span>
-      <span className={`${styles.price} ${flash ? styles[flash] : ""}`}>
-        {price ?? "—"}
-      </span>
-      <span className={`${styles.status} ${styles[status]}`}>{status}</span>
+      <div className={styles.row}>
+        <span className={`${styles.price} ${flash ? styles[flash] : ""}`}>
+          {price ?? "—"}
+        </span>
+        <div className={styles.meta}>
+          <span className={styles.symbol}>
+            {isPolymarket && <span className={styles.pmBadge}>POLY</span>}
+            {displayLabel}
+          </span>
+          <span className={`${styles.status} ${styles[status]}`}>{status}</span>
+        </div>
+      </div>
     </div>
   );
 }
