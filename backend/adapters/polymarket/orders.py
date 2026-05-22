@@ -1,4 +1,4 @@
-"""Polymarket CLOB order placement (live trading)."""
+"""Polymarket CLOB order placement (live trading via Nautilus adapter stack)."""
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 _client = None
+_use_nautilus_stack = os.environ.get("LIVE_USE_NAUTILUS_EXEC", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 @dataclass
@@ -132,6 +137,15 @@ def _float_or_none(val: Any) -> float | None:
 async def place_market_buy(token_id: str, amount_usd: float) -> OrderResult:
     if not can_place_orders():
         raise RuntimeError("Live orders disabled or credentials missing")
+    if _use_nautilus_stack:
+        from nautilus_bridge.polymarket_exec import place_market_buy as nt_place
+
+        result = await nt_place(token_id, amount_usd)
+        print(
+            f"[live-order] Nautilus Polymarket stack "
+            f"token={token_id[:12]}… ${amount_usd:.2f} id={result.order_id or '?'}"
+        )
+        return result
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, _place_market_buy_sync, token_id, amount_usd

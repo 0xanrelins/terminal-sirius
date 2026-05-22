@@ -15,6 +15,7 @@ from liquidations import fetch_liquidation_bars, get_memory_bars
 from live import config
 from live.config import Side
 from simulation.pricing import resolve_entry_price
+from engines.signal_state import events_indicate_bet_opened
 from simulation.sizing import (
     compute_bet,
     fetch_min_order_size,
@@ -99,9 +100,16 @@ class LiveTradingEngine:
         since = int(time.time()) - 7 * 86400
         for sym, bar_open, side in await db.get_live_signaled_keys(since):
             self._signaled.add(_signal_key(sym, bar_open, side))
+        repaired = await db.repair_stuck_live_cycles()
+        if repaired:
+            self._active_cycle.clear()
+            for c in await db.get_open_live_cycles():
+                side = c.get("side") or "long"
+                self._active_cycle[_cycle_key(c["asset"], side)] = int(c["id"])
+            print(f"[live] repaired {repaired} stuck cycle(s)")
         self._loaded = True
         print(
-            f"[live] restored {len(cycles)} cycle(s), {len(bets)} open bet(s), "
+            f"[live] restored {len(self._active_cycle)} cycle(s), {len(bets)} open bet(s), "
             f"{len(self._signaled)} signaled key(s)"
         )
         missed = await self.reconcile_settlements()
@@ -314,8 +322,14 @@ class LiveTradingEngine:
             threshold=threshold,
             liq_bar_open=bar_open,
         )
-        if evs:
+        if events_indicate_bet_opened(evs):
             self._signaled.add(sk)
+        elif evs:
+            side_label = "long" if side == "long" else "short"
+            print(
+                f"[live] {side_label} signal {asset} bar {bar_open} "
+                f"${total:,.0f}≥${threshold:,.0f} — order failed, not marked signaled"
+            )
         else:
             side_label = "long" if side == "long" else "short"
             print(
@@ -385,7 +399,7 @@ class LiveTradingEngine:
                 cycle_id=bet.cycle_id,
             )
             events.extend(evs)
-            if not evs:
+            if not events_indicate_bet_opened(evs):
                 await db.close_live_cycle(bet.cycle_id)
                 self._active_cycle.pop(ck, None)
         else:

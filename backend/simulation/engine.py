@@ -13,6 +13,7 @@ from klines import fetch_klines
 from liquidations import fetch_liquidation_bars, get_memory_bars
 from simulation import config
 from simulation.config import Side
+from engines.signal_state import events_indicate_bet_opened
 from simulation.pricing import resolve_entry_price
 from simulation.sizing import (
     compute_bet,
@@ -117,6 +118,13 @@ class SimulationEngine:
         since = int(time.time()) - 7 * 86400
         for sym, bar_open, side in await db.get_simulation_signaled_keys(since):
             self._signaled.add(_signal_key(sym, bar_open, side))
+        repaired = await db.repair_stuck_simulation_cycles()
+        if repaired:
+            self._active_cycle.clear()
+            for c in await db.get_open_simulation_cycles():
+                side = c.get("side") or "long"
+                self._active_cycle[_cycle_key(c["asset"], side)] = int(c["id"])
+            print(f"[simulation] repaired {repaired} stuck cycle(s)")
         self._loaded = True
         print(
             f"[simulation] restored {len(cycles)} cycle(s), {len(bets)} open bet(s), "
@@ -310,7 +318,7 @@ class SimulationEngine:
             threshold=threshold,
             liq_bar_open=bar_open,
         )
-        if evs:
+        if events_indicate_bet_opened(evs):
             self._signaled.add(sk)
         else:
             side_label = "long" if side == "long" else "short"
@@ -386,7 +394,7 @@ class SimulationEngine:
                 cycle_id=bet.cycle_id,
             )
             events.extend(evs)
-            if not evs:
+            if not events_indicate_bet_opened(evs):
                 await db.close_simulation_cycle(bet.cycle_id)
                 self._active_cycle.pop(ck, None)
         else:

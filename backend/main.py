@@ -36,6 +36,11 @@ load_dotenv(override=True)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 sys.path.insert(0, ".")
 
+import nautilus_env
+
+nautilus_env.sync_polymarket_env()
+nautilus_env.ensure_polymarket_l2_env()
+
 import db
 from adapters.polymarket.gamma import get_market_by_slug, get_token_ids, search_markets
 from adapters.polymarket.rolling import PRESET_15M_SERIES, series_symbol, slug_for_series

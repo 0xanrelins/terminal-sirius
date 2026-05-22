@@ -5,7 +5,8 @@
 | Layer | Role | Technology |
 |-------|------|------------|
 | Exchange | Raw market data | Binance WS, Polymarket CLOB |
-| Engine | Process, time, aggregate | Nautilus `TradingNode` + Actors |
+| Engine | Process, time, aggregate | Nautilus `TradingNode` + Actors + `LiqPolyStrategy` |
+| Live execution | Polymarket CLOB orders | Nautilus `PolymarketExecutionClient` (+ credential/retry stack) |
 | API (BFF) | Stable contract for UI | FastAPI HTTP + `/ws` |
 | UI | Display, light indicators | React |
 
@@ -34,7 +35,16 @@ UI talks only to FastAPI, not Nautilus or Postgres directly.
 ## Signal truth (sim / live)
 
 - One cycle per `(binance_symbol, liq_bar_open, side)` — DB unique index + `_signaled` restored from DB on startup.
+- `_signaled` is set only after `live_bet_open` / `simulation_bet_open` (not on order errors).
+- Stuck open cycles (no unsettled bets) are closed on engine `load_state` via `repair_stuck_*_cycles`.
 - Reconcile uses `signal_ts = liq_bar_open + 900`, not wall clock.
+
+## Nautilus alignment
+
+- `nautilus_env.sync_polymarket_env()` maps `POLYMARKET_PRIVATE_KEY` → `POLYMARKET_PK`, etc.
+- `node.py` registers `PolymarketLiveExecClientFactory` when `LIVE_ENABLED` + creds.
+- Live CLOB buys use `nautilus_bridge.polymarket_exec` (Nautilus credential helpers + retry).
+- Signal/cycle rules remain in FastAPI engines until fully ported to `LiqPolyStrategy`.
 
 ## Development rule
 

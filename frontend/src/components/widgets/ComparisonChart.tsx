@@ -35,8 +35,8 @@ type RawBar = { time: number; close: number };
 const INITIAL_LIMIT = 200;
 const PAGE_SIZE = 200;
 const LOAD_THRESHOLD = 10;
-/** Rebase % lines after pan/zoom settles (not every scroll frame). */
-const REINDEX_DEBOUNCE_MS = 250;
+/** Rebase % to left visible bar after pan/zoom settles (LC: avoid setData per frame). */
+const REBASE_SETTLE_MS = 450;
 /** Reference series for time axis and daily session lines (BTC). */
 const REF_SYMBOL = COMPARISON_SYMBOLS[0];
 
@@ -53,7 +53,7 @@ function mergeRaw(existing: RawBar[], older: RawBar[]): RawBar[] {
   return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
 }
 
-/** % change from baseline; left visible bar = 0%. */
+/** % change from each symbol's close at the left visible bar time. */
 function toPercentLine(
   bars: RawBar[],
   baseline: number
@@ -65,10 +65,15 @@ function toPercentLine(
   }));
 }
 
-function baselineFromIndex(bars: RawBar[], fromIndex: number): number {
+/** Close at `time`, or last bar at/before `time` (series share the chart time axis). */
+function baselineCloseAtTime(bars: RawBar[], time: number): number {
   if (bars.length === 0) return 0;
-  const idx = Math.min(Math.max(0, Math.floor(fromIndex)), bars.length - 1);
-  return bars[idx].close;
+  let close = bars[0].close;
+  for (const b of bars) {
+    if (b.time > time) break;
+    close = b.close;
+  }
+  return close;
 }
 
 function ensureFormingBar(bars: RawBar[], interval: string): RawBar[] {
@@ -124,7 +129,11 @@ export function ComparisonChart({
   const loadingRef = useRef(false);
   const exhaustedRef = useRef<Set<string>>(new Set());
   const historyReadyRef = useRef(false);
+  const baselineTimeRef = useRef<number | null>(null);
+  const reindexingRef = useRef(false);
   const reindexTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleGenRef = useRef(0);
+  const settleReindexRef = useRef<(() => void) | null>(null);
   const sessionBreaksRef = useRef<DailySessionBreaksPrimitive | null>(null);
   const [openIntervalMenu, setOpenIntervalMenu] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -132,13 +141,15 @@ export function ComparisonChart({
   const enabledSet = new Set(symbols);
   enabledSymbolsRef.current = enabledSet;
 
-  // Chart init, history load, infinite scroll, visible rebasing
+  // Chart init, history load, infinite scroll, left-edge % anchor
   useEffect(() => {
     if (!containerRef.current) return;
 
     rawRef.current = new Map();
     liveRef.current = new Map();
     baselineRef.current = new Map();
+    baselineTimeRef.current = null;
+    reindexingRef.current = false;
     loadingRef.current = false;
     exhaustedRef.current = new Set();
     historyReadyRef.current = false;
@@ -174,6 +185,8 @@ export function ComparisonChart({
         secondsVisible: false,
       },
       rightPriceScale: { borderColor: "#2a2a35" },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      kineticScroll: { touch: false, mouse: false },
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     });
@@ -203,30 +216,71 @@ export function ComparisonChart({
       sessionBreaks.refresh();
     };
 
-    const reindexToVisible = () => {
-      if (!historyReadyRef.current) return;
-      const range = chart.timeScale().getVisibleLogicalRange();
-      if (!range) return;
-
-      for (const sym of COMPARISON_SYMBOLS) {
-        if (!enabledSymbolsRef.current.has(sym)) continue;
-        const raw = rawRef.current.get(sym) ?? [];
-        const baseline = baselineFromIndex(raw, range.from);
-        if (baseline <= 0) continue;
-        baselineRef.current.set(sym, baseline);
-        seriesRef.current.get(sym)?.setData(toPercentLine(raw, baseline));
+    const applyPercentLines = (baselineTime: number) => {
+      reindexingRef.current = true;
+      const priceScale = chart.priceScale("right");
+      priceScale.setAutoScale(false);
+      try {
+        for (const sym of COMPARISON_SYMBOLS) {
+          if (!enabledSymbolsRef.current.has(sym)) continue;
+          const raw = rawRef.current.get(sym) ?? [];
+          const baseline = baselineCloseAtTime(raw, baselineTime);
+          if (baseline <= 0) continue;
+          baselineRef.current.set(sym, baseline);
+          seriesRef.current.get(sym)?.setData(toPercentLine(raw, baseline));
+        }
+      } finally {
+        priceScale.setAutoScale(true);
+        reindexingRef.current = false;
       }
     };
 
-    const scheduleReindex = () => {
+    const leftEdgeBaselineTime = (): number | null => {
+      const range = chart.timeScale().getVisibleRange();
+      if (!range || typeof range.from !== "number") return null;
+      return range.from;
+    };
+
+    const rebaseToLeftEdge = () => {
+      if (!historyReadyRef.current) return;
+      const baselineTime = leftEdgeBaselineTime();
+      if (baselineTime === null) return;
+      if (baselineTime === baselineTimeRef.current) return;
+
+      baselineTimeRef.current = baselineTime;
+      applyPercentLines(baselineTime);
+      updateSessionBreaks();
+      refreshSessionBreaks();
+    };
+
+    const scheduleSettleReindex = () => {
+      const gen = ++settleGenRef.current;
       if (reindexTimerRef.current) clearTimeout(reindexTimerRef.current);
       reindexTimerRef.current = setTimeout(() => {
-        reindexToVisible();
-        updateSessionBreaks();
-        refreshSessionBreaks();
+        if (gen !== settleGenRef.current) return;
+
+        const runWhenStable = (attempt: number) => {
+          if (gen !== settleGenRef.current) return;
+          const t1 = leftEdgeBaselineTime();
+          requestAnimationFrame(() => {
+            if (gen !== settleGenRef.current) return;
+            const t2 = leftEdgeBaselineTime();
+            if (t1 === null || t2 === null) return;
+            if (t1 !== t2 && attempt < 6) {
+              setTimeout(() => runWhenStable(attempt + 1), 80);
+              return;
+            }
+            if (t1 !== t2) return;
+            rebaseToLeftEdge();
+          });
+        };
+
+        runWhenStable(0);
         reindexTimerRef.current = null;
-      }, REINDEX_DEBOUNCE_MS);
+      }, REBASE_SETTLE_MS);
     };
+
+    settleReindexRef.current = scheduleSettleReindex;
 
     const fetchKlines = async (symbol: string, before?: number): Promise<Kline[]> => {
       const params = new URLSearchParams({
@@ -265,7 +319,7 @@ export function ComparisonChart({
             rawRef.current.set(sym, mergeRaw(bars, older));
           })
         );
-        scheduleReindex();
+        scheduleSettleReindex();
       } catch (e) {
         console.error(e);
       } finally {
@@ -276,10 +330,14 @@ export function ComparisonChart({
     const onVisibleLogicalRangeChange = (range: LogicalRange | null) => {
       if (!range) return;
       if (range.from < LOAD_THRESHOLD) void loadOlder();
-      scheduleReindex();
     };
 
     chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
+
+    const onGestureEnd = () => scheduleSettleReindex();
+    const chartEl = containerRef.current;
+    chartEl.addEventListener("pointerup", onGestureEnd);
+    chartEl.addEventListener("wheel", onGestureEnd, { passive: true });
 
     const ro = new ResizeObserver(() => {
       if (!containerRef.current) return;
@@ -287,7 +345,6 @@ export function ComparisonChart({
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
-      scheduleReindex();
     });
     ro.observe(containerRef.current);
 
@@ -310,18 +367,16 @@ export function ComparisonChart({
       .then(() => {
         historyReadyRef.current = true;
 
-        // Seed series so the time scale can scroll, then rebase to visible left edge.
         for (const sym of COMPARISON_SYMBOLS) {
           const series = seriesRef.current.get(sym);
           if (!series) continue;
           series.applyOptions({ visible: enabledSymbolsRef.current.has(sym) });
           if (!enabledSymbolsRef.current.has(sym)) continue;
           const raw = rawRef.current.get(sym) ?? [];
-          const seedIdx = Math.max(0, raw.length - 80);
-          const seedBaseline = raw[seedIdx]?.close ?? raw[0]?.close ?? 0;
-          if (seedBaseline > 0) {
-            baselineRef.current.set(sym, seedBaseline);
-            series.setData(toPercentLine(raw, seedBaseline));
+          const boot = raw[0]?.close ?? 0;
+          if (boot > 0) {
+            baselineRef.current.set(sym, boot);
+            series.setData(toPercentLine(raw, boot));
           }
         }
 
@@ -335,11 +390,7 @@ export function ComparisonChart({
           to: refRaw.length + 2,
         });
 
-        requestAnimationFrame(() => {
-          updateSessionBreaks();
-          refreshSessionBreaks();
-          scheduleReindex();
-        });
+        rebaseToLeftEdge();
         setLoading(false);
       })
       .catch((e) => {
@@ -349,7 +400,10 @@ export function ComparisonChart({
       });
 
     return () => {
+      settleReindexRef.current = null;
       if (reindexTimerRef.current) clearTimeout(reindexTimerRef.current);
+      chartEl.removeEventListener("pointerup", onGestureEnd);
+      chartEl.removeEventListener("wheel", onGestureEnd);
       ro.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       chart.remove();
@@ -359,13 +413,15 @@ export function ComparisonChart({
       rawRef.current.clear();
       liveRef.current.clear();
       baselineRef.current.clear();
+      baselineTimeRef.current = null;
+      reindexingRef.current = false;
       historyReadyRef.current = false;
     };
   }, [interval]);
 
-  // Live updates: official bar close only (no trade ticks)
+  // Closed bars only — no forming-bar / tick updates (LC: update on interval close)
   useEffect(() => {
-    const commitPoint = (symbol: string, bar: RawBar) => {
+    const commitClosedBar = (symbol: string, bar: RawBar) => {
       const series = seriesRef.current.get(symbol);
       if (!series || !historyReadyRef.current) return;
 
@@ -377,12 +433,14 @@ export function ComparisonChart({
         bars.sort((a, b) => a.time - b.time);
       }
       rawRef.current.set(symbol, bars);
+      liveRef.current.set(symbol, null);
 
       if (symbol === REF_SYMBOL) {
         sessionBreaksRef.current?.setBoundaries(computeUtcDayBoundaries(bars));
       }
 
       if (!enabledSymbolsRef.current.has(symbol)) return;
+      if (reindexingRef.current) return;
 
       const baseline = baselineRef.current.get(symbol);
       if (!baseline || baseline <= 0) return;
@@ -394,13 +452,23 @@ export function ComparisonChart({
 
     const unsubs = COMPARISON_SYMBOLS.map((sym) =>
       subscribe(sym, (msg) => {
-        if (msg.type === "bar" && msg.interval === interval) {
-          const m = msg as BarMsg;
-          const t = m.time ?? barOpenTime(Math.floor(m.ts / 1e9), interval);
-          const bar: RawBar = { time: t, close: parseFloat(m.close) };
+        if (msg.type !== "bar" || msg.interval !== interval) return;
+
+        const m = msg as BarMsg;
+        const t = m.time ?? barOpenTime(Math.floor(m.ts / 1e9), interval);
+        const bar: RawBar = { time: t, close: parseFloat(m.close) };
+        const openBucket = currentBarBucket(interval);
+
+        if (t >= openBucket) {
+          const prev = liveRef.current.get(sym);
+          if (prev && prev.time < openBucket) {
+            commitClosedBar(sym, prev);
+          }
           liveRef.current.set(sym, bar);
-          commitPoint(sym, bar);
+          return;
         }
+
+        commitClosedBar(sym, bar);
       })
     );
 
@@ -416,10 +484,18 @@ export function ComparisonChart({
       const visible = enabledSymbolsRef.current.has(sym);
       series.applyOptions({ visible });
       if (!visible) continue;
+      const t = baselineTimeRef.current;
+      if (t === null) continue;
       const raw = rawRef.current.get(sym) ?? [];
-      const baseline = baselineRef.current.get(sym);
-      if (baseline && baseline > 0) {
-        series.setData(toPercentLine(raw, baseline));
+      const baseline = baselineCloseAtTime(raw, t);
+      if (baseline > 0) {
+        baselineRef.current.set(sym, baseline);
+        reindexingRef.current = true;
+        try {
+          series.setData(toPercentLine(raw, baseline));
+        } finally {
+          reindexingRef.current = false;
+        }
       }
     }
   }, [symbols]);
@@ -433,6 +509,7 @@ export function ComparisonChart({
 
   const scrollToRealtime = () => {
     chartRef.current?.timeScale().scrollToRealTime();
+    settleReindexRef.current?.();
     requestAnimationFrame(() => sessionBreaksRef.current?.refresh());
   };
   const stopMenuClick = (e: React.MouseEvent) => e.stopPropagation();

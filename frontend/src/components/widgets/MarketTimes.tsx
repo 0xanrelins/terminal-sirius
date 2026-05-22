@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   getMarketRowState,
+  getNextMarketTimesWakeMs,
   MARKET_SESSIONS,
 } from "../../lib/marketSessions";
 import styles from "./MarketTimes.module.css";
@@ -9,8 +10,28 @@ export function MarketTimes() {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
-    const id = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(id);
+    let cancelled = false;
+    let timeoutId = 0;
+
+    const refresh = () => {
+      if (cancelled) return;
+      setNow(new Date());
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(refresh, getNextMarketTimesWakeMs());
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    timeoutId = window.setTimeout(refresh, getNextMarketTimesWakeMs());
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   return (

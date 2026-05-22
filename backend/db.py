@@ -624,6 +624,23 @@ async def close_simulation_cycle(cycle_id: int) -> None:
     )
 
 
+async def repair_stuck_simulation_cycles() -> int:
+    """Close open sim cycles with no unsettled bets."""
+    rows = await pool().fetch(
+        """
+        UPDATE simulation_cycles c
+        SET status = 'closed'
+        WHERE c.status = 'open'
+          AND NOT EXISTS (
+              SELECT 1 FROM simulation_bets b
+              WHERE b.cycle_id = c.id AND b.settled_at IS NULL
+          )
+        RETURNING c.id
+        """
+    )
+    return len(rows)
+
+
 async def insert_simulation_bet(
     cycle_id: int,
     leg: int,
@@ -917,6 +934,26 @@ async def close_live_cycle(cycle_id: int) -> None:
         "UPDATE live_cycles SET status = 'closed' WHERE id = $1",
         cycle_id,
     )
+
+
+async def repair_stuck_live_cycles() -> int:
+    """
+    Close open live cycles that have no unsettled bets (e.g. leg-2 order failed).
+    Returns number of cycles closed.
+    """
+    rows = await pool().fetch(
+        """
+        UPDATE live_cycles c
+        SET status = 'closed'
+        WHERE c.status = 'open'
+          AND NOT EXISTS (
+              SELECT 1 FROM live_bets b
+              WHERE b.cycle_id = c.id AND b.settled_at IS NULL
+          )
+        RETURNING c.id, c.asset, c.side
+        """
+    )
+    return len(rows)
 
 
 async def insert_live_bet(
