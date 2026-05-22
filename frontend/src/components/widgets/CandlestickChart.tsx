@@ -87,16 +87,29 @@ function vwapSegmentKey(baseId: string, index: number): string {
   return `${baseId}${VWAP_SEG}${index}`;
 }
 
+/** Match sim/live: highlight only when long or short alone ≥ threshold (not combined). */
 function liqHistColor(long: number, short: number, threshold: number): string {
-  const total = long + short;
-  if (total < threshold) return LIQ_MUTED_COLOR;
-  return long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR;
+  const longHit = long >= threshold;
+  const shortHit = short >= threshold;
+  if (!longHit && !shortHit) return LIQ_MUTED_COLOR;
+  if (longHit && shortHit) return long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR;
+  if (longHit) return LONG_LIQ_COLOR;
+  return SHORT_LIQ_COLOR;
+}
+
+function liqHistValue(long: number, short: number, threshold: number): number {
+  const longHit = long >= threshold;
+  const shortHit = short >= threshold;
+  if (longHit && shortHit) return Math.max(long, short);
+  if (longHit) return long;
+  if (shortHit) return short;
+  return long >= short ? long : short;
 }
 
 function liqToHistogramData(bars: LiquidationBar[], threshold: number) {
   return bars.map((b) => ({
     time: b.time as UTCTimestamp,
-    value: b.long + b.short,
+    value: liqHistValue(b.long, b.short, threshold),
     color: liqHistColor(b.long, b.short, threshold),
   }));
 }
@@ -355,7 +368,7 @@ export function CandlestickChart({
     const threshold = getLiqThreshold(indicatorsRef.current);
     liqSeriesRef.current.update({
       time: time as UTCTimestamp,
-      value: long + short,
+      value: liqHistValue(long, short, threshold),
       color: liqHistColor(long, short, threshold),
     });
   }, []);

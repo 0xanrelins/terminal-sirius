@@ -14,6 +14,16 @@ export function currentBarBucket(interval: string): number {
   return barOpenTime(Math.floor(Date.now() / 1000), interval);
 }
 
+/** Seconds remaining until the open bar bucket closes (UTC-aligned). */
+export function secondsUntilBucketEnd(
+  interval: string,
+  nowSec = Math.floor(Date.now() / 1000)
+): number {
+  const barSec = INTERVAL_SECONDS[interval] ?? 60;
+  const bucketOpen = barOpenTime(nowSec, interval);
+  return bucketOpen + barSec - nowSec;
+}
+
 /** UTC session bucket open for anchored VWAP (period bars × chart interval). */
 export function sessionBucketOpen(
   barTimeSec: number,

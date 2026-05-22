@@ -94,6 +94,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "live_trade_panel" });
       } else if (binanceType === "market_times") {
         onAdd({ id, type: "market_times" });
+      } else if (binanceType === "bar_countdown") {
+        onAdd({ id, type: "bar_countdown" });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -122,6 +124,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         binanceType === "simulation_panel" ||
         binanceType === "live_trade_panel" ||
         binanceType === "market_times" ||
+        binanceType === "bar_countdown" ||
         binanceType === "comparison_chart" ||
         binanceType === "candlestick_chart" ||
         !!symbol.trim()
@@ -166,6 +169,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "simulation_panel",
                       "live_trade_panel",
                       "market_times",
+                      "bar_countdown",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -186,7 +190,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                                 ? "Live Trade"
                                 : t === "market_times"
                                   ? "Market Times"
-                                  : "Liq Signals"}
+                                  : t === "bar_countdown"
+                                    ? "15m Countdown"
+                                    : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -267,6 +273,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "market_times" && (
                 <p className={styles.hint}>
                   NYSE, LSE, TSE, ASX, CME — local time and session open/close countdown.
+                </p>
+              )}
+
+              {binanceType === "bar_countdown" && (
+                <p className={styles.hint}>
+                  UTC 15m bar close — aligned to :00, :15, :30, :45 (charts, liq bars, Polymarket windows).
                 </p>
               )}
             </>

@@ -56,6 +56,7 @@ def _candle_won(side: Side, open_p: float, close_p: float) -> bool:
 
 class SimulationEngine:
     def __init__(self) -> None:
+        self._assets = config.active_assets()
         self._thresholds = config.thresholds()
         self._min_usd = config.min_usd()
         self._min_shares_default = config.min_shares_default()
@@ -79,6 +80,7 @@ class SimulationEngine:
         self._open_bets.clear()
         self._loaded = False
         self._bars_synced = False
+        self._assets = config.active_assets()
         self._thresholds = config.thresholds()
         self._min_usd = config.min_usd()
         self._min_shares_default = config.min_shares_default()
@@ -135,11 +137,17 @@ class SimulationEngine:
             print(f"[simulation] sync: {len(events)} event(s) from stored 15m bars")
         return events
 
+    def clear_signal_cache(self) -> None:
+        n = len(self._signaled)
+        self._signaled.clear()
+        if n:
+            print(f"[simulation] cleared {n} signal cache key(s)")
+
     async def reconcile_all_bars(self) -> list[dict]:
         """Re-read authoritative 15m totals and emit any missing signals."""
         await self.load_state()
         events: list[dict] = []
-        for asset, meta in config.ASSETS.items():
+        for asset, meta in self._assets.items():
             symbol = meta["binance_symbol"]
             bars = await fetch_liquidation_bars(symbol, "15m", limit=1)
             if not bars:
@@ -205,6 +213,8 @@ class SimulationEngine:
         series = msg.get("series")
         if not series or series not in config.SERIES_TO_ASSET:
             return []
+        if series not in {v["poly_series"] for v in self._assets.values()}:
+            return []
         price = float(msg.get("yes_price") or 0)
         if price > 0:
             self._poly_yes[series] = price
@@ -216,6 +226,8 @@ class SimulationEngine:
             return []
 
         asset = config.BINANCE_TO_ASSET[symbol]
+        if asset not in self._assets:
+            return []
         updates = msg.get("_updates") or []
         events: list[dict] = []
         signal_ts = int(msg.get("time") or time.time())
@@ -273,7 +285,11 @@ class SimulationEngine:
         total: float,
         signal_ts: int,
     ) -> list[dict]:
-        threshold = self._thresholds.get(asset, config.DEFAULT_THRESHOLDS[asset])
+        if asset not in self._assets:
+            return []
+        threshold = self._thresholds.get(asset)
+        if threshold is None:
+            return []
         sk = _signal_key(symbol, bar_open, side)
         if (
             total < threshold
@@ -421,7 +437,7 @@ class SimulationEngine:
         cycle_id: int | None = None,
         liq_bar_open: int | None = None,
     ) -> list[dict]:
-        meta = config.ASSETS[asset]
+        meta = self._assets[asset]
         series = meta["poly_series"]
         slug = slug_for_series(series, ts=candle_open)
         opened_at = int(time.time())

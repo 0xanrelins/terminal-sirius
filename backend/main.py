@@ -32,8 +32,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-load_dotenv()
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(override=True)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 sys.path.insert(0, ".")
 
 import db
@@ -219,6 +219,7 @@ async def simulation_status():
 
         status = await db.get_simulation_status()
         status["enabled"] = sim_cfg.is_enabled()
+        status["assets"] = list(sim_cfg.active_assets().keys())
         status["thresholds"] = sim_cfg.thresholds()
         status["min_usd"] = sim_cfg.min_usd()
         status["min_shares"] = sim_cfg.min_shares_default()
@@ -241,16 +242,22 @@ async def simulation_bets(limit: int = 100, assets: str | None = None):
 
 
 @app.post("/simulation/reconcile")
-async def simulation_reconcile():
+async def simulation_reconcile(reset_signaled: bool = False):
     """Re-scan 15m liq bars vs thresholds (fixes engine/chart total drift)."""
     if _simulation is None:
         raise HTTPException(status_code=503, detail="Simulation not running")
     try:
+        if reset_signaled:
+            _simulation.clear_signal_cache()
         events = await _simulation.reconcile_all_bars()
         events += await _simulation.reconcile_settlements()
         if events:
             asyncio.create_task(_fanout_messages(events))
-        return {"events": len(events), "ok": True}
+        return {
+            "events": len(events),
+            "ok": True,
+            "reset_signaled": reset_signaled,
+        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -268,6 +275,7 @@ async def simulation_reset():
 
 
 class SimulationConfigBody(BaseModel):
+    assets: list[str] | None = None
     thresholds: dict[str, float] | None = None
     min_usd: float | None = None
     enabled: bool | None = None
@@ -278,6 +286,8 @@ async def simulation_config(body: SimulationConfigBody):
     import json
     import os
 
+    if body.assets is not None:
+        os.environ["SIM_ASSETS"] = ",".join(a.strip().upper() for a in body.assets if a.strip())
     if body.thresholds is not None:
         os.environ["SIM_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
     if body.min_usd is not None:
@@ -287,6 +297,7 @@ async def simulation_config(body: SimulationConfigBody):
     if _simulation is not None:
         from simulation import config as sim_cfg
 
+        _simulation._assets = sim_cfg.active_assets()
         _simulation._thresholds = sim_cfg.thresholds()
         _simulation._min_usd = sim_cfg.min_usd()
     return await simulation_status()
@@ -348,6 +359,7 @@ async def live_reconcile(reset_signaled: bool = False):
 
 
 class LiveConfigBody(BaseModel):
+    assets: list[str] | None = None
     thresholds: dict[str, float] | None = None
     min_usd: float | None = None
     enabled: bool | None = None
@@ -358,6 +370,8 @@ async def live_config(body: LiveConfigBody):
     import json
     import os
 
+    if body.assets is not None:
+        os.environ["LIVE_ASSETS"] = ",".join(a.strip().upper() for a in body.assets if a.strip())
     if body.thresholds is not None:
         os.environ["LIVE_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
     if body.min_usd is not None:

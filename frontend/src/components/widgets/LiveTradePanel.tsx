@@ -55,6 +55,16 @@ export function LiveTradePanel({ coins, onConfigChange }: Props) {
   const selectedSet = useMemo(() => new Set<string>(selected), [selected]);
   const { subscribe, status } = useFeed();
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const availableCoins = useMemo(() => {
+    const fromApi = liveStatus?.assets;
+    if (fromApi?.length) {
+      return fromApi.filter((c): c is LiveCoin =>
+        (LIVE_COINS as readonly string[]).includes(c)
+      );
+    }
+    return [...LIVE_COINS];
+  }, [liveStatus?.assets]);
+  const availableSet = useMemo(() => new Set(availableCoins), [availableCoins]);
   const [rows, setRows] = useState<LiveBetRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -97,6 +107,16 @@ export function LiveTradePanel({ coins, onConfigChange }: Props) {
     const t = setInterval(refresh, 5_000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!liveStatus?.assets?.length) return;
+    const filtered = selected.filter((c) => availableSet.has(c));
+    if (filtered.length === 0) {
+      onConfigChange({ coins: availableCoins });
+    } else if (filtered.length !== selected.length) {
+      onConfigChange({ coins: filtered });
+    }
+  }, [liveStatus?.assets, availableCoins, availableSet, selected, onConfigChange]);
 
   useEffect(() => {
     return subscribe("*", (msg: FeedMsg) => {
@@ -176,7 +196,7 @@ export function LiveTradePanel({ coins, onConfigChange }: Props) {
     <div className={styles.root}>
       <div className={`${styles.toolbar} liveTradeToolbar`}>
         <div className={styles.coins}>
-          {LIVE_COINS.map((coin) => {
+          {availableCoins.map((coin) => {
             const on = selectedSet.has(coin);
             const accent = MAJOR_COLORS[coin];
             return (

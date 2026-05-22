@@ -32,6 +32,7 @@ import { LiveTradePanel } from "./widgets/LiveTradePanel";
 import { MarketTimes } from "./widgets/MarketTimes";
 import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
+import { BarCountdown } from "./widgets/BarCountdown";
 import { PriceTicker } from "./widgets/PriceTicker";
 import styles from "./Canvas.module.css";
 
@@ -58,6 +59,7 @@ function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "simulation_panel") return "Liq→Poly Sim";
   if (cfg.type === "live_trade_panel") return "Live Trade";
   if (cfg.type === "market_times") return "Market Times";
+  if (cfg.type === "bar_countdown") return "15m Countdown";
   if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
@@ -138,6 +140,8 @@ function renderWidget(
     }
     case "market_times":
       return <MarketTimes />;
+    case "bar_countdown":
+      return <BarCountdown />;
     default:
       return null;
   }

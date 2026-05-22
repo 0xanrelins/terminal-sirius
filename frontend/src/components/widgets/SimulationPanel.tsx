@@ -44,6 +44,16 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
   const selectedSet = useMemo(() => new Set<string>(selected), [selected]);
   const { subscribe, status } = useFeed();
   const [simStatus, setSimStatus] = useState<SimulationStatus | null>(null);
+  const availableCoins = useMemo(() => {
+    const fromApi = simStatus?.assets;
+    if (fromApi?.length) {
+      return fromApi.filter((c): c is SimCoin =>
+        (SIM_COINS as readonly string[]).includes(c)
+      );
+    }
+    return [...SIM_COINS];
+  }, [simStatus?.assets]);
+  const availableSet = useMemo(() => new Set(availableCoins), [availableCoins]);
   const [rows, setRows] = useState<SimulationBetRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -86,6 +96,16 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
     const t = setInterval(refresh, 5_000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!simStatus?.assets?.length) return;
+    const filtered = selected.filter((c) => availableSet.has(c));
+    if (filtered.length === 0) {
+      onConfigChange({ coins: availableCoins });
+    } else if (filtered.length !== selected.length) {
+      onConfigChange({ coins: filtered });
+    }
+  }, [simStatus?.assets, availableCoins, availableSet, selected, onConfigChange]);
 
   useEffect(() => {
     return subscribe("*", (msg: FeedMsg) => {
@@ -160,7 +180,7 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
     <div className={styles.root}>
       <div className={`${styles.toolbar} simulationToolbar`}>
         <div className={styles.coins}>
-          {SIM_COINS.map((coin) => {
+          {availableCoins.map((coin) => {
             const on = selectedSet.has(coin);
             const accent = MAJOR_COLORS[coin];
             return (

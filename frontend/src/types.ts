@@ -244,6 +244,8 @@ export type SimulationStatus = {
   by_asset?: Record<string, SimulationSideStats>;
   by_asset_side?: Record<string, Record<string, SimulationSideStats>>;
   enabled?: boolean;
+  /** Active assets from .env (SIM_ASSETS or SIM_THRESHOLDS_JSON keys). */
+  assets?: string[];
   thresholds?: Record<string, number>;
   min_usd?: number;
   min_shares?: number;
@@ -327,7 +329,8 @@ export type WidgetType =
   | "liquidation_signals"
   | "simulation_panel"
   | "live_trade_panel"
-  | "market_times";
+  | "market_times"
+  | "bar_countdown";
 
 export type PriceTickerConfig = {
   id: string;
@@ -415,6 +418,11 @@ export type MarketTimesConfig = {
   type: "market_times";
 };
 
+export type BarCountdownConfig = {
+  id: string;
+  type: "bar_countdown";
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
@@ -423,7 +431,8 @@ export type WidgetConfig =
   | LiquidationSignalsConfig
   | SimulationPanelConfig
   | LiveTradePanelConfig
-  | MarketTimesConfig;
+  | MarketTimesConfig
+  | BarCountdownConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

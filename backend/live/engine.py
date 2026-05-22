@@ -263,7 +263,11 @@ class LiveTradingEngine:
         total: float,
         signal_ts: int,
     ) -> list[dict]:
-        threshold = self._thresholds.get(asset, config.DEFAULT_THRESHOLDS.get(asset, 0))
+        if asset not in self._assets:
+            return []
+        threshold = self._thresholds.get(asset)
+        if threshold is None:
+            return []
         sk = _signal_key(symbol, bar_open, side)
         if (
             total < threshold

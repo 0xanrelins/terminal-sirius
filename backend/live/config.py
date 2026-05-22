@@ -6,31 +6,17 @@ import os
 from typing import Literal
 
 from adapters.polymarket.rolling import WINDOW_SEC
+from simulation.config import ASSETS, DEFAULT_THRESHOLDS
+from strategy_env import resolve_active_keys
 
 Side = Literal["long", "short"]
 SIDES: tuple[Side, ...] = ("long", "short")
-
-ASSETS: dict[str, dict[str, str]] = {
-    "SOL": {
-        "binance_symbol": "SOLUSDT-PERP.BINANCE",
-        "poly_series": "sol-updown-15m",
-    },
-    "DOGE": {
-        "binance_symbol": "DOGEUSDT-PERP.BINANCE",
-        "poly_series": "doge-updown-15m",
-    },
-}
 
 BINANCE_TO_ASSET: dict[str, str] = {
     v["binance_symbol"]: k for k, v in ASSETS.items()
 }
 
 SERIES_TO_ASSET: dict[str, str] = {v["poly_series"]: k for k, v in ASSETS.items()}
-
-DEFAULT_THRESHOLDS: dict[str, float] = {
-    "SOL": 200_000,
-    "DOGE": 200_000,
-}
 
 
 def is_enabled() -> bool:
@@ -45,23 +31,40 @@ def min_shares_default() -> float:
     return float(os.environ.get("LIVE_MIN_SHARES", "5"))
 
 
-def thresholds() -> dict[str, float]:
-    raw = os.environ.get("LIVE_THRESHOLDS_JSON")
-    if raw:
-        try:
-            data = json.loads(raw)
-            return {k.upper(): float(v) for k, v in data.items()}
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
-    return dict(DEFAULT_THRESHOLDS)
+def active_asset_keys() -> set[str]:
+    return resolve_active_keys(
+        catalog=set(ASSETS.keys()),
+        csv_env="LIVE_ASSETS",
+        thresholds_env="LIVE_THRESHOLDS_JSON",
+    )
 
 
 def active_assets() -> dict[str, dict[str, str]]:
-    raw = os.environ.get("LIVE_ASSETS", "SOL,DOGE")
-    keys = {k.strip().upper() for k in raw.split(",") if k.strip()}
-    if not keys:
-        return dict(ASSETS)
+    keys = active_asset_keys()
     return {k: v for k, v in ASSETS.items() if k in keys}
+
+
+def _parsed_thresholds_json() -> dict[str, float]:
+    raw = os.environ.get("LIVE_THRESHOLDS_JSON")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return {str(k).upper(): float(v) for k, v in data.items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def thresholds() -> dict[str, float]:
+    keys = active_asset_keys()
+    parsed = _parsed_thresholds_json()
+    out: dict[str, float] = {}
+    for k in keys:
+        if k in parsed:
+            out[k] = parsed[k]
+        elif k in DEFAULT_THRESHOLDS:
+            out[k] = DEFAULT_THRESHOLDS[k]
+    return out
 
 
 def next_window_open(ts_sec: int) -> int:

@@ -8,13 +8,17 @@ export const MAJOR_COLORS: Record<string, string> = {
   BNB: "#f0b90b",
 };
 
-export const SIM_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"] as const;
-export type SimCoin = (typeof SIM_COINS)[number];
+/** Coins supported by sim/live engines (must match backend simulation.config ASSETS). */
+export const TRADE_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"] as const;
+export type TradeCoin = (typeof TRADE_COINS)[number];
+
+export const SIM_COINS = TRADE_COINS;
+export type SimCoin = TradeCoin;
 export const DEFAULT_SIM_COINS: SimCoin[] = [...SIM_COINS];
 
-export const LIVE_COINS = ["SOL", "DOGE"] as const;
-export type LiveCoin = (typeof LIVE_COINS)[number];
-export const DEFAULT_LIVE_COINS: LiveCoin[] = [...LIVE_COINS];
+export const LIVE_COINS = TRADE_COINS;
+export type LiveCoin = TradeCoin;
+export const DEFAULT_LIVE_COINS: LiveCoin[] = ["XRP", "DOGE"];
 
 export type AssetSideStats = {
   total_bets: number;
