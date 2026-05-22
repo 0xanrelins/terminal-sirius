@@ -214,6 +214,8 @@ function mergeOhlcvBars(existing: OhlcvBar[], older: OhlcvBar[]): OhlcvBar[] {
 }
 
 const LIQ_FETCH_LIMIT = 10_000;
+/** Max candle repaint rate from trade ticks (indicators refresh on bar close). */
+const CANDLE_FLUSH_MS = 1000;
 
 async function fetchLiquidationsForRange(
   symbol: string,
@@ -707,10 +709,10 @@ export function CandlestickChart({
 
   // Live updates
   useEffect(() => {
-    const commitBar = (bar: OhlcvBar) => {
-      const series = seriesRef.current;
-      if (!series || !historyReadyRef.current) return;
+    let paintTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastPaintAt = 0;
 
+    const mergeBarIntoStore = (bar: OhlcvBar) => {
       const bars = ohlcvBarsRef.current;
       const idx = bars.findIndex((b) => b.time === bar.time);
       if (idx >= 0) bars[idx] = bar;
@@ -718,9 +720,55 @@ export function CandlestickChart({
         bars.push(bar);
         bars.sort((a, b) => (a.time as number) - (b.time as number));
       }
+    };
+
+    const paintCandleSeries = (bar: OhlcvBar) => {
+      const series = seriesRef.current;
+      if (!series || !historyReadyRef.current) return;
       const { time, open, high, low, close } = bar;
       series.update({ time, open, high, low, close });
+    };
+
+    const flushTradeCandle = (bar: OhlcvBar) => {
+      paintCandleSeries(bar);
+      lastPaintAt = Date.now();
+    };
+
+    const scheduleTradeCandlePaint = (bar: OhlcvBar) => {
+      liveBarRef.current = bar;
+      mergeBarIntoStore(bar);
+
+      const series = seriesRef.current;
+      if (!series || !historyReadyRef.current) return;
+
+      const elapsed = Date.now() - lastPaintAt;
+      if (elapsed >= CANDLE_FLUSH_MS) {
+        if (paintTimer) {
+          clearTimeout(paintTimer);
+          paintTimer = null;
+        }
+        flushTradeCandle(bar);
+        return;
+      }
+
+      if (paintTimer) return;
+      paintTimer = setTimeout(() => {
+        paintTimer = null;
+        const pending = liveBarRef.current;
+        if (pending) flushTradeCandle(pending);
+      }, CANDLE_FLUSH_MS - elapsed);
+    };
+
+    const commitOfficialBar = (bar: OhlcvBar) => {
+      if (paintTimer) {
+        clearTimeout(paintTimer);
+        paintTimer = null;
+      }
+      liveBarRef.current = bar;
+      mergeBarIntoStore(bar);
+      paintCandleSeries(bar);
       refreshMaSeries();
+      lastPaintAt = Date.now();
     };
 
     const unsub = subscribe(symbol, (msg) => {
@@ -745,8 +793,7 @@ export function CandlestickChart({
           close: parseFloat(msg.close),
           volume: parseFloat(msg.volume),
         };
-        liveBarRef.current = bar;
-        commitBar(bar);
+        commitOfficialBar(bar);
         return;
       }
 
@@ -759,31 +806,33 @@ export function CandlestickChart({
             ? cur.volume
             : ohlcvBarsRef.current.find((b) => b.time === barTime)?.volume ?? 0;
 
-        if (!cur || (cur.time as number) !== barTime) {
-          liveBarRef.current = {
-            time: barTime,
-            open: price,
-            high: price,
-            low: price,
-            close: price,
-            volume: prevVol,
-          };
-        } else {
-          liveBarRef.current = {
-            time: barTime,
-            open: cur.open,
-            high: Math.max(cur.high, price),
-            low: Math.min(cur.low, price),
-            close: price,
-            volume: cur.volume,
-          };
-        }
+        const next: OhlcvBar =
+          !cur || (cur.time as number) !== barTime
+            ? {
+                time: barTime,
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+                volume: prevVol,
+              }
+            : {
+                time: barTime,
+                open: cur.open,
+                high: Math.max(cur.high, price),
+                low: Math.min(cur.low, price),
+                close: price,
+                volume: cur.volume,
+              };
 
-        commitBar(liveBarRef.current);
+        scheduleTradeCandlePaint(next);
       }
     });
 
-    return unsub;
+    return () => {
+      if (paintTimer) clearTimeout(paintTimer);
+      unsub();
+    };
   }, [symbol, interval, subscribe, refreshMaSeries, applyLiqBar]);
 
   // Close menus on outside click

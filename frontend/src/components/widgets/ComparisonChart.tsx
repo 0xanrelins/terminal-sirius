@@ -21,7 +21,7 @@ import {
   DailySessionBreaksPrimitive,
   computeUtcDayBoundaries,
 } from "../../lib/dailySessionBreaks";
-import type { BarMsg, Kline, TradeMsg } from "../../types";
+import type { BarMsg, Kline } from "../../types";
 import styles from "./ComparisonChart.module.css";
 
 type Props = {
@@ -32,10 +32,11 @@ type Props = {
 
 type RawBar = { time: number; close: number };
 
-const INITIAL_LIMIT = 2000;
+const INITIAL_LIMIT = 200;
 const PAGE_SIZE = 200;
 const LOAD_THRESHOLD = 10;
-const REINDEX_DEBOUNCE_MS = 50;
+/** Rebase % lines after pan/zoom settles (not every scroll frame). */
+const REINDEX_DEBOUNCE_MS = 250;
 /** Reference series for time axis and daily session lines (BTC). */
 const REF_SYMBOL = COMPARISON_SYMBOLS[0];
 
@@ -362,7 +363,7 @@ export function ComparisonChart({
     };
   }, [interval]);
 
-  // Live updates for all tracked symbols
+  // Live updates: official bar close only (no trade ticks)
   useEffect(() => {
     const commitPoint = (symbol: string, bar: RawBar) => {
       const series = seriesRef.current.get(symbol);
@@ -397,16 +398,6 @@ export function ComparisonChart({
           const m = msg as BarMsg;
           const t = m.time ?? barOpenTime(Math.floor(m.ts / 1e9), interval);
           const bar: RawBar = { time: t, close: parseFloat(m.close) };
-          liveRef.current.set(sym, bar);
-          commitPoint(sym, bar);
-          return;
-        }
-
-        if (msg.type === "trade") {
-          const m = msg as TradeMsg;
-          const price = parseFloat(m.price);
-          const barTime = barOpenTime(Math.floor(m.ts / 1e9), interval);
-          const bar: RawBar = { time: barTime, close: price };
           liveRef.current.set(sym, bar);
           commitPoint(sym, bar);
         }
