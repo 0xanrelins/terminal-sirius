@@ -24,6 +24,7 @@ from adapters.polymarket.rolling import WINDOW_SEC
 from bridge_actor import BAR_SPECS
 from engines.liq_poly_runner import LiqPolyRunner
 from engines.poly_sync import quote_for_bet
+from simulation.backtest_pricing import backtest_entry_for_side
 from engines.strategy_persist import handle_strategy_events
 from nautilus_bridge.context import exec_client_ready
 from nautilus_bridge.strategy_runtime import (
@@ -36,7 +37,7 @@ from strategies.liq_poly_data import LiqBar15mUpdate
 
 
 class LiqPolyStrategyConfig(StrategyConfig, frozen=True):
-    mode: str = "live"
+    mode: str = "live"  # live | sim | backtest
 
 
 class LiqPolyStrategy(Strategy):
@@ -48,7 +49,7 @@ class LiqPolyStrategy(Strategy):
         self._defer_open: list[dict] = []
 
     def on_start(self) -> None:
-        cfg = get_runtime(self._mode)
+        cfg = get_runtime("sim" if self._mode == "backtest" else self._mode)
         self._runner = LiqPolyRunner(cfg)
         self.subscribe_data(DataType(LiqBar15mUpdate))
         for asset, meta in cfg.assets.items():
@@ -64,7 +65,8 @@ class LiqPolyStrategy(Strategy):
             callback=self._on_exec_deferred_poll,
         )
         self.log.info(f"LiqPolyStrategy started mode={self._mode}")
-        self._startup_strategy_catchup()
+        if self._mode != "backtest":
+            self._startup_strategy_catchup()
 
     def on_stop(self) -> None:
         self.log.info(f"LiqPolyStrategy stopped mode={self._mode}")
@@ -203,9 +205,14 @@ class LiqPolyStrategy(Strategy):
     def _handle_open(self, cmd: dict) -> list[dict]:
         if self._runner is None:
             return []
-        cfg = get_runtime(self._mode)
+        cfg = get_runtime("sim" if self._mode == "backtest" else self._mode)
         asset = cmd["asset"]
         meta = cfg.assets[asset]
+        bt_entry = (
+            backtest_entry_for_side(cmd["side"])
+            if self._mode == "backtest"
+            else None
+        )
         quote = quote_for_bet(
             poly_series=meta["poly_series"],
             candle_open=int(cmd["candle_open"]),
@@ -213,6 +220,7 @@ class LiqPolyStrategy(Strategy):
             min_shares_default=cfg.min_shares,
             min_usd=cfg.min_usd,
             for_live=cmd["mode"] == "live",
+            backtest_entry=bt_entry,
         )
         if quote is None:
             self.log.warning(f"skip {asset} {cmd['side']} leg{cmd['leg']}: no quote")
@@ -393,6 +401,8 @@ class LiqPolyStrategy(Strategy):
         return self._persist([settle_ev])
 
     def _persist(self, events: list[dict]) -> list[dict]:
+        if self._mode == "backtest":
+            return self._persist_backtest(events)
         loop = get_main_loop()
         fut = asyncio.run_coroutine_threadsafe(handle_strategy_events(events), loop)
         try:
@@ -404,7 +414,37 @@ class LiqPolyStrategy(Strategy):
             self._emit(ev)
         return ws
 
+    def _persist_backtest(self, events: list[dict]) -> list[dict]:
+        """Assign synthetic ids for BacktestEngine (no PostgreSQL)."""
+        out: list[dict] = []
+        _bet_id = [0]
+        _cycle_id = [0]
+
+        def next_bet_id() -> int:
+            _bet_id[0] += 1
+            return _bet_id[0]
+
+        def next_cycle_id() -> int:
+            _cycle_id[0] += 1
+            return _cycle_id[0]
+
+        for ev in events:
+            t = ev.get("type", "")
+            if t == "simulation_bet_open":
+                out.append(
+                    {
+                        **ev,
+                        "bet_id": ev.get("bet_id") or next_bet_id(),
+                        "cycle_id": ev.get("cycle_id") or next_cycle_id(),
+                    }
+                )
+            else:
+                out.append(dict(ev))
+        return out
+
     def _emit(self, ev: dict) -> None:
+        if self._mode == "backtest":
+            return
         q = get_event_queue()
         try:
             q.put_nowait(ev)
@@ -468,6 +508,8 @@ class LiqPolyStrategy(Strategy):
             self.log.error(f"startup strategy catch-up failed: {e}")
 
     def _drain_strategy_catchup_requests(self) -> None:
+        if self._mode == "backtest":
+            return
         req = drain_catchup_request(self._mode)
         if req is None or self._runner is None:
             return

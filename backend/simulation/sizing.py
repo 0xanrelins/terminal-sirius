@@ -99,7 +99,7 @@ def is_credible_clob_book(best_bid: float | None, best_ask: float | None) -> boo
         return False
     if best_ask - best_bid > 0.30:
         return False
-    if not (0.05 < best_ask < 0.95 and 0.05 < best_bid < 0.95):
+    if not (0.02 < best_ask < 0.995 and 0.02 < best_bid < 0.995):
         return False
     return True
 

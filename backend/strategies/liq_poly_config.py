@@ -6,7 +6,7 @@ from typing import Literal
 
 from simulation.config import ASSETS, bet_window_open
 
-Mode = Literal["live", "sim"]
+Mode = Literal["live", "sim", "backtest"]
 
 
 @dataclass
@@ -43,7 +43,24 @@ class LiqPolyRuntimeConfig:
     restore: RestoreState
 
 
+def runtime_for_backtest() -> LiqPolyRuntimeConfig:
+    """Isolated sim config for BacktestEngine (no PostgreSQL restore)."""
+    from simulation import config as cfg
+
+    return LiqPolyRuntimeConfig(
+        mode="sim",
+        assets=cfg.active_assets(),
+        thresholds=cfg.thresholds(),
+        min_usd=cfg.min_usd(),
+        min_shares=cfg.min_shares_default(),
+        orders_enabled=False,
+        restore=RestoreState(),
+    )
+
+
 def runtime_from_env(mode: Mode, restore: RestoreState | None = None) -> LiqPolyRuntimeConfig:
+    if mode == "backtest":
+        return runtime_for_backtest()
     if mode == "live":
         from live import config as cfg
 
@@ -74,6 +91,7 @@ __all__ = [
     "RestoreState",
     "LiqPolyRuntimeConfig",
     "runtime_from_env",
+    "runtime_for_backtest",
     "bet_window_open",
     "ASSETS",
 ]

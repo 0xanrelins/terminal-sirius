@@ -1,33 +1,19 @@
-"""Resolve realistic Polymarket entry prices for paper simulation."""
+"""Resolve Polymarket entry prices from Nautilus quote cache only (no Gamma/CLOB REST)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from adapters.polymarket.gamma import (
-    get_market_by_slug,
-    get_token_ids,
-    outcome_prices_from_market,
+from adapters.polymarket.nautilus_quote_read import book_from_nautilus_cache
+from adapters.polymarket.quote_registry import (
+    SlugQuoteBook,
+    get_slug_instruments,
+    get_slug_quotes,
 )
 from simulation.config import Side
-from simulation.sizing import (
-    fetch_clob_best_ask,
-    fetch_clob_best_bid,
-    is_credible_clob_book,
-)
+from simulation.sizing import is_credible_clob_book
 
-# Gamma 50/50 on brand-new windows is imperfect but far better than junk CLOB asks.
-PLACEHOLDER_LOW = 0.45
-PLACEHOLDER_HIGH = 0.55
-
-
-def is_gamma_placeholder(price: float | None) -> bool:
-    if price is None:
-        return False
-    return PLACEHOLDER_LOW <= price <= PLACEHOLDER_HIGH
-
-
-def _valid_gamma(price: float | None) -> bool:
-    return price is not None and 0.01 < price < 0.99
+# Registry entries older than this are refreshed from Nautilus cache when possible.
+MAX_QUOTE_AGE_MS = 120_000
 
 
 @dataclass(frozen=True)
@@ -38,73 +24,63 @@ class EntryPriceQuote:
     source: str
 
 
-def _pick_entry(
-    *,
-    side: Side,
-    up_gamma: float | None,
-    down_gamma: float | None,
-    up_bid: float | None,
-    up_ask: float | None,
-    down_bid: float | None,
-    down_ask: float | None,
-) -> EntryPriceQuote | None:
+def _book_stale(book: SlugQuoteBook) -> bool:
+    if book.ts_ms <= 0:
+        return True
+    import time
+
+    return (int(time.time() * 1000) - book.ts_ms) > MAX_QUOTE_AGE_MS
+
+
+def _pick_entry_from_book(*, side: Side, book: SlugQuoteBook) -> EntryPriceQuote | None:
     if side == "long":
-        gamma_p, bid, ask = up_gamma, up_bid, up_ask
+        bid, ask = book.yes_bid, book.yes_ask
     else:
-        gamma_p, bid, ask = down_gamma, down_bid, down_ask
+        bid, ask = book.no_bid, book.no_ask
 
-    cred_clob = is_credible_clob_book(bid, ask)
+    if not is_credible_clob_book(bid, ask) or ask is None:
+        return None
+    return EntryPriceQuote(
+        entry_price=ask,
+        yes_price=book.yes_mid,
+        no_price=book.no_mid,
+        source="nautilus_cache",
+    )
 
-    # 1) Gamma — default for 15m up/down (includes ~50/50 pre-open).
-    if _valid_gamma(gamma_p):
-        if (
-            cred_clob
-            and not is_gamma_placeholder(gamma_p)
-            and ask is not None
-            and abs(ask - gamma_p) <= 0.12
-        ):
-            entry = min(ask, gamma_p)
-            src = "clob_ask" if entry == ask else "gamma"
-        else:
-            entry, src = gamma_p, "gamma"
-        return EntryPriceQuote(entry, up_gamma, down_gamma, src)
 
-    # 2) CLOB ask only when book is credible (no mirror 1¢/99¢).
-    if cred_clob and ask is not None:
-        return EntryPriceQuote(ask, up_gamma, down_gamma, "clob_ask")
-
-    return None
+async def _hydrate_book(slug: str) -> SlugQuoteBook | None:
+    book = get_slug_quotes(slug)
+    if book is not None and not _book_stale(book):
+        return book
+    iids = get_slug_instruments(slug)
+    if not iids:
+        return book
+    yes_iid, no_iid = iids
+    try:
+        refreshed = book_from_nautilus_cache(slug, yes_iid=yes_iid, no_iid=no_iid)
+        return refreshed or book
+    except Exception:
+        return book
 
 
 async def resolve_entry_price(slug: str, side: Side) -> EntryPriceQuote | None:
     """
-    Price to buy the outcome we are simulating.
+    Entry price from Nautilus quote registry / TradingNode cache only.
 
-    Priority:
-      1. Gamma outcome price (even ~50/50 pre-open — beats junk CLOB)
-      2. CLOB best ask only on a credible book (tight bid/ask, not 1¢ vs 99¢)
-    """
-    info = await get_token_ids(slug)
-    market = await get_market_by_slug(slug)
-    up_gamma = down_gamma = None
-    if market:
-        up_gamma, down_gamma = outcome_prices_from_market(market)
+    Requires the slug to be subscribed via Polymarket DataClient + quote bridge.
+  """
+    book = await _hydrate_book(slug)
+    if book is None:
+        return None
+    return _pick_entry_from_book(side=side, book=book)
 
-    up_bid = up_ask = down_bid = down_ask = None
-    if info:
-        if info.get("yes"):
-            up_bid = await fetch_clob_best_bid(info["yes"])
-            up_ask = await fetch_clob_best_ask(info["yes"])
-        if info.get("no"):
-            down_bid = await fetch_clob_best_bid(info["no"])
-            down_ask = await fetch_clob_best_ask(info["no"])
 
-    return _pick_entry(
-        side=side,
-        up_gamma=up_gamma,
-        down_gamma=down_gamma,
-        up_bid=up_bid,
-        up_ask=up_ask,
-        down_bid=down_bid,
-        down_ask=down_ask,
-    )
+# Kept for unit tests documenting placeholder detection (Gamma no longer used for entry).
+PLACEHOLDER_LOW = 0.45
+PLACEHOLDER_HIGH = 0.55
+
+
+def is_gamma_placeholder(price: float | None) -> bool:
+    if price is None:
+        return False
+    return PLACEHOLDER_LOW <= price <= PLACEHOLDER_HIGH

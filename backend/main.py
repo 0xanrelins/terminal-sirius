@@ -189,18 +189,15 @@ class SubscribeBody(BaseModel):
 @app.get("/polymarket/presets")
 async def polymarket_presets():
     """Configured rolling 15m markets (stable series id + current window slug)."""
-    import json
-
     out = []
     for p in PRESET_15M_SERIES:
         series = p["series"]
         slug = slug_for_series(series)
         info = await get_token_ids(slug)
-        yes_price = None
-        market = await get_market_by_slug(slug)
-        if market:
-            prices = json.loads(market.get("outcomePrices") or "[]")
-            yes_price = float(prices[0]) if prices else None
+        from adapters.polymarket.quote_registry import get_slug_quotes
+
+        book = get_slug_quotes(slug)
+        yes_price = book.yes_mid if book else None
         out.append({
             **p,
             "symbol": series_symbol(series),

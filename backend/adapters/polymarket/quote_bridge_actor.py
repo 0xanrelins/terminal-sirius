@@ -15,6 +15,7 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.quote_registry import register_slug_instruments, update_slug_quote
 from adapters.polymarket.rolling import series_symbol, slug_for_series
 
 ROTATION_POLL_SEC = 20
@@ -91,6 +92,14 @@ class PolymarketQuoteBridgeActor(Actor):
             mid = max(bid, ask)
         if mid <= 0:
             return
+        token = meta.get("token") or "yes"
+        update_slug_quote(
+            meta["slug"],
+            token=token,
+            bid=bid,
+            ask=ask,
+            ts_ms=int(tick.ts_event // 1_000_000),
+        )
         msg: dict = {
             "type": "polymarket",
             "symbol": meta["symbol"],
@@ -148,11 +157,11 @@ class PolymarketQuoteBridgeActor(Actor):
             await self._ensure_slug(new_slug, series=series)
 
     async def _drop_slug(self, slug: str) -> None:
-        quote_iid = self._slug_quote_iid.pop(slug, None)
+        self._slug_quote_iid.pop(slug, None)
         all_iids = self._slug_to_iids.pop(slug, [])
         self._slug_series.pop(slug, None)
-        if quote_iid is not None:
-            self._meta_by_iid.pop(str(quote_iid), None)
+        for iid in all_iids:
+            self._meta_by_iid.pop(str(iid), None)
         for iid in all_iids:
             try:
                 self.unsubscribe_quote_ticks(iid)
@@ -207,13 +216,22 @@ class PolymarketQuoteBridgeActor(Actor):
         self._slug_to_iids[slug] = loaded
         self._slug_quote_iid[slug] = quote_iid
         sym = series_symbol(series) if series else _slug_to_symbol(slug)
-        self._meta_by_iid[str(quote_iid)] = {
-            "slug": slug,
-            "symbol": sym,
-            "series": series,
-            "question": question,
-        }
-        self.subscribe_quote_ticks(quote_iid)
+        no_iid = loaded[1] if len(loaded) > 1 else None
+        register_slug_instruments(
+            slug,
+            yes_iid=str(quote_iid),
+            no_iid=str(no_iid) if no_iid is not None else None,
+        )
+        for iid in loaded:
+            token = "yes" if iid == quote_iid else "no"
+            self._meta_by_iid[str(iid)] = {
+                "slug": slug,
+                "symbol": sym,
+                "series": series,
+                "question": question,
+                "token": token,
+            }
+            self.subscribe_quote_ticks(iid)
         self.log.info(
             f"Polymarket bridge: subscribed quotes for {slug!r} → {quote_iid} "
             f"({len(loaded)} instrument(s) in cache)"

@@ -10,6 +10,14 @@ cd backend && chmod +x scripts/run_smoke_tests.sh && ./scripts/run_smoke_tests.s
 
 Run after backend restart (`uvicorn` + `.env` loaded).
 
+## Backtest (catalog)
+
+```bash
+cd backend && python backtest.py --start 2026-04-01 --end 2026-05-01
+```
+
+Requires parquet catalog under `backend/catalog/data` (see import scripts). Uses `BacktestEngine` + `LiqPolyStrategy` mode `backtest` (no PostgreSQL).
+
 ## Polymarket data
 
 - [ ] Log: `Polymarket DataClient enabled` + `PolymarketQuoteBridgeActor enabled`

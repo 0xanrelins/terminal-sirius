@@ -1,30 +1,20 @@
 """
-BacktestEngine skeleton — replays LiquidationTick + Bar data against LiqPolyStrategy.
+BacktestEngine — replays catalog LiquidationTick + Bar data through LiqPolyStrategy.
 
-Pipeline overview:
   DataCatalog (LiquidationTick, Bar)
-    → BacktestEngine replays chronologically
-    → LiqAggActor: LiquidationTick → LiqBar15mUpdate (publish_data)
-    → LiqPolyStrategy.on_data / on_bar → signal → _dispatch
-
-Limitations (skeleton):
-  - quote_for_bet() calls external APIs; replace with a catalog-based price
-    resolver before running a real backtest.
-  - LiqPolyStrategy.on_start calls get_runtime() + strategy catch-up which
-    touch PostgreSQL. For an isolated backtest set mode="backtest" and guard
-    those calls behind a mode check, or use a mock runtime.
-  - Instruments are created synthetically below; add them to the catalog with
-    catalog.write_data([instrument]) after constructing them if you want
-    catalog.instruments() to return them on later runs.
+    → BacktestEngine
+    → LiqAggActor → LiqBar15mUpdate
+    → LiqPolyStrategy (mode=backtest, paper sim, no PostgreSQL)
 
 Usage:
   cd backend && python backtest.py
   cd backend && python backtest.py --start 2026-04-01 --end 2026-05-01
-  cd backend && python backtest.py --catalog /path/to/catalog --symbols BTCUSDT ETHUSDT
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
+import queue
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,13 +34,14 @@ from nautilus_trader.trading.actor import Actor, ActorConfig
 
 from catalog import get_catalog
 from liquidations import bucket_time, binance_to_nautilus
+from nautilus_bridge.strategy_runtime import set_event_queue, set_main_loop, set_runtime
+from strategies.liq_poly_config import runtime_for_backtest
 from strategies.liq_poly_data import LiqBar15mUpdate, LiquidationTick
 from strategies.liq_poly_strategy import LiqPolyStrategy, LiqPolyStrategyConfig
 
 BINANCE = Venue("BINANCE")
 DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT")
 
-# Precision map for synthetic instrument creation
 _PRICE_PREC: dict[str, int] = {
     "BTCUSDT": 1, "ETHUSDT": 2, "SOLUSDT": 3,
     "DOGEUSDT": 5, "XRPUSDT": 4,
@@ -61,17 +52,14 @@ _SIZE_PREC: dict[str, int] = {
 }
 
 
-# ── synthetic instrument factory ─────────────────────────────────────────────
-
 def _make_instrument(sym: str) -> CryptoPerpetual:
-    """Create a minimal CryptoPerpetual for backtesting."""
     base = sym.replace("USDT", "")
     pp = _PRICE_PREC.get(sym, 2)
     sp = _SIZE_PREC.get(sym, 3)
     iid = InstrumentId.from_str(f"{sym}-PERP.BINANCE")
     from nautilus_trader.model.identifiers import Symbol
     from nautilus_trader.model.currencies import Currency
-    base_ccy = Currency.from_str(base) if base in ("BTC", "ETH", "SOL") else USDT
+
     return CryptoPerpetual(
         instrument_id=iid,
         raw_symbol=Symbol(sym),
@@ -98,23 +86,13 @@ def _make_instrument(sym: str) -> CryptoPerpetual:
     )
 
 
-# ── liq aggregation actor ─────────────────────────────────────────────────────
-
 class LiqAggActorConfig(ActorConfig, frozen=True):
-    """Subscribe to LiquidationTick, aggregate into 15m LiqBar15mUpdate."""
-    bar_seconds: int = 900  # 15 minutes
+    bar_seconds: int = 900
 
 
 class LiqAggActor(Actor):
-    """
-    Aggregates LiquidationTick objects into 15-minute liquidation bars and
-    publishes LiqBar15mUpdate for LiqPolyStrategy to consume.
-    """
-
     def __init__(self, config: LiqAggActorConfig) -> None:
         super().__init__(config)
-        self._bar_seconds = config.bar_seconds
-        # (symbol, bar_open_sec) → {"long": float, "short": float}
         self._buckets: dict[tuple[str, int], dict[str, float]] = {}
 
     def on_start(self) -> None:
@@ -145,7 +123,13 @@ class LiqAggActor(Actor):
         )
 
 
-# ── engine builder ────────────────────────────────────────────────────────────
+def _wire_backtest_runtime() -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    set_main_loop(loop)
+    set_event_queue(queue.Queue(maxsize=10_000))
+    set_runtime("sim", runtime_for_backtest())
+
 
 def build_engine(
     symbols: tuple[str, ...] = DEFAULT_SYMBOLS,
@@ -153,6 +137,7 @@ def build_engine(
     end: datetime | None = None,
     catalog_path: Path | None = None,
 ) -> BacktestEngine:
+    _wire_backtest_runtime()
     catalog = get_catalog(catalog_path)
 
     engine = BacktestEngine(
@@ -172,7 +157,6 @@ def build_engine(
     for sym in symbols:
         engine.add_instrument(_make_instrument(sym))
 
-    # Historical bars from catalog
     bar_types = [
         BarType.from_str(f"{binance_to_nautilus(s)}-1-MINUTE-LAST-EXTERNAL")
         for s in symbols
@@ -189,7 +173,6 @@ def build_engine(
         engine.add_data(all_bars)
         print(f"Loaded {len(all_bars)} bars from catalog")
 
-    # Historical liquidation ticks from catalog
     all_ticks: list[LiquidationTick] = []
     try:
         raw = catalog.custom_data(
@@ -204,10 +187,10 @@ def build_engine(
         engine.add_data(all_ticks)
         print(f"Loaded {len(all_ticks)} LiquidationTick objects from catalog")
 
-    # Actors + strategy
     engine.add_actor(LiqAggActor(LiqAggActorConfig(component_id="LiqAggActor-001")))
-    cfg = LiqPolyStrategyConfig(strategy_id="LiqPoly-Backtest", mode="sim")
-    engine.add_strategy(LiqPolyStrategy(config=cfg))
+    engine.add_strategy(
+        LiqPolyStrategy(config=LiqPolyStrategyConfig(strategy_id="LiqPoly-Backtest", mode="backtest"))
+    )
 
     return engine
 
@@ -223,14 +206,12 @@ def run(
     return engine
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
 def _parse_dt(s: str) -> datetime:
     return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run LiqPolyStrategy backtest")
+    p = argparse.ArgumentParser(description="Run LiqPolyStrategy backtest (BacktestEngine)")
     p.add_argument("--start", type=str, help="ISO8601 start (e.g. 2026-04-01)")
     p.add_argument("--end", type=str, help="ISO8601 end (e.g. 2026-05-01)")
     p.add_argument("--catalog", type=Path, default=None)
