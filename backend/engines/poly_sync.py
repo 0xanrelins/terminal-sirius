@@ -87,3 +87,52 @@ def quote_for_bet(
         shares=shares,
         cost_usd=cost_usd,
     )
+
+
+async def load_restore_state(mode: str) -> "RestoreState":
+    from strategies.liq_poly_config import RestoreBet, RestoreState
+    import db
+    import time
+
+    since = int(time.time()) - 7 * 86400
+    if mode == "live":
+        await db.repair_stuck_live_cycles()
+        signaled = await db.get_live_signaled_keys(since)
+        cycles = await db.get_open_live_cycles()
+        active = {}
+        for c in cycles:
+            side = c.get("side") or "long"
+            active[(c["asset"], side)] = int(c["id"])
+        bets_raw = await db.get_open_live_bets_for_cycles()
+    else:
+        await db.repair_stuck_simulation_cycles()
+        signaled = await db.get_simulation_signaled_keys(since)
+        cycles = await db.get_open_simulation_cycles()
+        active = {}
+        for c in cycles:
+            side = c.get("side") or "long"
+            active[(c["asset"], side)] = int(c["id"])
+        bets_raw = await db.get_open_bets_for_cycles()
+
+    bets = [
+        RestoreBet(
+            bet_id=int(b["id"]),
+            binance_symbol=b["binance_symbol"],
+            side=b.get("side") or "long",
+            leg=int(b["leg"]),
+            asset=b["asset"],
+            cycle_id=int(b["cycle_id"]),
+            candle_open=int(b["candle_open"]),
+            poly_series=b["poly_series"],
+            entry_price=float(b["entry_price"]),
+            shares=float(b["shares"]),
+            cost_usd=float(b["cost_usd"]),
+            order_id=b.get("order_id"),
+        )
+        for b in bets_raw
+    ]
+    return RestoreState(
+        signaled=[(s, int(bo), str(sd)) for s, bo, sd in signaled],
+        active_cycles=active,
+        open_bets=bets,
+    )
