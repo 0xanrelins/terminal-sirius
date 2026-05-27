@@ -1,4 +1,12 @@
 .root {
+  /* Same typography as LiquidationSignals: explicit --list-font-* (~1.55–1.6 band) */
+  --list-scale: 1.58;
+  --list-font-micro: calc(7px * var(--list-scale));
+  --list-font-xs: calc(8px * var(--list-scale));
+  --list-font-sm: calc(9px * var(--list-scale));
+  --list-font-md: calc(10px * var(--list-scale));
+  --list-font-lg: calc(11px * var(--list-scale));
+
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -46,6 +54,55 @@
   font-weight: 700;
 }
 
+.filterGroup {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.filterBtn {
+  padding: var(--list-pad-coin);
+  font-size: var(--list-font-sm);
+  font-weight: 700;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  color: #6f6f7a;
+  background: #0d0d0f;
+  border: 1px solid #2a2a35;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
+}
+
+.filterBtn:hover {
+  color: #888;
+  border-color: #3a3a48;
+}
+
+.filterBtnUp {
+  border-color: #14f19540;
+  color: #14f195;
+  background: #14f19510;
+}
+
+.filterBtnDn {
+  border-color: #f8717140;
+  color: #f87171;
+  background: #f8717110;
+}
+
+/* Same shape as Live Trade “LIVE”; different hue so panels are easy to tell apart */
+.simBadge {
+  font-size: var(--list-font-xs);
+  font-weight: 700;
+  color: #eef0ff;
+  background: #6366f1;
+  padding: var(--list-pad-badge);
+  border-radius: 2px;
+  letter-spacing: 0.08em;
+}
+
 .stat {
   font-size: var(--list-font-md);
   color: #888;
@@ -68,7 +125,7 @@
   font-size: var(--list-font-xs);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #444;
+  color: #6f6f7a;
   margin-left: auto;
 }
 
@@ -97,17 +154,19 @@
 .empty {
   padding: var(--list-pad-empty);
   font-size: var(--list-font-lg);
-  color: #555;
+  color: #72727c;
   text-align: center;
 }
 
 .row {
   display: grid;
-  grid-template-columns: 42px 32px 28px 52px 1fr 56px 76px;
+  grid-template-columns:
+    42px 32px 28px 52px 1fr minmax(96px, max-content) minmax(148px, 1.2fr);
   gap: var(--list-gap-row);
   align-items: center;
   padding: var(--list-pad-row);
   font-size: var(--list-font-md);
+  line-height: 1.3;
   border-bottom: 1px solid #141418;
 }
 
@@ -148,8 +207,15 @@
 }
 
 .rowThreshold {
-  color: #555;
+  color: #7c7c88;
   font-weight: 400;
+}
+
+.outcome {
+  white-space: nowrap;
+  text-align: right;
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
 }
 
 .outcomeWin {
@@ -178,34 +244,26 @@
 
 .timeBlock {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--list-gap-time-tight);
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.28em;
+  row-gap: 0.1em;
+  color: #a3a3ad;
   font-variant-numeric: tabular-nums;
-  line-height: 1.15;
+  text-align: right;
 }
 
-.timeLiq,
-.timeSig {
-  display: flex;
-  align-items: baseline;
-  gap: var(--list-gap-time);
-  font-size: var(--list-font-sm);
+.timeEvent,
+.timeBar15 {
+  color: #b8b8c2;
 }
 
-.timeLiq {
-  color: #888;
+.timeSep {
+  color: #5c5c68;
+  user-select: none;
 }
 
-.timeSig {
-  color: #b8b8c8;
-}
-
-.timeLabel {
-  font-size: var(--list-font-micro);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #555;
-  min-width: var(--list-time-label-min);
+.timeBar15 {
+  white-space: nowrap;
 }

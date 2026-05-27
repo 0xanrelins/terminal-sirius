@@ -439,7 +439,7 @@ async def get_liquidation_bars_range(
             SELECT time, long, short
             FROM liquidation_bars
             WHERE symbol = $1 AND interval = $2 AND time >= $3 AND time <= $4
-            ORDER BY time ASC
+            ORDER BY time DESC
             LIMIT $5
             """,
             symbol,
@@ -454,7 +454,7 @@ async def get_liquidation_bars_range(
             SELECT time, long, short
             FROM liquidation_bars
             WHERE symbol = $1 AND interval = $2 AND time >= $3
-            ORDER BY time ASC
+            ORDER BY time DESC
             LIMIT $4
             """,
             symbol,
@@ -464,7 +464,7 @@ async def get_liquidation_bars_range(
         )
     return [
         {"time": r["time"], "long": float(r["long"]), "short": float(r["short"])}
-        for r in rows
+        for r in reversed(rows)
     ]
 
 
@@ -780,6 +780,16 @@ def _build_by_asset_side(by_asset_side_rows) -> dict[str, dict[str, dict]]:
     return out
 
 
+def _build_by_asset_side_leg(rows) -> dict[str, dict[str, dict[str, dict]]]:
+    out: dict[str, dict[str, dict[str, dict]]] = {}
+    for r in rows:
+        asset = str(r["asset"])
+        side = str(r["side"])
+        leg = str(r["leg"])
+        out.setdefault(asset, {}).setdefault(side, {})[leg] = _side_stats_row(r)
+    return out
+
+
 async def get_simulation_bets(
     limit: int = 100, assets: list[str] | None = None
 ) -> list[dict]:
@@ -878,6 +888,18 @@ async def get_simulation_status() -> dict:
         GROUP BY c.asset, b.side
         """
     )
+    by_asset_side_leg_rows = await pool().fetch(
+        """
+        SELECT c.asset, COALESCE(b.side, 'long') AS side, b.leg,
+               COUNT(*) FILTER (WHERE b.settled_at IS NOT NULL) AS total_bets,
+               COUNT(*) FILTER (WHERE b.outcome = 'win') AS wins,
+               COALESCE(SUM(b.pnl_usd) FILTER (WHERE b.settled_at IS NOT NULL), 0) AS pnl,
+               COUNT(*) FILTER (WHERE b.settled_at IS NULL) AS open_bets
+        FROM simulation_bets b
+        JOIN simulation_cycles c ON c.id = b.cycle_id
+        GROUP BY c.asset, b.side, b.leg
+        """
+    )
     total = int(stats["total_bets"] or 0)
     wins = int(stats["wins"] or 0)
     return {
@@ -891,6 +913,7 @@ async def get_simulation_status() -> dict:
         "by_side": by_side,
         "by_asset": _build_by_asset(by_asset_rows),
         "by_asset_side": _build_by_asset_side(by_asset_side_rows),
+        "by_asset_side_leg": _build_by_asset_side_leg(by_asset_side_leg_rows),
     }
 
 
@@ -1133,6 +1156,18 @@ async def get_live_status() -> dict:
         GROUP BY c.asset, b.side
         """
     )
+    by_asset_side_leg_rows = await pool().fetch(
+        """
+        SELECT c.asset, COALESCE(b.side, 'long') AS side, b.leg,
+               COUNT(*) FILTER (WHERE b.settled_at IS NOT NULL) AS total_bets,
+               COUNT(*) FILTER (WHERE b.outcome = 'win') AS wins,
+               COALESCE(SUM(b.pnl_usd) FILTER (WHERE b.settled_at IS NOT NULL), 0) AS pnl,
+               COUNT(*) FILTER (WHERE b.settled_at IS NULL) AS open_bets
+        FROM live_bets b
+        JOIN live_cycles c ON c.id = b.cycle_id
+        GROUP BY c.asset, b.side, b.leg
+        """
+    )
     total = int(stats["total_bets"] or 0)
     wins = int(stats["wins"] or 0)
     return {
@@ -1146,4 +1181,5 @@ async def get_live_status() -> dict:
         "by_side": by_side,
         "by_asset": _build_by_asset(by_asset_rows),
         "by_asset_side": _build_by_asset_side(by_asset_side_rows),
+        "by_asset_side_leg": _build_by_asset_side_leg(by_asset_side_leg_rows),
     }

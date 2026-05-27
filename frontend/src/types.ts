@@ -243,6 +243,7 @@ export type SimulationStatus = {
   by_side?: Record<string, SimulationSideStats>;
   by_asset?: Record<string, SimulationSideStats>;
   by_asset_side?: Record<string, Record<string, SimulationSideStats>>;
+  by_asset_side_leg?: Record<string, Record<string, Record<string, SimulationSideStats>>>;
   enabled?: boolean;
   /** Active assets from .env (SIM_ASSETS or SIM_THRESHOLDS_JSON keys). */
   assets?: string[];
@@ -286,9 +287,13 @@ export type LiveStatus = {
   by_side?: Record<string, SimulationSideStats>;
   by_asset?: Record<string, SimulationSideStats>;
   by_asset_side?: Record<string, Record<string, SimulationSideStats>>;
+  by_asset_side_leg?: Record<string, Record<string, Record<string, SimulationSideStats>>>;
   enabled?: boolean;
   orders_enabled?: boolean;
+  orders_ready?: boolean;
   credentials_configured?: boolean;
+  exec_client_ready?: boolean;
+  trading_node_alive?: boolean;
   thresholds?: Record<string, number>;
   assets?: string[];
   min_usd?: number;

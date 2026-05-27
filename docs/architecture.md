@@ -4,7 +4,7 @@
 
 | Layer | Role | Technology |
 |-------|------|------------|
-| Exchange | Raw market data | Binance WS, Polymarket CLOB |
+| Exchange | Raw market data | Binance WS; Polymarket via Nautilus `PolymarketDataClient` (+ quote bridge to UI) |
 | Engine | Process, time, aggregate | Nautilus `TradingNode` + Actors + `LiqPolyStrategy` |
 | Live execution | Polymarket CLOB orders | Nautilus `PolymarketExecutionClient` (+ credential/retry stack) |
 | API (BFF) | Stable contract for UI | FastAPI HTTP + `/ws` |
@@ -22,6 +22,8 @@ Exchange → Nautilus Actors → Queue → FastAPI → Browser
 - **Parse/aggregate:** [`backend/liquidations.py`](../backend/liquidations.py) only.
 - **Persist:** `liquidation_bars` always; `liquidation_events` + watchlist when `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (default).
 ## API contract (UI)
+
+Frozen WS/REST shapes: [ws-api-contract.md](ws-api-contract.md) (`frontend/src/types.ts`, `backend/ws_contract.py`).
 
 UI talks only to FastAPI, not Nautilus or Postgres directly.
 
@@ -41,10 +43,19 @@ UI talks only to FastAPI, not Nautilus or Postgres directly.
 
 ## Nautilus alignment
 
+Full migration plan: [Tam Nautilus entegrasyonu — plan](tam-nautilus-entegrasyonu-plan.md).
+
+- `LiqPolyStrategy` (sim + live) on `TradingNode` owns liq threshold → leg1/leg2 → orders.
+- `LiquidationActor` publishes `LiqBar15mUpdate` custom data to the strategy bus.
+- Live orders use `Strategy.submit_order()` → `PolymarketExecutionClient`.
+- Polymarket env/L2: `nautilus_env.prepare_polymarket_env()` at FastAPI startup (single derive path).
+- ExecEngine `open_check_interval_secs` (default 30s) recovers missed Polymarket order WS updates.
+- `/live/reconcile` and startup catch-up = **strategy state** (liq bars / settlements), not venue order sync.
+- FastAPI persists strategy events via `engines/strategy_persist.py` and fans out WS.
+- Sim/live REST config: env vars + `refresh_runtime_from_env()`; no separate signal engines.
+
+- Polymarket UI quotes: `PolymarketQuoteBridgeActor` on `PolymarketDataClient` (disable with `POLYMARKET_DATA_ENABLED=false`).
 - `nautilus_env.sync_polymarket_env()` maps `POLYMARKET_PRIVATE_KEY` → `POLYMARKET_PK`, etc.
-- `node.py` registers `PolymarketLiveExecClientFactory` when `LIVE_ENABLED` + creds.
-- Live CLOB buys use `nautilus_bridge.polymarket_exec` (Nautilus credential helpers + retry).
-- Signal/cycle rules remain in FastAPI engines until fully ported to `LiqPolyStrategy`.
 
 ## Development rule
 

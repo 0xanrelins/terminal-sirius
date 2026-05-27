@@ -34,3 +34,6 @@ Thumbs.db
 
 # Local data (SQLite experiments, old NDJSON — not used by main app)
 backend/data/
+
+# Nautilus catalog parquet (local import output)
+backend/catalog/data/
