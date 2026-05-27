@@ -1,25 +1,13 @@
-"""Tests for simulation entry price resolution."""
+"""Tests for Nautilus-cache-only entry price resolution."""
 import asyncio
-import math
-from unittest.mock import patch
 
-from adapters.polymarket.gamma import outcome_prices_from_market
-from simulation.pricing import _pick_entry, is_gamma_placeholder, resolve_entry_price
+from adapters.polymarket.quote_registry import clear_quotes, get_slug_quotes, update_slug_quote
+from simulation.pricing import resolve_entry_price
 from simulation.sizing import is_credible_clob_book
 
-_ABS = 0.001
 
-
-def test_outcome_prices_from_market() -> None:
-    m = {"outcomes": '["Up","Down"]', "outcomePrices": '["0.035","0.965"]'}
-    up, down = outcome_prices_from_market(m)
-    assert math.isclose(up, 0.035, abs_tol=_ABS)
-    assert math.isclose(down, 0.965, abs_tol=_ABS)
-
-
-def test_placeholder_detection() -> None:
-    assert is_gamma_placeholder(0.5) is True
-    assert is_gamma_placeholder(0.965) is False
+def setup_function() -> None:
+    clear_quotes()
 
 
 def test_junk_clob_mirror_book() -> None:
@@ -27,63 +15,39 @@ def test_junk_clob_mirror_book() -> None:
     assert is_credible_clob_book(0.48, 0.52) is True
 
 
-def test_pick_long_uses_gamma_over_junk_clob() -> None:
-    q = _pick_entry(
-        side="long",
-        up_gamma=0.505,
-        down_gamma=0.495,
-        up_bid=0.01,
-        up_ask=0.99,
-        down_bid=0.01,
-        down_ask=0.99,
-    )
-    assert q is not None
-    assert math.isclose(q.entry_price, 0.505, abs_tol=_ABS)
-    assert q.source == "gamma"
+def test_resolve_long_from_registry() -> None:
+    slug = "btc-updown-15m-test"
+    update_slug_quote(slug, token="yes", bid=0.48, ask=0.52)
+    update_slug_quote(slug, token="no", bid=0.47, ask=0.51)
 
+    async def _run():
+        return await resolve_entry_price(slug, "long")
 
-def test_pick_short_asymmetric_gamma() -> None:
-    q = _pick_entry(
-        side="short",
-        up_gamma=0.035,
-        down_gamma=0.965,
-        up_bid=None,
-        up_ask=None,
-        down_bid=None,
-        down_ask=None,
-    )
-    assert q is not None
-    assert math.isclose(q.entry_price, 0.965, abs_tol=_ABS)
-    assert q.source == "gamma"
-
-
-async def _resolve_short_uses_down_gamma() -> None:
-    async def fake_tokens(slug: str):
-        return {"yes": "yes-tok", "no": "no-tok"}
-
-    async def fake_market(slug: str):
-        return {
-            "outcomes": '["Up","Down"]',
-            "outcomePrices": '["0.035","0.965"]',
-        }
-
-    async def junk_ask(token_id: str):
-        return 0.99
-
-    async def junk_bid(token_id: str):
-        return 0.01
-
-    with (
-        patch("simulation.pricing.get_token_ids", fake_tokens),
-        patch("simulation.pricing.get_market_by_slug", fake_market),
-        patch("simulation.pricing.fetch_clob_best_ask", junk_ask),
-        patch("simulation.pricing.fetch_clob_best_bid", junk_bid),
-    ):
-        quote = await resolve_entry_price("eth-updown-15m-test", "short")
+    quote = asyncio.run(_run())
     assert quote is not None
-    assert math.isclose(quote.entry_price, 0.965, abs_tol=_ABS)
-    assert quote.source == "gamma"
+    assert quote.entry_price == 0.52
+    assert quote.source == "nautilus_cache"
+    book = get_slug_quotes(slug)
+    assert book is not None
+    assert book.yes_mid is not None
 
 
-def test_resolve_short_uses_down_gamma() -> None:
-    asyncio.run(_resolve_short_uses_down_gamma())
+def test_resolve_short_uses_no_ask() -> None:
+    slug = "eth-updown-15m-test"
+    update_slug_quote(slug, token="yes", bid=0.03, ask=0.04)
+    update_slug_quote(slug, token="no", bid=0.95, ask=0.97)
+
+    async def _run():
+        return await resolve_entry_price(slug, "short")
+
+    quote = asyncio.run(_run())
+    assert quote is not None
+    assert quote.entry_price == 0.97
+    assert quote.source == "nautilus_cache"
+
+
+def test_missing_registry_returns_none() -> None:
+    async def _run():
+        return await resolve_entry_price("unknown-slug", "long")
+
+    assert asyncio.run(_run()) is None

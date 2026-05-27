@@ -9,14 +9,7 @@ from adapters.polymarket.rolling import slug_for_series
 from nautilus_bridge.strategy_runtime import get_main_loop
 from simulation.config import Side
 from simulation.pricing import resolve_entry_price
-from simulation.sizing import (
-    compute_bet,
-    compute_live_market_usd,
-    fetch_clob_best_ask,
-    fetch_clob_best_bid,
-    fetch_min_order_size,
-    is_credible_clob_book,
-)
+from simulation.sizing import compute_bet, compute_live_market_usd, fetch_min_order_size
 
 
 @dataclass(frozen=True)
@@ -45,11 +38,23 @@ def quote_for_bet(
     min_shares_default: float,
     min_usd: float,
     for_live: bool = False,
+    backtest_entry: float | None = None,
 ) -> OpenQuote | None:
     slug = slug_for_series(poly_series, ts=candle_open)
-    quote = _run_async(resolve_entry_price(slug, side))
-    if quote is None:
-        return None
+    if backtest_entry is not None:
+        entry_price = backtest_entry
+        price_source = "backtest_catalog"
+        yes_price = entry_price if side == "long" else (1.0 - entry_price)
+    else:
+        quote = _run_async(resolve_entry_price(slug, side))
+        if quote is None:
+            return None
+        entry_price = quote.entry_price
+        price_source = quote.source
+        yes_price = quote.yes_price
+        if for_live:
+            entry_price = quote.entry_price
+            price_source = "nautilus_cache_live"
     token_id: str | None = None
     min_shares = min_shares_default
     try:
@@ -65,77 +70,20 @@ def quote_for_bet(
         pass
     if not token_id:
         return None
-    entry_price = quote.entry_price
-    price_source = quote.source
     try:
         if for_live:
-            ask = _run_async(fetch_clob_best_ask(token_id))
-            bid = _run_async(fetch_clob_best_bid(token_id))
-            if ask is None or not (0 < ask < 1) or not is_credible_clob_book(bid, ask):
-                return None
-            shares, cost_usd = compute_live_market_usd(ask, min_shares)
-            entry_price = ask
-            price_source = "clob_ask_live"
+            shares, cost_usd = compute_live_market_usd(entry_price, min_shares)
         else:
-            shares, cost_usd = compute_bet(quote.entry_price, min_shares, min_usd)
+            shares, cost_usd = compute_bet(entry_price, min_shares, min_usd)
     except ValueError:
         return None
     return OpenQuote(
         slug=slug,
         token_id=token_id,
         entry_price=entry_price,
-        yes_price=quote.yes_price,
+        yes_price=yes_price,
         price_source=price_source,
         min_shares=min_shares,
         shares=shares,
         cost_usd=cost_usd,
-    )
-
-
-async def load_restore_state(mode: str) -> "RestoreState":
-    from strategies.liq_poly_config import RestoreBet, RestoreState
-    import db
-    import time
-
-    since = int(time.time()) - 7 * 86400
-    if mode == "live":
-        await db.repair_stuck_live_cycles()
-        signaled = await db.get_live_signaled_keys(since)
-        cycles = await db.get_open_live_cycles()
-        active = {}
-        for c in cycles:
-            side = c.get("side") or "long"
-            active[(c["asset"], side)] = int(c["id"])
-        bets_raw = await db.get_open_live_bets_for_cycles()
-    else:
-        await db.repair_stuck_simulation_cycles()
-        signaled = await db.get_simulation_signaled_keys(since)
-        cycles = await db.get_open_simulation_cycles()
-        active = {}
-        for c in cycles:
-            side = c.get("side") or "long"
-            active[(c["asset"], side)] = int(c["id"])
-        bets_raw = await db.get_open_bets_for_cycles()
-
-    bets = [
-        RestoreBet(
-            bet_id=int(b["id"]),
-            binance_symbol=b["binance_symbol"],
-            side=b.get("side") or "long",
-            leg=int(b["leg"]),
-            asset=b["asset"],
-            cycle_id=int(b["cycle_id"]),
-            candle_open=int(b["candle_open"]),
-            poly_series=b["poly_series"],
-            entry_price=float(b["entry_price"]),
-            shares=float(b["shares"]),
-            cost_usd=float(b["cost_usd"]),
-            order_id=b.get("order_id"),
-        )
-        for b in bets_raw
-    ]
-    return RestoreState(
-        signaled=[(s, int(bo), str(sd)) for s, bo, sd in signaled],
-        active_cycles=active,
-        open_bets=bets,
     )

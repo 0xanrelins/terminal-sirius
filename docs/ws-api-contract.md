@@ -57,6 +57,10 @@ TypeScript unions: `FeedMsg` in `frontend/src/types.ts`.
 | POST | `/live/reconcile` | Strategy catch-up |
 | POST | `/live/config` | Env + runtime refresh |
 
+## Pricing (entry / live)
+
+Polymarket **prices** for bets come from Nautilus `DataClient` quotes (`quote_registry` / cache), not Gamma `outcomePrices` or direct CLOB REST. Gamma is metadata only (slug, token ids, search).
+
 ## Change process
 
 1. Update `types.ts` + `ws_contract.py` + this doc in the **same PR**.
