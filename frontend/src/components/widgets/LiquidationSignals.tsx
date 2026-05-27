@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFeed } from "../../context/FeedContext";
+import { format15mBarWindow, formatWallTimeSec } from "../../lib/betTiming";
 import type { LiquidationMsg, LiquidationSignalRow } from "../../types";
 import styles from "./LiquidationSignals.module.css";
 
@@ -247,7 +248,13 @@ export function LiquidationSignals({
                 <span className={`${styles.notional} ${styles.notionalMajor}`}>
                   {formatNotional(row.notional)}
                 </span>
-                <span className={styles.time}>{formatTime(row.time)}</span>
+                <span className={styles.time}>
+                  <span className={styles.timeEvent}>{formatWallTimeSec(row.time)}</span>
+                  <span className={styles.timeSep}>·</span>
+                  <span className={styles.timeBar15} title="15m liquidation bar (open–close)">
+                    {format15mBarWindow(row.time)}
+                  </span>
+                </span>
               </div>
             );
           })
@@ -261,10 +268,6 @@ function formatNotional(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${Math.round(n / 1_000)}k`;
   return `$${Math.round(n)}`;
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString("en-GB", { hour12: false });
 }
 
 function formatPairs(coins: readonly string[]): string {

@@ -9,7 +9,7 @@ Bloomberg tarzı, kişisel kullanım için tasarlanmış trading terminali. Sabi
 ```
 Nautilus Trader (Python)
   ├── BridgeActor        → Binance Futures USDT-M canlı feed
-  ├── PolymarketActor    → Polymarket CLOB WebSocket
+  ├── PolymarketQuoteBridgeActor → Polymarket quotes (Nautilus DataClient)
   └── LiquidationActor   → Binance !forceOrder@arr (tek liq writer)
 
         ↓  thread-safe Queue
@@ -139,9 +139,10 @@ Terminal Sirius/
 │   ├── liquidation_actor.py      # Binance !forceOrder (tek liq writer)
 │   ├── liquidations.py           # Parse + bar aggregate
 │   ├── db.py                     # PostgreSQL schema + queries
-│   ├── simulation/               # Liq→Poly paper engine
-│   ├── live/                     # Liq→Poly live engine
-│   └── adapters/polymarket/
+│   ├── simulation/               # Sim config holder (logic in LiqPolyStrategy)
+│   ├── live/                     # Live config holder
+│   ├── nautilus_env.py           # Polymarket env + L2 derive
+│   └── adapters/polymarket/      # gamma, rolling, quote_bridge_actor
 │
 └── frontend/
     ├── vite.config.ts
@@ -166,8 +167,8 @@ Terminal Sirius/
 ### Canlı veri
 
 ```
-Binance WS / Polymarket CLOB WS / !forceOrder
-  → Nautilus Actors (Bridge / Polymarket / Liquidation)
+Binance WS / Polymarket DataClient / !forceOrder
+  → Nautilus Actors (Bridge / QuoteBridge / Liquidation) + LiqPolyStrategy
     → data_queue (thread-safe Queue)
       → FastAPI broadcast loop
         → WebSocket /ws

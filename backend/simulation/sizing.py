@@ -21,6 +21,18 @@ def compute_bet(
     return shares, cost_usd
 
 
+def compute_live_market_usd(ask: float, min_shares: float) -> tuple[float, float]:
+    """
+    Live market BUY is quote_quantity (USD). Send exactly min_shares * ask so
+    fill size matches LIVE_MIN_SHARES (no ceil(min_usd/ask) bump on sim rules).
+    """
+    if ask <= 0 or ask >= 1:
+        raise ValueError(f"ask must be in (0, 1), got {ask}")
+    shares = min_shares
+    cost_usd = round(shares * ask, 4)
+    return shares, cost_usd
+
+
 def pnl_for_outcome(shares: float, cost_usd: float, won: bool) -> float:
     if won:
         return round(shares * 1.0 - cost_usd, 4)

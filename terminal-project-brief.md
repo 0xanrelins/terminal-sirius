@@ -22,7 +22,7 @@ Kullanıcı boş bir kanvasa gelir. Chart mı ister, fiyat ekranı mı, orderboo
 ## Mimari
 
 ```
-Nautilus (BridgeActor, PolymarketActor, LiquidationActor)
+Nautilus (BridgeActor, PolymarketQuoteBridgeActor, LiquidationActor)
   → data_queue → FastAPI (HTTP + /ws) → React (react-grid-layout + widgets)
   → PostgreSQL (klines, liquidation_bars, sim/live)
 ```

@@ -10,10 +10,10 @@ import type {
 } from "../../types";
 import {
   betTimeTooltip,
-  formatBarTime,
+  format15mBarWindow,
   formatLiqThreshold,
-  liqBarOpen,
   signalTimestamp,
+  formatWallTimeSec,
 } from "../../lib/betTiming";
 import {
   aggregateAssetStats,
@@ -34,6 +34,12 @@ function legLabel(side: SimulationSide, leg: number): string {
   return `${side === "long" ? "L" : "S"}${leg}`;
 }
 
+type SideFilter = "long" | "short";
+type LegFilter = "l1" | "l2" | "s1" | "s2";
+
+const ALL_SIDES: SideFilter[] = ["long", "short"];
+const ALL_LEGS: LegFilter[] = ["l1", "l2", "s1", "s2"];
+
 type Props = {
   coins: SimCoin[];
   onConfigChange: (patch: { coins?: SimCoin[] }) => void;
@@ -42,6 +48,34 @@ type Props = {
 export function SimulationPanel({ coins, onConfigChange }: Props) {
   const selected = coins;
   const selectedSet = useMemo(() => new Set<string>(selected), [selected]);
+  const [activeSides, setActiveSides] = useState<Set<SideFilter>>(new Set(ALL_SIDES));
+  const [activeLegs, setActiveLegs] = useState<Set<LegFilter>>(new Set(ALL_LEGS));
+
+  const toggleSide = (side: SideFilter) => {
+    setActiveSides((prev) => {
+      const next = new Set(prev);
+      if (next.has(side)) {
+        if (next.size === 1) return prev;
+        next.delete(side);
+      } else {
+        next.add(side);
+      }
+      return next;
+    });
+  };
+
+  const toggleLeg = (leg: LegFilter) => {
+    setActiveLegs((prev) => {
+      const next = new Set(prev);
+      if (next.has(leg)) {
+        if (next.size === 1) return prev;
+        next.delete(leg);
+      } else {
+        next.add(leg);
+      }
+      return next;
+    });
+  };
   const { subscribe, status } = useFeed();
   const [simStatus, setSimStatus] = useState<SimulationStatus | null>(null);
   const availableCoins = useMemo(() => {
@@ -158,14 +192,6 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
     });
   }, [subscribe, refresh, selectedSet]);
 
-  const agg = aggregateAssetStats(
-    selected,
-    simStatus?.by_asset,
-    simStatus?.by_asset_side
-  );
-  const pnl = agg.total_pnl_usd;
-  const pnlClass = pnl >= 0 ? styles.pnlPos : styles.pnlNeg;
-
   const toggleCoin = (coin: SimCoin) => {
     const next = selectedSet.has(coin)
       ? selected.filter((c) => c !== coin)
@@ -174,7 +200,26 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
     onConfigChange({ coins: next });
   };
 
-  const visibleRows = rows.filter((r) => selectedSet.has(r.asset));
+  const visibleRows = useMemo(
+    () =>
+      rows.filter((r) => {
+        if (!selectedSet.has(r.asset)) return false;
+        const side = r.side ?? "long";
+        if (!activeSides.has(side)) return false;
+        const legKey = `${side === "long" ? "l" : "s"}${r.leg}` as LegFilter;
+        if (!activeLegs.has(legKey)) return false;
+        return true;
+      }),
+    [rows, selectedSet, activeSides, activeLegs]
+  );
+
+  const agg = useMemo(
+    () => aggregateAssetStats(selected, activeSides, activeLegs, simStatus?.by_asset_side_leg),
+    [selected, activeSides, activeLegs, simStatus?.by_asset_side_leg]
+  );
+
+  const pnl = agg.total_pnl_usd;
+  const pnlClass = pnl >= 0 ? styles.pnlPos : styles.pnlNeg;
 
   return (
     <div className={styles.root}>
@@ -201,6 +246,40 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
             );
           })}
         </div>
+        <div className={styles.filterGroup}>
+          {(["long", "short"] as SideFilter[]).map((side) => {
+            const on = activeSides.has(side);
+            return (
+              <button
+                key={side}
+                type="button"
+                className={`${styles.filterBtn} ${on ? (side === "long" ? styles.filterBtnUp : styles.filterBtnDn) : ""}`}
+                onClick={() => toggleSide(side)}
+                aria-pressed={on}
+              >
+                {side === "long" ? "UP" : "DN"}
+              </button>
+            );
+          })}
+        </div>
+        <div className={styles.filterGroup}>
+          {(["l1", "l2", "s1", "s2"] as LegFilter[]).map((leg) => {
+            const on = activeLegs.has(leg);
+            const isLong = leg.startsWith("l");
+            return (
+              <button
+                key={leg}
+                type="button"
+                className={`${styles.filterBtn} ${on ? (isLong ? styles.filterBtnUp : styles.filterBtnDn) : ""}`}
+                onClick={() => toggleLeg(leg)}
+                aria-pressed={on}
+              >
+                {leg.toUpperCase()}
+              </button>
+            );
+          })}
+        </div>
+        <span className={styles.simBadge}>SIM</span>
         {simStatus && (
           <>
             <span className={styles.stat}>
@@ -261,13 +340,13 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
                   )}
                 </span>
                 <span
-                  className={
+                  className={`${styles.outcome} ${
                     r.outcome === "win"
                       ? styles.outcomeWin
                       : r.outcome === "loss"
                         ? styles.outcomeLoss
                         : styles.pending
-                  }
+                  }`}
                 >
                   {r.outcome ?? "open"}
                   {r.pnl_usd != null && (
@@ -289,13 +368,10 @@ export function SimulationPanel({ coins, onConfigChange }: Props) {
                       : betTimeTooltip(r)
                   }
                 >
-                  <span className={styles.timeLiq}>
-                    <span className={styles.timeLabel}>liq</span>
-                    {formatBarTime(liqBarOpen(r))}
-                  </span>
-                  <span className={styles.timeSig}>
-                    <span className={styles.timeLabel}>sig</span>
-                    {formatBarTime(signalTimestamp(r))}
+                  <span className={styles.timeEvent}>{formatWallTimeSec(signalTimestamp(r))}</span>
+                  <span className={styles.timeSep}>·</span>
+                  <span className={styles.timeBar15}>
+                    {format15mBarWindow(signalTimestamp(r))}
                   </span>
                 </span>
               </div>

@@ -4,7 +4,7 @@ FastAPI WebSocket bridge.
 Startup sequence:
   1. Load .env
   2. Init PostgreSQL pool + run schema migration
-  3. Start Nautilus node in daemon thread (Binance + Polymarket actors)
+  3. Start Nautilus node in daemon thread (Binance + Polymarket DataClient + strategies)
   4. Start broadcast loop (WS fan-out + bar persistence)
 
 Endpoints:
@@ -38,8 +38,7 @@ sys.path.insert(0, ".")
 
 import nautilus_env
 
-nautilus_env.sync_polymarket_env()
-nautilus_env.ensure_polymarket_l2_env()
+nautilus_env.prepare_polymarket_env()
 
 import db
 from adapters.polymarket.gamma import get_market_by_slug, get_token_ids, search_markets
@@ -48,39 +47,36 @@ from bar_time import bar_open_time_ns
 from klines import fetch_klines
 from liquidations import (
     MAJOR_NAUTILUS_SYMBOLS,
+    binance_to_nautilus,
     fetch_liquidation_bars,
     fetch_liquidation_events,
 )
 from liquidation_stream import run_liquidation_stream
-from live.engine import LiveTradingEngine
-from simulation.engine import SimulationEngine
-
 data_queue: queue.Queue = queue.Queue(maxsize=10_000)
+strategy_event_queue: queue.Queue = queue.Queue(maxsize=10_000)
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
-_simulation: SimulationEngine | None = None
-_live: LiveTradingEngine | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _simulation, _live
-    # DB
     await db.init()
 
-    _simulation = SimulationEngine()
-    await _simulation.load_state()
-    startup_sim = await _simulation.sync_bars_from_store()
+    from engines.poly_sync import load_restore_state
+    from nautilus_bridge.strategy_runtime import set_main_loop, set_runtime
+    from strategies.liq_poly_config import runtime_from_env
 
-    _live = LiveTradingEngine()
-    await _live.load_state()
-    startup_live = await _live.sync_bars_from_store()
+    set_main_loop(asyncio.get_running_loop())
 
-    # Nautilus (daemon thread — LiquidationActor when available)
+    live_restore = await load_restore_state("live")
+    sim_restore = await load_restore_state("sim")
+    set_runtime("live", runtime_from_env("live", live_restore))
+    set_runtime("sim", runtime_from_env("sim", sim_restore))
+
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
 
     nautilus_ok = False
     try:
-        run_node_in_thread(data_queue)
+        run_node_in_thread(data_queue, strategy_event_queue)
         nautilus_ok = True
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
@@ -101,10 +97,6 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_broadcast_loop())
     asyncio.create_task(_liquidation_events_retention_loop())
-    if startup_sim:
-        asyncio.create_task(_fanout_messages(startup_sim))
-    if startup_live:
-        asyncio.create_task(_fanout_messages(startup_live))
 
     yield
 
@@ -144,6 +136,10 @@ async def liquidations_endpoint(
     from_time: Optional[int] = Query(None, alias="from"),
     to_time: Optional[int] = Query(None, alias="to"),
 ):
+    # Normalize Binance symbol (BTCUSDT) → Nautilus format (BTCUSDT-PERP.BINANCE)
+    # DB stores all liq bars in Nautilus format (live stream uses binance_to_nautilus).
+    if not symbol.endswith(".BINANCE"):
+        symbol = binance_to_nautilus(symbol)
     try:
         return await fetch_liquidation_bars(
             symbol,
@@ -248,14 +244,13 @@ async def simulation_bets(limit: int = 100, assets: str | None = None):
 
 @app.post("/simulation/reconcile")
 async def simulation_reconcile(reset_signaled: bool = False):
-    """Re-scan 15m liq bars vs thresholds (fixes engine/chart total drift)."""
-    if _simulation is None:
-        raise HTTPException(status_code=503, detail="Simulation not running")
+    """Re-scan 15m liq bars vs thresholds (LiqPolyStrategy)."""
     try:
-        if reset_signaled:
-            _simulation.clear_signal_cache()
-        events = await _simulation.reconcile_all_bars()
-        events += await _simulation.reconcile_settlements()
+        from nautilus_bridge.strategy_runtime import request_strategy_catchup
+
+        events = await asyncio.wait_for(
+            request_strategy_catchup("sim", reset_signaled), timeout=60
+        )
         if events:
             asyncio.create_task(_fanout_messages(events))
         return {
@@ -263,17 +258,27 @@ async def simulation_reconcile(reset_signaled: bool = False):
             "ok": True,
             "reset_signaled": reset_signaled,
         }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Strategy reconcile timed out")
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/simulation/reset")
 async def simulation_reset():
-    """Wipe paper-sim bet/cycle history and reset in-memory engine state."""
-    if _simulation is None:
-        raise HTTPException(status_code=503, detail="Simulation not running")
+    """Wipe paper-sim bet/cycle history and refresh LiqPoly sim runtime."""
     try:
-        counts = await _simulation.reset_history()
+        from engines.poly_sync import load_restore_state
+        from nautilus_bridge.strategy_runtime import set_runtime
+        from strategies.liq_poly_config import runtime_from_env
+
+        counts = await db.clear_simulation_history()
+        sim_restore = await load_restore_state("sim")
+        set_runtime("sim", runtime_from_env("sim", sim_restore))
+        print(
+            f"[simulation] history cleared "
+            f"({counts['bets_deleted']} bets, {counts['cycles_deleted']} cycles)"
+        )
         return {"ok": True, **counts}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -299,12 +304,9 @@ async def simulation_config(body: SimulationConfigBody):
         os.environ["SIM_MIN_USD"] = str(body.min_usd)
     if body.enabled is not None:
         os.environ["SIM_ENABLED"] = "true" if body.enabled else "false"
-    if _simulation is not None:
-        from simulation import config as sim_cfg
+    from nautilus_bridge.strategy_runtime import refresh_runtime_from_env
 
-        _simulation._assets = sim_cfg.active_assets()
-        _simulation._thresholds = sim_cfg.thresholds()
-        _simulation._min_usd = sim_cfg.min_usd()
+    refresh_runtime_from_env("sim")
     return await simulation_status()
 
 
@@ -316,10 +318,17 @@ async def live_status():
         from live import config as live_cfg
         from adapters.polymarket import orders as poly_orders
 
+        from nautilus_bridge.context import exec_client_ready, get_trading_node
+
         status = await db.get_live_status()
         status["enabled"] = live_cfg.is_enabled()
         status["orders_enabled"] = poly_orders.can_place_orders()
         status["credentials_configured"] = poly_orders.credentials_configured()
+        status["exec_client_ready"] = exec_client_ready()
+        status["trading_node_alive"] = get_trading_node() is not None
+        status["orders_ready"] = (
+            status["orders_enabled"] and status["exec_client_ready"]
+        )
         status["thresholds"] = live_cfg.thresholds()
         status["assets"] = list(live_cfg.active_assets().keys())
         status["min_usd"] = live_cfg.min_usd()
@@ -344,13 +353,12 @@ async def live_bets(limit: int = 100, assets: str | None = None):
 
 @app.post("/live/reconcile")
 async def live_reconcile(reset_signaled: bool = False):
-    if _live is None:
-        raise HTTPException(status_code=503, detail="Live trading not running")
     try:
-        if reset_signaled:
-            _live.clear_signal_cache()
-        events = await _live.reconcile_all_bars()
-        events += await _live.reconcile_settlements()
+        from nautilus_bridge.strategy_runtime import request_strategy_catchup
+
+        events = await asyncio.wait_for(
+            request_strategy_catchup("live", reset_signaled), timeout=60
+        )
         if events:
             asyncio.create_task(_fanout_messages(events))
         return {
@@ -359,6 +367,8 @@ async def live_reconcile(reset_signaled: bool = False):
             "reset_signaled": reset_signaled,
             "event_types": [e.get("type") for e in events],
         }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Strategy reconcile timed out")
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -383,24 +393,25 @@ async def live_config(body: LiveConfigBody):
         os.environ["LIVE_MIN_USD"] = str(body.min_usd)
     if body.enabled is not None:
         os.environ["LIVE_ENABLED"] = "true" if body.enabled else "false"
-    if _live is not None:
-        from live import config as live_cfg
+    from nautilus_bridge.strategy_runtime import refresh_runtime_from_env
 
-        _live._assets = live_cfg.active_assets()
-        _live._thresholds = live_cfg.thresholds()
-        _live._min_usd = live_cfg.min_usd()
+    refresh_runtime_from_env("live")
     return await live_status()
 
 
 @app.post("/polymarket/subscribe")
 async def polymarket_subscribe(body: SubscribeBody):
     try:
-        from node import get_polymarket_actor
-        actor = get_polymarket_actor()
-        if actor is None:
-            raise HTTPException(status_code=503, detail="Polymarket actor not running")
+        from node import get_polymarket_quote_bridge
+
+        bridge = get_polymarket_quote_bridge()
+        if bridge is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Polymarket quote bridge not running (enable POLYMARKET_DATA_ENABLED)",
+            )
         if body.series:
-            actor.subscribe_series(body.series)
+            bridge.subscribe_series(body.series)
             slug = slug_for_series(body.series)
             return {
                 "status": "queued",
@@ -409,7 +420,7 @@ async def polymarket_subscribe(body: SubscribeBody):
                 "slug": slug,
             }
         if body.slug:
-            actor.subscribe_slug(body.slug)
+            bridge.subscribe_slug(body.slug)
             return {"status": "queued", "slug": body.slug}
         raise HTTPException(status_code=400, detail="Provide slug or series")
     except ImportError:
@@ -465,42 +476,27 @@ async def _broadcast_loop() -> None:
     loop = asyncio.get_running_loop()
 
     while True:
+        strategy_batch = await loop.run_in_executor(None, _drain_strategy_queue)
+        if strategy_batch:
+            await _fanout_messages(strategy_batch)
+
         try:
             msg = await loop.run_in_executor(None, _blocking_get)
         except Exception:
             continue
 
-        # Persist to PostgreSQL
         if msg.get("type") == "bar":
             asyncio.create_task(_persist_bar(msg))
         elif msg.get("type") == "liquidation":
             asyncio.create_task(_persist_liquidation(msg))
 
-        sim_events: list[dict] = []
-        if _simulation is not None:
-            try:
-                sim_events = await _simulation.on_message(msg)
-            except Exception as e:
-                print(f"[warn] simulation error: {e}")
-
-        live_events: list[dict] = []
-        if _live is not None:
-            try:
-                live_events = await _live.on_message(msg)
-            except Exception as e:
-                print(f"[warn] live trading error: {e}")
-
-        if not _clients and not sim_events and not live_events:
+        if not _clients:
             continue
 
-        outbound: list[dict] = []
         if msg.get("type") == "liquidation":
-            outbound.append({k: v for k, v in msg.items() if not k.startswith("_")})
+            outbound = [{k: v for k, v in msg.items() if not k.startswith("_")}]
         else:
-            outbound.append(msg)
-        outbound.extend(sim_events)
-        outbound.extend(live_events)
-
+            outbound = [msg]
         await _fanout_messages(outbound)
 
 
@@ -561,6 +557,16 @@ async def _persist_bar(msg: dict) -> None:
         )
     except Exception as e:
         print(f"[warn] bar persist failed: {e}")
+
+
+def _drain_strategy_queue() -> list[dict]:
+    out: list[dict] = []
+    while True:
+        try:
+            out.append(strategy_event_queue.get_nowait())
+        except queue.Empty:
+            break
+    return out
 
 
 def _blocking_get() -> dict:

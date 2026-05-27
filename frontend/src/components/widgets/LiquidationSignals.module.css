@@ -1,4 +1,12 @@
 .root {
+  /* Explicit --list-font-*; --list-scale in ~1.55–1.6 band */
+  --list-scale: 1.58;
+  --list-font-micro: calc(7px * var(--list-scale));
+  --list-font-xs: calc(8px * var(--list-scale));
+  --list-font-sm: calc(9px * var(--list-scale));
+  --list-font-md: calc(10px * var(--list-scale));
+  --list-font-lg: calc(11px * var(--list-scale));
+
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -100,7 +108,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: 1fr 36px 52px 52px;
+  grid-template-columns: 1fr 36px 52px minmax(128px, 1.4fr);
   gap: var(--list-gap-row-tight);
   align-items: center;
   padding: var(--list-pad-row-tight);
@@ -170,7 +178,27 @@
 }
 
 .time {
-  color: #555;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.28em;
+  row-gap: 0.1em;
+  color: #a3a3ad;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.timeEvent,
+.timeBar15 {
+  color: #b8b8c2;
+}
+
+.timeSep {
+  color: #5c5c68;
+  user-select: none;
+}
+
+.timeBar15 {
+  white-space: nowrap;
 }
