@@ -1,3 +1,5 @@
+> **Archived** — see [../README.md](../README.md) for current docs.
+
 # Tam Nautilus entegrasyonu — plan
 
 > **2026-06:** Legacy `LiqPolyStrategy` (paper sim + live + monitor/backtest) kaldırıldı. TradingNode şu an yalnızca veri actor'ları + isteğe bağlı idle `PolymarketExecutionClient` çalıştırır. Yeni stratejiler sıfırdan `Strategy` + `submit_order` ile eklenecek.

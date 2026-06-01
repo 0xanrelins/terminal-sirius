@@ -1,3 +1,5 @@
+> **Archived** — see [../README.md](../README.md) for current docs.
+
 # Trading Terminal — Project Brief
 
 ## Vizyon

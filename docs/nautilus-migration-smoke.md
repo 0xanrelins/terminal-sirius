@@ -1,6 +1,6 @@
-# Nautilus migration — smoke checklist
+# Nautilus — smoke checklist
 
-Contract reference: [ws-api-contract.md](ws-api-contract.md)
+Post–trade-removal: node is **actor-only** (no `LiqPolyStrategy`). Contract: [ws-api-contract.md](ws-api-contract.md). Index: [README.md](README.md).
 
 ## Offline regression (run first)
 

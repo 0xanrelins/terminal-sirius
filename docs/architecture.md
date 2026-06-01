@@ -41,7 +41,7 @@ UI talks only to FastAPI, not Nautilus or Postgres directly.
 
 The legacy `LiqPolyStrategy` stack (paper sim, live bets, BFF persist bridge) was removed. Future strategies should register on `TradingNode` and use native `Strategy.submit_order` + `PolymarketExecutionClient` only.
 
-See [Tam Nautilus entegrasyonu — plan](tam-nautilus-entegrasyonu-plan.md) for the target model.
+Next steps: [roadmap.md](roadmap.md). Historical migration: [archive/tam-nautilus-entegrasyonu-plan.md](archive/tam-nautilus-entegrasyonu-plan.md).
 
 ## Nautilus alignment (current)
 

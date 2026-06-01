@@ -2,15 +2,19 @@
 
 Bloomberg tarzı, kişisel kullanım için tasarlanmış trading terminali. Sabit bir arayüz değil, boş bir kanvas — istediğin widget'ı ekler, yerleştirir, veri kaynağına bağlarsın.
 
+**Docs:** [docs/README.md](docs/README.md) (architecture, API contract, roadmap).
+
 ---
 
 ## Mimari
 
 ```
-Nautilus Trader (Python)
-  ├── BridgeActor        → Binance Futures USDT-M canlı feed
-  ├── PolymarketQuoteBridgeActor → Polymarket quotes (Nautilus DataClient)
-  └── LiquidationActor   → Binance !forceOrder@arr (tek liq writer)
+Nautilus TradingNode (Python)
+  ├── BridgeActor / RealtimeBucketActor     → Binance bars, 1s/5s, indicators
+  ├── PolymarketQuoteBridgeActor            → Polymarket quotes (DataClient)
+  ├── PolymarketRealtimeBucketActor         → Polymarket 1s/5s UP bars
+  ├── LiquidationActor                      → !forceOrder@arr (tek liq writer)
+  └── MarketRecorderActor (optional)        → Parquet catalog
 
         ↓  thread-safe Queue
         
@@ -20,16 +24,17 @@ FastAPI (Python)
   ├── POST /polymarket/subscribe   → runtime slug ekleme
   ├── GET  /liquidations    → 15m liq bar totals
   ├── GET  /liquidation-events → major-coin liq list (backend persist)
-  └── WS   /ws              → tüm canlı veriyi browser'a yayınlar
+  ├── GET  /liq-post-event/sessions → catalog research
+  └── WS   /ws              → market data (trade, bar, liquidation, polymarket)
 
         ↓  WebSocket
         
 Browser (React + TypeScript)
   ├── FeedContext           → tek WS bağlantısı, sembol bazlı pub/sub
   └── Canvas (react-grid-layout)
-        ├── PriceTicker          widget
-        ├── CandlestickChart     widget  (TradingView Lightweight Charts)
-        └── PolymarketTicker     widget
+        ├── PriceTicker / CandlestickChart / ComparisonChart
+        ├── LiquidationSignals / LiqPostEventChart
+        └── PolymarketSecondsChart
 ```
 
 ---
@@ -142,7 +147,11 @@ Terminal Sirius/
 ├── .env
 │
 ├── docs/
-│   └── architecture.md           # Katmanlar, tek liq writer, API sözleşmesi
+│   ├── README.md                 # Doc index (start here)
+│   ├── architecture.md
+│   ├── ws-api-contract.md
+│   ├── roadmap.md
+│   └── archive/                # Historical plans only
 ├── backend/
 │   ├── main.py                   # FastAPI BFF + WS
 │   ├── node.py                   # Nautilus TradingNode (data actors only)
