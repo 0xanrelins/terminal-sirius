@@ -53,6 +53,9 @@ def test_build_liquidation_message_includes_payload():
     snap_15m = next(b for b in msg["bars"] if b["interval"] == "15m")
     assert snap_15m["long"] == round(64980.5 * 0.5, 2)
     assert snap_15m["short"] == 0.0
+    snap_5s = next(b for b in msg["bars"] if b["interval"] == "5s")
+    assert snap_5s["long"] == round(64980.5 * 0.5, 2)
+    assert snap_5s["short"] == 0.0
 
 
 def test_parse_rejects_non_force_order():

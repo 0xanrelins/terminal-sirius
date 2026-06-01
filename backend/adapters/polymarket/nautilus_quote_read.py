@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from adapters.polymarket.quote_registry import SlugQuoteBook, update_slug_quote
-from nautilus_bridge.context import get_trading_node
+from node import get_trading_node
 
 
 def _tick_prices(tick) -> tuple[float, float]:

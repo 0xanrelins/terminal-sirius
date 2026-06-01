@@ -3,14 +3,15 @@ Nautilus TradingNode factory.
 
 Binance Futures (USDT-M perp) public feed — no API keys needed for market data.
 Polymarket market data via Nautilus PolymarketDataClient + PolymarketQuoteBridgeActor.
-Live Polymarket execution via PolymarketExecutionClient + LiqPolyStrategy when creds set.
+Polymarket execution client registers when creds + POLYMARKET_EXEC_ENABLED (no strategies).
 
 Environment variables:
-  DATABASE_URL       — PostgreSQL DSN for Nautilus CacheDatabase
+  DATABASE_URL            — PostgreSQL DSN for Nautilus CacheDatabase
   POLYMARKET_SLUGS        — comma-separated static market slugs on boot
   POLYMARKET_15M_SERIES   — comma-separated rolling 15m series
-  LIVE_ENABLED            — register Polymarket exec client when true + creds
+  POLYMARKET_EXEC_ENABLED — register Polymarket ExecutionClient when true + creds
   POLYMARKET_DATA_ENABLED — default true; PolymarketDataClient + quote bridge for UI
+  MARKET_RECORDER_ENABLED   — default true; ParquetDataCatalog via MarketRecorderActor
 """
 from __future__ import annotations
 
@@ -68,11 +69,12 @@ from adapters.polymarket.quote_bridge_actor import (
     PolymarketQuoteBridgeActorConfig,
 )
 from bridge_actor import BridgeActor, BridgeActorConfig
+from polymarket_realtime_bucket_actor import (
+    PolymarketRealtimeBucketActor,
+    PolymarketRealtimeBucketActorConfig,
+)
+from realtime_bucket_actor import RealtimeBucketActor, RealtimeBucketActorConfig
 from liquidation_actor import LiquidationActor, LiquidationActorConfig
-from live import config as live_cfg
-from nautilus_bridge.context import register_trading_node
-from nautilus_bridge.strategy_runtime import set_event_queue
-from strategies.liq_poly_strategy import LiqPolyStrategy, LiqPolyStrategyConfig
 
 DEFAULT_INSTRUMENTS = (
     "BTCUSDT-PERP.BINANCE",
@@ -84,10 +86,24 @@ DEFAULT_INSTRUMENTS = (
 )
 
 _polymarket_quote_bridge: PolymarketQuoteBridgeActor | None = None
+_catalog_writer = None
+_trading_node: TradingNode | None = None
 
 
 def get_polymarket_quote_bridge() -> PolymarketQuoteBridgeActor | None:
     return _polymarket_quote_bridge
+
+
+def get_trading_node() -> TradingNode | None:
+    return _trading_node
+
+
+def _polymarket_exec_enabled() -> bool:
+    raw = os.environ.get(
+        "POLYMARKET_EXEC_ENABLED",
+        os.environ.get("LIVE_ENABLED", "false"),
+    )
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _cache_config() -> CacheConfig:
@@ -109,7 +125,7 @@ def _polymarket_slugs() -> tuple[str, ...]:
 def _polymarket_series() -> tuple[str, ...]:
     raw = os.environ.get(
         "POLYMARKET_15M_SERIES",
-        "btc-updown-15m,eth-updown-15m,sol-updown-15m,doge-updown-15m,xrp-updown-15m",
+        "btc-updown-15m,eth-updown-15m,sol-updown-15m,xrp-updown-15m,doge-updown-15m,hype-updown-15m",
     )
     return tuple(s.strip() for s in raw.split(",") if s.strip())
 
@@ -130,7 +146,7 @@ def _polymarket_client_fields(
 def _polymarket_exec_config(
     wallet: nautilus_env.PolymarketWalletConfig,
 ) -> PolymarketExecClientConfig | None:
-    if not live_cfg.is_enabled() or not credentials_configured():
+    if not _polymarket_exec_enabled() or not credentials_configured():
         return None
     if not wallet.has_l2_api:
         print(
@@ -157,7 +173,6 @@ def _polymarket_data_config(
         **_polymarket_client_fields(wallet),
         auto_load_missing_instruments=True,
         instrument_config=PolymarketInstrumentProviderConfig(
-            # CLOB path loads all outcome tokens per market (avoids sibling token cache misses).
             use_gamma_markets=False,
         ),
     )
@@ -165,12 +180,9 @@ def _polymarket_data_config(
 
 def build_node(
     data_queue: queue.Queue,
-    strategy_event_queue: queue.Queue,
     instruments: tuple[str, ...] = DEFAULT_INSTRUMENTS,
 ) -> TradingNode:
-    global _polymarket_quote_bridge
-
-    set_event_queue(strategy_event_queue)
+    global _polymarket_quote_bridge, _catalog_writer, _trading_node
 
     bridge_cfg = BridgeActorConfig(
         component_id="BridgeActor-001",
@@ -201,7 +213,7 @@ def build_node(
     )
     if exec_cfg is not None:
         exec_clients["POLYMARKET"] = exec_cfg
-        print("[nautilus] Polymarket ExecutionClient enabled (live orders via Nautilus)")
+        print("[nautilus] Polymarket ExecutionClient enabled (idle, no strategies)")
 
     config = TradingNodeConfig(
         trader_id="TERMINAL-SIRIUS-001",
@@ -224,6 +236,14 @@ def build_node(
     bridge = BridgeActor(config=bridge_cfg, data_queue=data_queue)
     node.trader.add_actor(bridge)
 
+    rt_cfg = RealtimeBucketActorConfig(
+        component_id="RealtimeBucketActor-001",
+        instrument_ids=instruments,
+    )
+    rt_actor = RealtimeBucketActor(config=rt_cfg, data_queue=data_queue)
+    node.trader.add_actor(rt_actor)
+    print("[nautilus] RealtimeBucketActor enabled (1s/5s bars + indicators → WS queue)")
+
     _polymarket_quote_bridge = None
     if data_cfg is not None:
         qb_cfg = PolymarketQuoteBridgeActorConfig(
@@ -236,36 +256,60 @@ def build_node(
         _polymarket_quote_bridge = qb_actor
         print("[nautilus] PolymarketQuoteBridgeActor enabled (Nautilus quotes → WS queue)")
 
+        pm_rt_cfg = PolymarketRealtimeBucketActorConfig(
+            component_id="PolymarketRealtimeBucket-001",
+            series=_polymarket_series(),
+        )
+        node.trader.add_actor(
+            PolymarketRealtimeBucketActor(config=pm_rt_cfg, data_queue=data_queue)
+        )
+        print("[nautilus] PolymarketRealtimeBucketActor enabled (1s/5s UP bars → WS queue)")
+
     liq_actor = LiquidationActor(config=liq_cfg, data_queue=data_queue)
     node.trader.add_actor(liq_actor)
 
-    if live_cfg.is_enabled():
-        live_strat_cfg = LiqPolyStrategyConfig(strategy_id="LiqPoly-Live", mode="live")
-        node.trader.add_strategy(LiqPolyStrategy(config=live_strat_cfg))
+    from recorders.config import (
+        binance_instruments_from_env,
+        flush_interval_ms_from_env,
+        is_enabled as market_recorder_enabled,
+        max_batch_rows_from_env,
+        polymarket_series_from_env,
+    )
+    from recorders.catalog_writer import CatalogWriter
+    from recorders.market_recorder_actor import MarketRecorderActor, MarketRecorderActorConfig
 
-    from simulation import config as sim_cfg
-
-    if sim_cfg.is_enabled():
-        sim_strat_cfg = LiqPolyStrategyConfig(strategy_id="LiqPoly-Sim", mode="sim")
-        node.trader.add_strategy(LiqPolyStrategy(config=sim_strat_cfg))
+    if market_recorder_enabled():
+        _catalog_writer = CatalogWriter(
+            flush_interval_ms=flush_interval_ms_from_env(),
+            max_batch_rows=max_batch_rows_from_env(),
+        )
+        _catalog_writer.start()
+        recorder_cfg = MarketRecorderActorConfig(
+            component_id="MarketRecorder-001",
+            binance_instruments=binance_instruments_from_env(),
+            polymarket_series=polymarket_series_from_env() if data_cfg is not None else (),
+        )
+        node.trader.add_actor(MarketRecorderActor(config=recorder_cfg, writer=_catalog_writer))
+        print("[nautilus] MarketRecorderActor enabled → ParquetDataCatalog")
 
     node.build()
-    register_trading_node(node)
+    _trading_node = node
     return node
 
 
-def run_node_in_thread(
-    data_queue: queue.Queue, strategy_event_queue: queue.Queue
-) -> threading.Thread:
+def run_node_in_thread(data_queue: queue.Queue) -> threading.Thread:
     def _run() -> None:
-        global _polymarket_quote_bridge
-        node = build_node(data_queue, strategy_event_queue)
+        global _polymarket_quote_bridge, _catalog_writer, _trading_node
+        node = build_node(data_queue)
         try:
             node.run()
         finally:
-            register_trading_node(None)  # type: ignore[arg-type]
+            _trading_node = None
             node.dispose()
             _polymarket_quote_bridge = None
+            if _catalog_writer is not None:
+                _catalog_writer.stop()
+                _catalog_writer = None
 
     thread = threading.Thread(target=_run, daemon=True, name="nautilus-node")
     thread.start()

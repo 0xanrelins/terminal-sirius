@@ -73,16 +73,9 @@ export function FeedProvider({ children }: { children: ReactNode }) {
   }, []);
 
   function dispatch(msg: FeedMsg) {
-    const sym =
-      "symbol" in msg && msg.symbol
-        ? msg.symbol
-        : "binance_symbol" in msg
-          ? (msg as { binance_symbol?: string }).binance_symbol
-          : undefined;
+    const sym = "symbol" in msg && msg.symbol ? msg.symbol : undefined;
     if (sym) subs.current.get(sym)?.forEach((h) => h(msg));
-    if (String(msg.type).startsWith("simulation")) {
-      subs.current.get("*")?.forEach((h) => h(msg));
-    }
+    subs.current.get("*")?.forEach((h) => h(msg));
   }
 
   const subscribe = useCallback((symbol: string, handler: Handler): (() => void) => {

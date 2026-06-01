@@ -4,7 +4,7 @@ FastAPI WebSocket bridge.
 Startup sequence:
   1. Load .env
   2. Init PostgreSQL pool + run schema migration
-  3. Start Nautilus node in daemon thread (Binance + Polymarket DataClient + strategies)
+  3. Start Nautilus node in daemon thread (Binance + Polymarket DataClient)
   4. Start broadcast loop (WS fan-out + bar persistence)
 
 Endpoints:
@@ -15,7 +15,7 @@ Endpoints:
 
 Liquidation: single writer via `liquidation_stream` (or Nautilus LiquidationActor) →
 `liquidation_bars` + optional `liquidation_events` / watchlist when
-PERSIST_LIQUIDATION_EVENTS_TO_DB=1 (default). External recorder scripts are not used.
+PERSIST_LIQUIDATION_EVENTS_TO_DB=1 (default).
 """
 import asyncio
 import json
@@ -41,7 +41,7 @@ import nautilus_env
 nautilus_env.prepare_polymarket_env()
 
 import db
-from adapters.polymarket.gamma import get_market_by_slug, get_token_ids, search_markets
+from adapters.polymarket.gamma import get_token_ids, search_markets
 from adapters.polymarket.rolling import PRESET_15M_SERIES, series_symbol, slug_for_series
 from bar_time import bar_open_time_ns
 from klines import fetch_klines
@@ -52,8 +52,8 @@ from liquidations import (
     fetch_liquidation_events,
 )
 from liquidation_stream import run_liquidation_stream
+
 data_queue: queue.Queue = queue.Queue(maxsize=10_000)
-strategy_event_queue: queue.Queue = queue.Queue(maxsize=10_000)
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
 
 
@@ -61,22 +61,11 @@ _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
 async def lifespan(app: FastAPI):
     await db.init()
 
-    from engines.poly_sync import load_restore_state
-    from nautilus_bridge.strategy_runtime import set_main_loop, set_runtime
-    from strategies.liq_poly_config import runtime_from_env
-
-    set_main_loop(asyncio.get_running_loop())
-
-    live_restore = await load_restore_state("live")
-    sim_restore = await load_restore_state("sim")
-    set_runtime("live", runtime_from_env("live", live_restore))
-    set_runtime("sim", runtime_from_env("sim", sim_restore))
-
     from node import DEFAULT_INSTRUMENTS, run_node_in_thread
 
     nautilus_ok = False
     try:
-        run_node_in_thread(data_queue, strategy_event_queue)
+        run_node_in_thread(data_queue)
         nautilus_ok = True
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
@@ -136,8 +125,6 @@ async def liquidations_endpoint(
     from_time: Optional[int] = Query(None, alias="from"),
     to_time: Optional[int] = Query(None, alias="to"),
 ):
-    # Normalize Binance symbol (BTCUSDT) → Nautilus format (BTCUSDT-PERP.BINANCE)
-    # DB stores all liq bars in Nautilus format (live stream uses binance_to_nautilus).
     if not symbol.endswith(".BINANCE"):
         symbol = binance_to_nautilus(symbol)
     try:
@@ -160,13 +147,42 @@ async def liquidation_events_endpoint(
     symbols: Optional[str] = None,
     limit: int = 200,
 ):
-    """Recent major-coin liquidations from `liquidation_watchlist_events` (backend stream persist only)."""
+    """Recent major-coin liquidations from `liquidation_watchlist_events`."""
     try:
         if symbols:
             sym_tuple = tuple(s.strip() for s in symbols.split(",") if s.strip())
         else:
             sym_tuple = tuple(MAJOR_NAUTILUS_SYMBOLS)
         return await fetch_liquidation_events(sym_tuple, min(limit, 500))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/liq-post-event/sessions")
+async def liq_post_event_sessions_endpoint(
+    symbols: Optional[str] = None,
+    interval: str = "30s",
+    min_notional: float = 0.0,
+    sides: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """Post-liquidation 30m % performance sessions from ParquetDataCatalog."""
+    if interval not in ("30s", "1s", "5s"):
+        raise HTTPException(status_code=400, detail="interval must be 30s")
+    try:
+        from recorders.liq_post_event_service import build_sessions_response
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: build_sessions_response(
+                symbols=symbols,
+                min_notional=min_notional,
+                sides=sides,
+                interval=interval,
+                limit=limit,
+            ),
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -206,194 +222,6 @@ async def polymarket_presets():
             "question": info["question"] if info else None,
         })
     return out
-
-
-# ── Simulation ───────────────────────────────────────────────────────────────
-
-@app.get("/simulation/status")
-async def simulation_status():
-    try:
-        from simulation import config as sim_cfg
-
-        status = await db.get_simulation_status()
-        status["enabled"] = sim_cfg.is_enabled()
-        status["assets"] = list(sim_cfg.active_assets().keys())
-        status["thresholds"] = sim_cfg.thresholds()
-        status["min_usd"] = sim_cfg.min_usd()
-        status["min_shares"] = sim_cfg.min_shares_default()
-        return status
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get("/simulation/bets")
-async def simulation_bets(limit: int = 100, assets: str | None = None):
-    try:
-        asset_list = (
-            [a.strip().upper() for a in assets.split(",") if a.strip()]
-            if assets
-            else None
-        )
-        return await db.get_simulation_bets(min(limit, 500), asset_list)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/simulation/reconcile")
-async def simulation_reconcile(reset_signaled: bool = False):
-    """Re-scan 15m liq bars vs thresholds (LiqPolyStrategy)."""
-    try:
-        from nautilus_bridge.strategy_runtime import request_strategy_catchup
-
-        events = await asyncio.wait_for(
-            request_strategy_catchup("sim", reset_signaled), timeout=60
-        )
-        if events:
-            asyncio.create_task(_fanout_messages(events))
-        return {
-            "events": len(events),
-            "ok": True,
-            "reset_signaled": reset_signaled,
-        }
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Strategy reconcile timed out")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/simulation/reset")
-async def simulation_reset():
-    """Wipe paper-sim bet/cycle history and refresh LiqPoly sim runtime."""
-    try:
-        from engines.poly_sync import load_restore_state
-        from nautilus_bridge.strategy_runtime import set_runtime
-        from strategies.liq_poly_config import runtime_from_env
-
-        counts = await db.clear_simulation_history()
-        sim_restore = await load_restore_state("sim")
-        set_runtime("sim", runtime_from_env("sim", sim_restore))
-        print(
-            f"[simulation] history cleared "
-            f"({counts['bets_deleted']} bets, {counts['cycles_deleted']} cycles)"
-        )
-        return {"ok": True, **counts}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-class SimulationConfigBody(BaseModel):
-    assets: list[str] | None = None
-    thresholds: dict[str, float] | None = None
-    min_usd: float | None = None
-    enabled: bool | None = None
-
-
-@app.post("/simulation/config")
-async def simulation_config(body: SimulationConfigBody):
-    import json
-    import os
-
-    if body.assets is not None:
-        os.environ["SIM_ASSETS"] = ",".join(a.strip().upper() for a in body.assets if a.strip())
-    if body.thresholds is not None:
-        os.environ["SIM_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
-    if body.min_usd is not None:
-        os.environ["SIM_MIN_USD"] = str(body.min_usd)
-    if body.enabled is not None:
-        os.environ["SIM_ENABLED"] = "true" if body.enabled else "false"
-    from nautilus_bridge.strategy_runtime import refresh_runtime_from_env
-
-    refresh_runtime_from_env("sim")
-    return await simulation_status()
-
-
-# ── Live trading ─────────────────────────────────────────────────────────────
-
-@app.get("/live/status")
-async def live_status():
-    try:
-        from live import config as live_cfg
-        from adapters.polymarket import orders as poly_orders
-
-        from nautilus_bridge.context import exec_client_ready, get_trading_node
-
-        status = await db.get_live_status()
-        status["enabled"] = live_cfg.is_enabled()
-        status["orders_enabled"] = poly_orders.can_place_orders()
-        status["credentials_configured"] = poly_orders.credentials_configured()
-        status["exec_client_ready"] = exec_client_ready()
-        status["trading_node_alive"] = get_trading_node() is not None
-        status["orders_ready"] = (
-            status["orders_enabled"] and status["exec_client_ready"]
-        )
-        status["thresholds"] = live_cfg.thresholds()
-        status["assets"] = list(live_cfg.active_assets().keys())
-        status["min_usd"] = live_cfg.min_usd()
-        status["min_shares"] = live_cfg.min_shares_default()
-        return status
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get("/live/bets")
-async def live_bets(limit: int = 100, assets: str | None = None):
-    try:
-        asset_list = (
-            [a.strip().upper() for a in assets.split(",") if a.strip()]
-            if assets
-            else None
-        )
-        return await db.get_live_bets(min(limit, 500), asset_list)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/live/reconcile")
-async def live_reconcile(reset_signaled: bool = False):
-    try:
-        from nautilus_bridge.strategy_runtime import request_strategy_catchup
-
-        events = await asyncio.wait_for(
-            request_strategy_catchup("live", reset_signaled), timeout=60
-        )
-        if events:
-            asyncio.create_task(_fanout_messages(events))
-        return {
-            "events": len(events),
-            "ok": True,
-            "reset_signaled": reset_signaled,
-            "event_types": [e.get("type") for e in events],
-        }
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Strategy reconcile timed out")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-class LiveConfigBody(BaseModel):
-    assets: list[str] | None = None
-    thresholds: dict[str, float] | None = None
-    min_usd: float | None = None
-    enabled: bool | None = None
-
-
-@app.post("/live/config")
-async def live_config(body: LiveConfigBody):
-    import json
-    import os
-
-    if body.assets is not None:
-        os.environ["LIVE_ASSETS"] = ",".join(a.strip().upper() for a in body.assets if a.strip())
-    if body.thresholds is not None:
-        os.environ["LIVE_THRESHOLDS_JSON"] = json.dumps(body.thresholds)
-    if body.min_usd is not None:
-        os.environ["LIVE_MIN_USD"] = str(body.min_usd)
-    if body.enabled is not None:
-        os.environ["LIVE_ENABLED"] = "true" if body.enabled else "false"
-    from nautilus_bridge.strategy_runtime import refresh_runtime_from_env
-
-    refresh_runtime_from_env("live")
-    return await live_status()
 
 
 @app.post("/polymarket/subscribe")
@@ -443,20 +271,13 @@ async def websocket_endpoint(websocket: WebSocket, symbols: Optional[str] = None
 # ── Broadcast + persist loop ──────────────────────────────────────────────────
 
 async def _fanout_messages(messages: list[dict]) -> None:
-    """Push messages to all WS clients (sim/live events skip symbol filters)."""
+    """Push messages to all WS clients."""
     dead: list[tuple[WebSocket, Optional[set[str]]]] = []
     for out in messages:
         payload = json.dumps(out)
-        mtype = str(out.get("type", ""))
-        is_global = mtype.startswith("simulation") or mtype.startswith("live")
         symbol = out.get("symbol") or out.get("binance_symbol")
         for ws, symbol_filter in _clients:
-            if (
-                not is_global
-                and symbol_filter
-                and symbol
-                and symbol not in symbol_filter
-            ):
+            if symbol_filter and symbol and symbol not in symbol_filter:
                 continue
             try:
                 await ws.send_text(payload)
@@ -473,10 +294,6 @@ async def _broadcast_loop() -> None:
     loop = asyncio.get_running_loop()
 
     while True:
-        strategy_batch = await loop.run_in_executor(None, _drain_strategy_queue)
-        if strategy_batch:
-            await _fanout_messages(strategy_batch)
-
         try:
             msg = await loop.run_in_executor(None, _blocking_get)
         except Exception:
@@ -554,16 +371,6 @@ async def _persist_bar(msg: dict) -> None:
         )
     except Exception as e:
         print(f"[warn] bar persist failed: {e}")
-
-
-def _drain_strategy_queue() -> list[dict]:
-    out: list[dict] = []
-    while True:
-        try:
-            out.append(strategy_event_queue.get_nowait())
-        except queue.Empty:
-            break
-    return out
 
 
 def _blocking_get() -> dict:

@@ -1,4 +1,4 @@
-"""ParquetDataCatalog configuration for Terminal Sirius backtest pipeline."""
+"""ParquetDataCatalog for market recorder and liq-post-event research."""
 from __future__ import annotations
 
 import os

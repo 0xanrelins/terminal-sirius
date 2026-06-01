@@ -15,6 +15,14 @@ export function PriceTicker({ symbol, source, label }: Props) {
   const [price, setPrice] = useState<string | null>(null);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const prevPrice = useRef<number | null>(null);
+  const sessionSlugRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sessionSlugRef.current = null;
+    prevPrice.current = null;
+    setPrice(null);
+    setFlash(null);
+  }, [symbol, isPolymarket]);
 
   useEffect(() => {
     if (!isPolymarket) return;
@@ -39,6 +47,23 @@ export function PriceTicker({ symbol, source, label }: Props) {
 
   useEffect(() => {
     return subscribe(symbol, (msg: FeedMsg) => {
+      if (isPolymarket && msg.type === "polymarket") {
+        const pm = msg as PolymarketMsg;
+        if (pm.slug) {
+          if (
+            sessionSlugRef.current !== null &&
+            pm.slug !== sessionSlugRef.current
+          ) {
+            sessionSlugRef.current = pm.slug;
+            prevPrice.current = null;
+            setPrice(null);
+            setFlash(null);
+          } else {
+            sessionSlugRef.current = pm.slug;
+          }
+        }
+      }
+
       const next = extractPrice(msg, isPolymarket);
       if (next === null) return;
 
@@ -90,5 +115,5 @@ function formatPrice(n: number): string {
 }
 
 function formatPolymarket(n: number): string {
-  return `${(n * 100).toFixed(1)}%`;
+  return `${Math.round(n * 100)}%`;
 }

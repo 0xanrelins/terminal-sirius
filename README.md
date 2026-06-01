@@ -64,9 +64,20 @@ DATABASE_URL=postgresql://sirius:sirius@localhost:5432/sirius
 POLYMARKET_SLUGS=will-donald-trump-win-the-2024-us-presidential-election
 ```
 
-Başlat:
+Başlat (önerilen — log dosyasına yazar, agent/debug için):
 
 ```bash
+cd backend
+chmod +x scripts/run_backend.sh   # ilk sefer
+./scripts/run_backend.sh
+```
+
+Log: `backend/logs/uvicorn.log` (`tail -f backend/logs/uvicorn.log`)
+
+Doğrudan uvicorn (log dosyası yok):
+
+```bash
+cd backend
 uvicorn main:app --reload --port 8000
 ```
 
@@ -133,14 +144,12 @@ Terminal Sirius/
 ├── docs/
 │   └── architecture.md           # Katmanlar, tek liq writer, API sözleşmesi
 ├── backend/
-│   ├── main.py                   # FastAPI BFF + WS + sim/live fan-out
-│   ├── node.py                   # Nautilus TradingNode
+│   ├── main.py                   # FastAPI BFF + WS
+│   ├── node.py                   # Nautilus TradingNode (data actors only)
 │   ├── bridge_actor.py           # Binance bars/ticks
 │   ├── liquidation_actor.py      # Binance !forceOrder (tek liq writer)
 │   ├── liquidations.py           # Parse + bar aggregate
 │   ├── db.py                     # PostgreSQL schema + queries
-│   ├── simulation/               # Sim config holder (logic in LiqPolyStrategy)
-│   ├── live/                     # Live config holder
 │   ├── nautilus_env.py           # Polymarket env + L2 derive
 │   └── adapters/polymarket/      # gamma, rolling, quote_bridge_actor
 │
@@ -168,7 +177,7 @@ Terminal Sirius/
 
 ```
 Binance WS / Polymarket DataClient / !forceOrder
-  → Nautilus Actors (Bridge / QuoteBridge / Liquidation) + LiqPolyStrategy
+  → Nautilus Actors (Bridge / QuoteBridge / Liquidation)
     → data_queue (thread-safe Queue)
       → FastAPI broadcast loop
         → WebSocket /ws
@@ -196,8 +205,8 @@ Binance WS / Polymarket DataClient / !forceOrder
 | `DATABASE_URL` | `postgresql://sirius:sirius@localhost:5432/sirius` | PostgreSQL |
 | `PERSIST_LIQUIDATION_EVENTS_TO_DB` | `1` | Ham liq + Liq Signals geçmişi |
 | `POLYMARKET_SLUGS` | _(boş)_ | Boot Polymarket slug'ları |
-| `SIM_THRESHOLDS_JSON` | config defaults | Paper sim eşikleri |
-| `LIVE_ENABLED` | `false` | Canlı Poly emirleri |
+| `POLYMARKET_EXEC_ENABLED` | `false` | Idle Polymarket ExecutionClient (future strategies) |
+| `POLYMARKET_DATA_ENABLED` | `true` | Polymarket ticker stream |
 
 ---
 

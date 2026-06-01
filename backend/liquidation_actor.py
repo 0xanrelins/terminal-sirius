@@ -16,7 +16,7 @@ from nautilus_trader.config import ActorConfig
 from nautilus_trader.model.data import DataType
 
 from liquidations import build_liquidation_message
-from strategies.liq_poly_data import LiqBar15mUpdate
+from recorders.data_types import BinanceLiquidationEvent
 
 WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 
@@ -64,27 +64,26 @@ class LiquidationActor(Actor):
                             if msg is None:
                                 continue
                             self._enqueue(msg)
-                            for u in msg.get("_updates") or []:
-                                if u.get("interval") != "15m":
-                                    continue
-                                bar_open = int(u["time"])
-                                long_t = short_t = 0.0
-                                for b in msg.get("bars") or []:
-                                    if b.get("interval") == "15m" and int(b["time"]) == bar_open:
-                                        long_t = float(b["long"])
-                                        short_t = float(b["short"])
-                                        break
-                                ts_event = bar_open * 1_000_000_000
-                                update = LiqBar15mUpdate(
-                                    ts_event=ts_event,
-                                    ts_init=ts_event,
-                                    symbol=str(msg["symbol"]),
-                                    bar_open=bar_open,
-                                    long_total=long_t,
-                                    short_total=short_t,
-                                    signal_ts=int(msg.get("time") or 0),
+                            order = (item.get("o") or {})
+                            try:
+                                side_raw = str(order.get("S", ""))
+                                liq_side = "LONG" if side_raw == "SELL" else "SHORT"
+                                price = float(order.get("ap") or 0.0)
+                                quantity = float(order.get("z") or 0.0)
+                                ts_event = int(order.get("T") or 0) * 1_000_000
+                                self.publish_data(
+                                    DataType(BinanceLiquidationEvent),
+                                    BinanceLiquidationEvent(
+                                        ts_event=ts_event,
+                                        ts_init=ts_event,
+                                        symbol=str(msg["symbol"]),
+                                        side=liq_side,
+                                        price=price,
+                                        quantity=quantity,
+                                    ),
                                 )
-                                self.publish_data(DataType(LiqBar15mUpdate), update)
+                            except Exception:
+                                pass
                             sym = msg["symbol"]
                             if sym not in subscribed:
                                 subscribed.add(sym)

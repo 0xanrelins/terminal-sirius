@@ -6,32 +6,28 @@ import type {
   CanvasState,
   CandlestickChartConfig,
   ComparisonChartConfig,
+  LiqPostEventChartConfig,
   LiquidationSignalsConfig,
-  LiveTradePanelConfig,
   PolymarketTickerConfig,
-  SimulationPanelConfig,
   WidgetConfig,
 } from "../types";
-import {
-  DEFAULT_LIVE_COINS,
-  DEFAULT_SIM_COINS,
-  LIVE_COINS,
-  normalizeCoins,
-  SIM_COINS,
-} from "../lib/liqCoins";
 import { AddWidgetModal } from "./AddWidgetModal";
 import { CandlestickChart } from "./widgets/CandlestickChart";
 import { normalizeComparisonSymbols } from "../lib/chartConfig";
 import { ComparisonChart } from "./widgets/ComparisonChart";
 import {
+  LiqPostEventChart,
+  normalizePostEventCoins,
+  normalizePostEventSides,
+} from "./widgets/LiqPostEventChart";
+import {
   DEFAULT_MIN_NOTIONAL,
   LiquidationSignals,
   normalizeLiqCoins,
 } from "./widgets/LiquidationSignals";
-import { LiveTradePanel } from "./widgets/LiveTradePanel";
 import { MarketTimes } from "./widgets/MarketTimes";
-import { SimulationPanel } from "./widgets/SimulationPanel";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
+import { PolymarketSecondsChart } from "./widgets/PolymarketSecondsChart";
 import { BarCountdown } from "./widgets/BarCountdown";
 import { PriceTicker } from "./widgets/PriceTicker";
 import styles from "./Canvas.module.css";
@@ -45,22 +41,30 @@ type Props = {
 };
 
 function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
-  const isChart = type === "candlestick_chart" || type === "comparison_chart";
+  const isChart =
+    type === "candlestick_chart" ||
+    type === "comparison_chart" ||
+    type === "liq_post_event_chart" ||
+    type === "polymarket_seconds_chart";
   const isLiq = type === "liquidation_signals";
-  const isSim = type === "simulation_panel" || type === "live_trade_panel";
   const isMarketTimes = type === "market_times";
-  const w = isChart ? 14 : isLiq || isSim ? 8 : isMarketTimes ? 6 : 5;
-  const h = isChart ? 9 : isLiq ? 8 : isSim ? 10 : isMarketTimes ? 6 : type === "polymarket_ticker" ? 4 : 3;
+  const w = isChart ? 14 : isLiq ? 8 : isMarketTimes ? 6 : 5;
+  const h = isChart ? 9 : isLiq ? 8 : isMarketTimes ? 6 : type === "polymarket_ticker" ? 4 : 3;
   return { i: id, x: 0, y: Infinity, w, h, minW: 3, minH: 2 };
 }
 
 function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
-  if (cfg.type === "simulation_panel") return "Liq→Poly Sim";
-  if (cfg.type === "live_trade_panel") return "Live Trade";
   if (cfg.type === "market_times") return "Market Times";
   if (cfg.type === "bar_countdown") return "15m Countdown";
-  if (cfg.type === "candlestick_chart" || cfg.type === "comparison_chart") return "";
+  if (
+    cfg.type === "candlestick_chart" ||
+    cfg.type === "comparison_chart" ||
+    cfg.type === "liq_post_event_chart" ||
+    cfg.type === "polymarket_seconds_chart"
+  ) {
+    return "";
+  }
   if (cfg.type === "price_ticker" && cfg.source === "polymarket") {
     return cfg.label ? `${cfg.label} 15m` : cfg.symbol;
   }
@@ -86,6 +90,7 @@ function renderWidget(
         <CandlestickChart
           symbol={chartCfg.symbol}
           interval={chartCfg.interval}
+          chartStyle={chartCfg.chartStyle}
           indicators={chartCfg.indicators ?? []}
           initialBars={chartCfg.initialBars}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
@@ -102,6 +107,26 @@ function renderWidget(
         />
       );
     }
+    case "liq_post_event_chart": {
+      const liqChartCfg = cfg as LiqPostEventChartConfig;
+      return (
+        <LiqPostEventChart
+          coins={normalizePostEventCoins(liqChartCfg.coins)}
+          sides={normalizePostEventSides(liqChartCfg.sides)}
+          minNotional={liqChartCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    }
+    case "polymarket_seconds_chart":
+      return (
+        <PolymarketSecondsChart
+          series={cfg.series}
+          interval={cfg.interval ?? "1s"}
+          label={cfg.label}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
     case "polymarket_ticker":
       return (
         <PolymarketTicker
@@ -116,24 +141,6 @@ function renderWidget(
           minNotional={liqCfg.minNotional ?? DEFAULT_MIN_NOTIONAL}
           coins={normalizeLiqCoins(liqCfg.coins)}
           historyVersion={liqCfg.historyVersion}
-          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
-        />
-      );
-    }
-    case "simulation_panel": {
-      const simCfg = cfg as SimulationPanelConfig;
-      return (
-        <SimulationPanel
-          coins={normalizeCoins(simCfg.coins, SIM_COINS, DEFAULT_SIM_COINS)}
-          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
-        />
-      );
-    }
-    case "live_trade_panel": {
-      const liveCfg = cfg as LiveTradePanelConfig;
-      return (
-        <LiveTradePanel
-          coins={normalizeCoins(liveCfg.coins, LIVE_COINS, DEFAULT_LIVE_COINS)}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );
@@ -259,14 +266,16 @@ export function Canvas({ state, onChange }: Props) {
         width={gridWidth}
         onLayoutChange={onLayoutChange}
         draggableHandle={`.${styles.handle}`}
-        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar, .simulationToolbar, .liveTradeToolbar`}
+        draggableCancel={`.${styles.actionBtn}, .chartToolbar, .comparisonToolbar, .signalsToolbar`}
         resizeHandles={["se"]}
         margin={[6, 6]}
       >
         {state.widgets.map((cfg) => (
           <div key={cfg.id} className={styles.cell}>
             <div className={styles.handle}>
-              {cfg.type !== "candlestick_chart" && cfg.type !== "comparison_chart" && (
+              {cfg.type !== "candlestick_chart" &&
+                cfg.type !== "comparison_chart" &&
+                cfg.type !== "liq_post_event_chart" && (
                 <span className={styles.handleLabel}>{handleLabel(cfg)}</span>
               )}
               <div className={styles.handleActions}>

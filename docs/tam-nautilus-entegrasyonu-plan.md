@@ -1,5 +1,7 @@
 # Tam Nautilus entegrasyonu — plan
 
+> **2026-06:** Legacy `LiqPolyStrategy` (paper sim + live + monitor/backtest) kaldırıldı. TradingNode şu an yalnızca veri actor'ları + isteğe bağlı idle `PolymarketExecutionClient` çalıştırır. Yeni stratejiler sıfırdan `Strategy` + `submit_order` ile eklenecek.
+
 ## Master plan (kısa)
 
 **Vizyon**
@@ -9,10 +11,10 @@
 
 **İlkeler**
 
-1. **Nautilus tek otorite** — sinyal, emir, cycle state strateji + ExecEngine cache'inde.
-2. **UI sözleşmesi sabit** — `/live/*`, `/simulation/*`, WS event tipleri değişmez; sadece kaynak Nautilus olur.
+1. **Nautilus tek otorite** — yeni stratejilerde sinyal, emir ve pozisyon state'i `Strategy` + `Cache` / `Portfolio` üzerinden.
+2. **UI sözleşmesi** — market data WS tipleri sabit (`trade`, `bar`, `liquidation`, `polymarket`, …); trade UI kaldırıldı.
 3. **Liquidation single-writer** — [`liquidations.py`](../backend/liquidations.py) + `LiquidationActor`; bypass yok.
-4. **Sim = live kodu** — farklı motor yok; config (paper vs live, threshold, assets) ayrılır.
+4. **BFF strateji üretmez** — FastAPI yalnızca feed, klines, liquidation persist; emir köprüsü yok.
 
 **Bitti sayılır (ölçülebilir)**
 
@@ -26,21 +28,20 @@
 
 ## Bugün vs hedef
 
-| | Bugün | Hedef |
+| | Bugün (repo) | Sonraki strateji |
 |---|--------|--------|
-| Veri | Nautilus Actors → queue | Nautilus DataClient + cache (tek kaynak) |
-| Sinyal (threshold, leg1/2) | — | `LiqPolyStrategy` (live + sim on `TradingNode`) |
-| Emir | — | `Strategy.submit_order()` → `PolymarketExecutionClient` |
-| Retry / reconciliation | Strategy catch-up (liq/settle) + exec open-check | Nautilus ExecEngine + `strategy_catchup` |
-| Sim | — | Aynı `LiqPolyStrategy` (`mode=sim`) |
+| Veri | Nautilus DataClient + Actors → queue | Aynı |
+| Strateji | Yok (`TradingNode` actor-only) | `Strategy` on `TradingNode` |
+| Emir | Idle `PolymarketExecutionClient` (creds + `POLYMARKET_EXEC_ENABLED`) | `Strategy.submit_order()` |
+| Liq→Poly trade | Kaldırıldı (legacy BFF + DB) | Yeniden, yalnızca Nautilus lifecycle |
 
 ## Ne taşınır, ne kalkar
 
-**Taşınır → Nautilus:** 15m liq bar eşiği, cycle/leg mantığı, Polymarket slug/instrument seçimi, sizing, emir gönderimi, settle (15m bar kapanışı), Polymarket market data lifecycle.
+**Kalır (BFF):** FastAPI HTTP/WS, PostgreSQL (klines, liquidation bars/events), React chart/liq widget'ları.
 
-**Kalır (BFF):** FastAPI HTTP/WS, PostgreSQL persist (UI geçmişi), React widget'lar, chart/klines endpoint'leri.
+**Kalktı:** `LiqPolyStrategy`, paper/live DB, `strategy_runtime` / `strategy_persist`, sandbox sim, Strategy Monitor, `backtest.py` iskeleti, direct CLOB helpers, custom Polymarket WS actor.
 
-**Kalktı:** Eski live/sim motorları, `polymarket_exec` direct CLOB, `PolymarketActor` custom WS.
+**Sonraki taşınma (yeni strateji):** 15m liq eşiği, Polymarket instrument seçimi, `submit_order`, settle — hepsi `Strategy` + ExecEngine içinde.
 
 ## Execution backlog (Faz 0–5)
 
@@ -67,26 +68,23 @@
 
 - [x] **Scope:** `nautilus_env.prepare_polymarket_env()` tek giriş; node data/exec config ortak wallet struct.
 - [x] **Scope:** `LiveExecEngineConfig.open_check_interval_secs` (default 30s, `POLYMARKET_OPEN_CHECK_INTERVAL_SEC`).
-- [x] **Scope:** `exec_client_ready()` bağlantı kontrolü; startup catch-up vs exec reconciliation ayrımı dokümante.
-- [x] **DoD:** Live emirler yalnız `submit_order` yolundan; direct CLOB helper yok.
-- [ ] **Rollback:** Exec readiness kırılırsa deferred open + `LIVE_ENABLED=false` ile emirler durur.
+- [x] **DoD:** Direct CLOB helper yok; exec client node'da kayıtlı.
+- [ ] **Sonraki:** Yeni strateji `submit_order` + ExecEngine open-check kullanır (`POLYMARKET_EXEC_ENABLED`).
 
 ### Faz 4 — Dead code silme ✅
 
-- [x] **Scope:** `polymarket_exec.py` silindi; `orders.py` credential-only; `startup_reconcile.py` → `strategy_catchup.py`.
-- [x] **Scope:** Kullanılmayan `set_liq_poly_strategy` / `get_polymarket_exec_client` kaldırıldı.
-- [x] **DoD:** Direct CLOB helper yok; internal isimler catch-up vs exec reconciliation ayrımına uygun.
-- [x] **Rollback:** Git history.
+- [x] **Scope:** `polymarket_exec.py` silindi; `orders.py` credential-only.
+- [x] **Scope:** Legacy liq-poly stack tamamen kaldırıldı (2026-06).
+- [x] **DoD:** `nautilus_bridge/`, `simulation/`, `live/`, `monitor/`, `backtest.py` yok.
 
-### Faz 5 — Sim = aynı strateji ✅
+### Faz 5 — Legacy trade kaldırıldı ✅
 
-- [x] **Scope:** `LiveTradingEngine` / `SimulationEngine` kaldırıldı; config + reset doğrudan `main` + `strategy_runtime`.
-- [x] **DoD:** `LiqPolyStrategy` live + sim aynı `TradingNode`; `test_liq_poly_live_sim_parity.py` aynı bar sinyalini doğrular.
-- [x] **Not:** `backtest.py` ayrı iskelet — Nautilus backtest birleşimi ayrı iş (opsiyonel).
+- [x] **Scope:** `LiqPolyStrategy`, BFF persist, sim/live REST, trade UI widget'ları.
+- [x] **DoD:** `TradingNode` actor-only + idle exec client; smoke tests yeşil.
 
-## Startup sırası (hedef)
+## Startup sırası (bugün)
 
-`prepare_polymarket_env()` → `TradingNode` (data + exec) → strateji `on_start` → FastAPI fan-out. Emir, node hazır olmadan denenmez.
+`prepare_polymarket_env()` → `TradingNode` (data actors + optional exec) → FastAPI `_broadcast_loop` (`data_queue` only).
 
 Smoke checklist: [nautilus-migration-smoke.md](nautilus-migration-smoke.md)
 
@@ -112,8 +110,6 @@ Smoke checklist: [nautilus-migration-smoke.md](nautilus-migration-smoke.md)
 - Faz 1 kapsamında Polymarket data akışı Nautilus kaynağından doğrulanmış.
 - Legacy yol default dışı (flag gerektiren) hale getirilmiş.
 
-### Sprint dışı (bu haftaya alma)
+### Sprint dışı (tamamlandı veya ertelendi)
 
-- Exec/env sadeleştirme (Faz 3).
-- Kalan dead code / reconcile sadeleştirme (Faz 4).
-- Sim motorunun tam birleşimi (Faz 5).
+- Yeni `Strategy` implementasyonu (liq→Poly veya başka) — Nautilus-native, BFF köprüsü olmadan.

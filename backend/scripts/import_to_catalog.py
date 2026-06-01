@@ -29,7 +29,7 @@ from nautilus_trader.model.objects import Price, Quantity
 
 from catalog import get_catalog
 from liquidations import binance_to_nautilus
-from strategies.liq_poly_data import LiquidationTick
+from recorders.data_types import LiquidationTick
 
 DEFAULT_DATA_DIR = Path("/Users/0xanrelins/Documents/candlefeed/data/raw")
 DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT")

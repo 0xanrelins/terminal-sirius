@@ -4,38 +4,20 @@
 
 ## WebSocket `GET /ws`
 
-JSON messages; one object per frame. Global events (`simulation_*`, `live_*`) are not filtered by `?symbols=`.
+JSON messages; one object per frame. Optional `?symbols=` filters by `symbol`.
 
 ### Market data
 
 | `type` | Producer | Notes |
 |--------|----------|--------|
 | `trade` | `BridgeActor` | Binance perp ticks |
-| `bar` | `BridgeActor` | OHLCV; `interval` e.g. `15m` |
+| `bar` | `BridgeActor` / `RealtimeBucketActor` | OHLCV; `interval` e.g. `15m` or live `1s`/`5s` |
+| `indicator` | `RealtimeBucketActor` | EMA / session VWAP / rolling VWAP point on `1s`/`5s` bucket close |
 | `polymarket` | `PolymarketQuoteBridgeActor` | `yes_price` 0–1; optional `bid`/`ask` |
 | `quote` | `BridgeActor` | Optional; Binance BBO |
 | `liquidation` | `LiquidationActor` / stream | Optional `bars[]` snapshot |
 
-### Simulation
-
-| `type` | When |
-|--------|------|
-| `simulation_signal` | Leg-1 signal (paper) |
-| `simulation_bet_open` | Paper bet opened |
-| `simulation_bet_settle` | Paper bet settled |
-| `simulation_cycle_closed` | Cycle complete (`cycle_id`, `asset`, `side`) |
-
-### Live
-
-| `type` | When |
-|--------|------|
-| `live_signal` | Signal (incl. `dry_run` when orders off) |
-| `live_bet_open` | Real bet recorded |
-| `live_bet_settle` | Bet settled |
-| `live_cycle_closed` | Cycle complete (`cycle_id`, `asset`, `side`) |
-| `live_order_error` | Nautilus/CLOB reject |
-
-TypeScript unions: `FeedMsg` in `frontend/src/types.ts`.
+TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 
 ## REST (BFF)
 
@@ -44,22 +26,16 @@ TypeScript unions: `FeedMsg` in `frontend/src/types.ts`.
 | GET | `/klines` | Historical OHLCV |
 | GET | `/liquidations` | 15m liq bar totals |
 | GET | `/liquidation-events` | Major-coin liq events |
+| GET | `/liq-post-event/sessions` | Post-liq 30m % sessions from ParquetDataCatalog |
 | GET | `/polymarket/markets` | Gamma search |
 | GET | `/polymarket/presets` | Rolling 15m presets |
 | POST | `/polymarket/subscribe` | `{ slug }` or `{ series }` |
-| GET | `/simulation/status` | Paper stats + config |
-| GET | `/simulation/bets` | Paper history |
-| POST | `/simulation/reconcile` | Strategy catch-up |
-| POST | `/simulation/reset` | Clear paper DB |
-| POST | `/simulation/config` | Env + runtime refresh |
-| GET | `/live/status` | Live stats + exec readiness |
-| GET | `/live/bets` | Live history |
-| POST | `/live/reconcile` | Strategy catch-up |
-| POST | `/live/config` | Env + runtime refresh |
 
-## Pricing (entry / live)
+### `GET /liq-post-event/sessions`
 
-Polymarket **prices** for bets come from Nautilus `DataClient` quotes (`quote_registry` / cache), not Gamma `outcomePrices` or direct CLOB REST. Gamma is metadata only (slug, token ids, search).
+Query params: `symbols` (comma coins), `interval` (`30s` only; legacy `1s`/`5s` accepted), `min_notional`, `sides` (`LONG`,`SHORT`), optional `limit` (omit = all matching events in 7d lookback).
+
+Response: `{ sessions: [{ session_id, symbol, side, notional, anchor_price, event_time, status, points[] }] }`.
 
 ## Change process
 

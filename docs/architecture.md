@@ -5,15 +5,15 @@
 | Layer | Role | Technology |
 |-------|------|------------|
 | Exchange | Raw market data | Binance WS; Polymarket via Nautilus `PolymarketDataClient` (+ quote bridge to UI) |
-| Engine | Process, time, aggregate | Nautilus `TradingNode` + Actors + `LiqPolyStrategy` |
-| Live execution | Polymarket CLOB orders | Nautilus `PolymarketExecutionClient` (+ credential/retry stack) |
+| Engine | Process, time, aggregate | Nautilus `TradingNode` + Actors (no strategies registered) |
+| Execution (idle) | Polymarket CLOB | Nautilus `PolymarketExecutionClient` when `POLYMARKET_EXEC_ENABLED` + creds |
 | API (BFF) | Stable contract for UI | FastAPI HTTP + `/ws` |
-| UI | Display, light indicators | React |
+| UI | Display, charts, liquidation | React |
 
 ```
 Exchange → Nautilus Actors → Queue → FastAPI → Browser
                 ↓
-           PostgreSQL (bars, events, sim/live)
+           PostgreSQL (klines, liquidation bars/events)
 ```
 
 ## Single writer (liquidations)
@@ -21,6 +21,7 @@ Exchange → Nautilus Actors → Queue → FastAPI → Browser
 - **Live path:** `LiquidationActor` (in node) or fallback `liquidation_stream` when Nautilus is unavailable.
 - **Parse/aggregate:** [`backend/liquidations.py`](../backend/liquidations.py) only.
 - **Persist:** `liquidation_bars` always; `liquidation_events` + watchlist when `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (default).
+
 ## API contract (UI)
 
 Frozen WS/REST shapes: [ws-api-contract.md](ws-api-contract.md) (`frontend/src/types.ts`, `backend/ws_contract.py`).
@@ -30,32 +31,24 @@ UI talks only to FastAPI, not Nautilus or Postgres directly.
 | Endpoint / WS | Purpose |
 |---------------|---------|
 | `GET /klines` | OHLCV |
-| `GET /liquidations` | 15m bar totals (chart, sim) |
+| `GET /liquidations` | 15m bar totals (charts) |
 | `GET /liquidation-events` | Major-coin event list (Liq Signals) |
-| `WS /ws` | Live trade, bar, liquidation, polymarket, sim/live events |
+| `GET /liq-post-event/sessions` | Post-liq catalog sessions |
+| `GET /polymarket/*` | Search, presets, subscribe |
+| `WS /ws` | Trade, bar, liquidation, polymarket |
 
-## Signal truth (sim / live)
+## Liq→Poly trading (removed)
 
-- One cycle per `(binance_symbol, liq_bar_open, side)` — DB unique index + `_signaled` restored from DB on startup.
-- `_signaled` is set only after `live_bet_open` / `simulation_bet_open` (not on order errors).
-- Stuck open cycles (no unsettled bets) are closed on engine `load_state` via `repair_stuck_*_cycles`.
-- Reconcile uses `signal_ts = liq_bar_open + 900`, not wall clock.
+The legacy `LiqPolyStrategy` stack (paper sim, live bets, BFF persist bridge) was removed. Future strategies should register on `TradingNode` and use native `Strategy.submit_order` + `PolymarketExecutionClient` only.
 
-## Nautilus alignment
+See [Tam Nautilus entegrasyonu — plan](tam-nautilus-entegrasyonu-plan.md) for the target model.
 
-Full migration plan: [Tam Nautilus entegrasyonu — plan](tam-nautilus-entegrasyonu-plan.md).
+## Nautilus alignment (current)
 
-- `LiqPolyStrategy` (sim + live) on `TradingNode` owns liq threshold → leg1/leg2 → orders.
-- `LiquidationActor` publishes `LiqBar15mUpdate` custom data to the strategy bus.
-- Live orders use `Strategy.submit_order()` → `PolymarketExecutionClient`.
-- Polymarket env/L2: `nautilus_env.prepare_polymarket_env()` at FastAPI startup (single derive path).
-- ExecEngine `open_check_interval_secs` (default 30s) recovers missed Polymarket order WS updates.
-- `/live/reconcile` and startup catch-up = **strategy state** (liq bars / settlements), not venue order sync.
-- FastAPI persists strategy events via `engines/strategy_persist.py` and fans out WS.
-- Sim/live REST config: env vars + `refresh_runtime_from_env()`; no separate signal engines.
-
-- Polymarket UI quotes: `PolymarketQuoteBridgeActor` on `PolymarketDataClient` (disable with `POLYMARKET_DATA_ENABLED=false`).
-- `nautilus_env.sync_polymarket_env()` maps `POLYMARKET_PRIVATE_KEY` → `POLYMARKET_PK`, etc.
+- `TradingNode`: Binance + Polymarket data clients; optional idle `PolymarketExecutionClient`.
+- Actors: `BridgeActor`, `RealtimeBucketActor`, `LiquidationActor`, `PolymarketQuoteBridgeActor`, `PolymarketRealtimeBucketActor`, optional `MarketRecorderActor`.
+- Polymarket env/L2: `nautilus_env.prepare_polymarket_env()` at FastAPI startup.
+- Polymarket UI quotes: `PolymarketQuoteBridgeActor` (`POLYMARKET_DATA_ENABLED=false` disables).
 
 ## Development rule
 

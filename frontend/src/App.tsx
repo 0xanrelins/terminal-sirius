@@ -6,17 +6,8 @@ import type {
   CanvasState,
   DashboardsStorage,
   LiquidationSignalsConfig,
-  LiveTradePanelConfig,
-  SimulationPanelConfig,
   WidgetConfig,
 } from "./types";
-import {
-  DEFAULT_LIVE_COINS,
-  DEFAULT_SIM_COINS,
-  LIVE_COINS,
-  normalizeCoins,
-  SIM_COINS,
-} from "./lib/liqCoins";
 import {
   LIQ_HISTORY_VERSION,
   normalizeLiqCoins,
@@ -26,12 +17,19 @@ import styles from "./App.module.css";
 const STORAGE_KEY = "sirius-dashboards";
 const DEFAULT_NAME = "Main";
 
+const REMOVED_WIDGET_TYPES = new Set([
+  "simulation_panel",
+  "live_trade_panel",
+  "strategy_monitor",
+]);
+
 const DEFAULT_CANVAS: CanvasState = {
   widgets: [{ id: "btc-ticker-default", type: "price_ticker", symbol: "BTCUSDT-PERP.BINANCE" }],
   layout: [{ i: "btc-ticker-default", x: 0, y: 0, w: 5, h: 3, minW: 3, minH: 2 }],
 };
 
-function sanitizeWidget(w: WidgetConfig): WidgetConfig {
+function sanitizeWidget(w: WidgetConfig): WidgetConfig | null {
+  if (REMOVED_WIDGET_TYPES.has(w.type)) return null;
   if (w.type === "liquidation_signals") {
     const liq = w as LiquidationSignalsConfig;
     const { history: _history, ...rest } = liq;
@@ -45,24 +43,19 @@ function sanitizeWidget(w: WidgetConfig): WidgetConfig {
       coins: normalizeLiqCoins(liq.coins),
     };
   }
-  if (w.type === "simulation_panel") {
-    const sim = w as SimulationPanelConfig;
-    return { ...sim, coins: normalizeCoins(sim.coins, SIM_COINS, DEFAULT_SIM_COINS) };
-  }
-  if (w.type === "live_trade_panel") {
-    const live = w as LiveTradePanelConfig;
-    return { ...live, coins: normalizeCoins(live.coins, LIVE_COINS, DEFAULT_LIVE_COINS) };
-  }
   return w;
 }
 
 function sanitizeStorage(storage: DashboardsStorage): DashboardsStorage {
   const dashboards: Record<string, CanvasState> = {};
   for (const [name, canvas] of Object.entries(storage.dashboards)) {
+    const widgets = (canvas.widgets ?? [])
+      .map(sanitizeWidget)
+      .filter((w): w is WidgetConfig => w != null);
+    const ids = new Set(widgets.map((w) => w.id));
     dashboards[name] = {
-      ...canvas,
-      widgets: (canvas.widgets ?? []).map(sanitizeWidget),
-      layout: canvas.layout ?? [],
+      widgets,
+      layout: (canvas.layout ?? []).filter((l) => ids.has(l.i)),
     };
   }
   return { ...storage, dashboards };
@@ -74,12 +67,16 @@ function load(): DashboardsStorage {
     if (raw) return sanitizeStorage(JSON.parse(raw) as DashboardsStorage);
   } catch {}
 
-  // Migrate from single-dashboard format (Faz 1-4)
   try {
     const old = localStorage.getItem("sirius-canvas");
     if (old) {
-      const canvas = JSON.parse(old) as CanvasState;
-      return { dashboards: { [DEFAULT_NAME]: canvas }, active: DEFAULT_NAME };
+      const canvas = sanitizeStorage({
+        dashboards: { [DEFAULT_NAME]: JSON.parse(old) as CanvasState },
+        active: DEFAULT_NAME,
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(canvas));
+      localStorage.removeItem("sirius-canvas");
+      return canvas;
     }
   } catch {}
 
@@ -99,8 +96,6 @@ export default function App() {
   }, []);
 
   const activeCanvas = storage.dashboards[storage.active] ?? DEFAULT_CANVAS;
-
-  // ── Dashboard management ──────────────────────────────────────────────
 
   const handleCanvasChange = useCallback((state: CanvasState) => {
     setStorage((prev) => {
@@ -131,7 +126,9 @@ export default function App() {
   const handleRename = useCallback(
     (oldName: string, newName: string) => {
       const entries = Object.entries(storage.dashboards);
-      const reordered = entries.map(([k, v]) => [k === oldName ? newName : k, v] as [string, CanvasState]);
+      const reordered = entries.map(
+        ([k, v]) => [k === oldName ? newName : k, v] as [string, CanvasState]
+      );
       mutate({
         dashboards: Object.fromEntries(reordered),
         active: storage.active === oldName ? newName : storage.active,

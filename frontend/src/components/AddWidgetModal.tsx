@@ -10,10 +10,12 @@ import {
   DEFAULT_MIN_NOTIONAL,
   LIQ_HISTORY_VERSION,
 } from "./widgets/LiquidationSignals";
+import { DEFAULT_POST_EVENT_COINS } from "../lib/liqPostEventChart";
 import type { WidgetConfig, WidgetType } from "../types";
 import styles from "./AddWidgetModal.module.css";
 
 type DataSource = "binance" | "polymarket";
+type PolymarketWidgetType = "price_ticker" | "polymarket_seconds_chart";
 
 type Props = {
   onAdd: (cfg: WidgetConfig) => void;
@@ -30,6 +32,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
   const [pmPresets, setPmPresets] = useState<PolymarketPreset[]>([]);
   const [pmSelected, setPmSelected] = useState<PolymarketPreset | null>(null);
   const [pmLoading, setPmLoading] = useState(false);
+  const [pmWidgetType, setPmWidgetType] =
+    useState<PolymarketWidgetType>("polymarket_seconds_chart");
+  const [pmInterval, setPmInterval] = useState<"1s" | "5s">("1s");
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -71,6 +76,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           type: "candlestick_chart",
           symbol: "BTCUSDT-PERP.BINANCE",
           interval: "1m",
+          chartStyle: "candlestick",
           indicators: [],
           initialBars: clampInitialBars(initialBars),
         });
@@ -80,6 +86,14 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           type: "comparison_chart",
           interval: "1m",
         });
+      } else if (binanceType === "liq_post_event_chart") {
+        onAdd({
+          id,
+          type: "liq_post_event_chart",
+          coins: [...DEFAULT_POST_EVENT_COINS],
+          sides: ["LONG", "SHORT"],
+          minNotional: DEFAULT_MIN_NOTIONAL,
+        });
       } else if (binanceType === "liquidation_signals") {
         onAdd({
           id,
@@ -88,10 +102,6 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
           coins: [...DEFAULT_LIQ_COINS],
           historyVersion: LIQ_HISTORY_VERSION,
         });
-      } else if (binanceType === "simulation_panel") {
-        onAdd({ id, type: "simulation_panel" });
-      } else if (binanceType === "live_trade_panel") {
-        onAdd({ id, type: "live_trade_panel" });
       } else if (binanceType === "market_times") {
         onAdd({ id, type: "market_times" });
       } else if (binanceType === "bar_countdown") {
@@ -106,14 +116,24 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ series: pmSelected.series }),
       }).catch(() => {});
-      onAdd({
-        id,
-        type: "price_ticker",
-        symbol: pmSelected.symbol,
-        source: "polymarket",
-        series: pmSelected.series,
-        label: pmSelected.label,
-      });
+      if (pmWidgetType === "polymarket_seconds_chart") {
+        onAdd({
+          id,
+          type: "polymarket_seconds_chart",
+          series: pmSelected.series,
+          interval: pmInterval,
+          label: pmSelected.label,
+        });
+      } else {
+        onAdd({
+          id,
+          type: "price_ticker",
+          symbol: pmSelected.symbol,
+          source: "polymarket",
+          series: pmSelected.series,
+          label: pmSelected.label,
+        });
+      }
     }
     onClose();
   }
@@ -121,11 +141,10 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
   const canSubmit =
     source === "binance"
       ? binanceType === "liquidation_signals" ||
-        binanceType === "simulation_panel" ||
-        binanceType === "live_trade_panel" ||
         binanceType === "market_times" ||
         binanceType === "bar_countdown" ||
         binanceType === "comparison_chart" ||
+        binanceType === "liq_post_event_chart" ||
         binanceType === "candlestick_chart" ||
         !!symbol.trim()
       : !!pmSelected;
@@ -165,9 +184,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "price_ticker",
                       "candlestick_chart",
                       "comparison_chart",
+                      "liq_post_event_chart",
                       "liquidation_signals",
-                      "simulation_panel",
-                      "live_trade_panel",
                       "market_times",
                       "bar_countdown",
                     ] as WidgetType[]
@@ -184,11 +202,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                           ? "Candlestick Chart"
                           : t === "comparison_chart"
                             ? "Compare Chart"
-                            : t === "simulation_panel"
-                              ? "Liq→Poly Sim"
-                              : t === "live_trade_panel"
-                                ? "Live Trade"
-                                : t === "market_times"
+                            : t === "liq_post_event_chart"
+                              ? "Liq Post-Event"
+                              : t === "market_times"
                                   ? "Market Times"
                                   : t === "bar_countdown"
                                     ? "15m Countdown"
@@ -252,21 +268,15 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                 </p>
               )}
 
+              {binanceType === "liq_post_event_chart" && (
+                <p className={styles.hint}>
+                  Post-liquidation 30m % move from catalog. 30s resolution — side, coins and min $ in the widget toolbar.
+                </p>
+              )}
+
               {binanceType === "liquidation_signals" && (
                 <p className={styles.hint}>
                   BTC, ETH, SOL, DOGE, XRP liquidations. Pick coins and min $ from the widget toolbar.
-                </p>
-              )}
-
-              {binanceType === "simulation_panel" && (
-                <p className={styles.hint}>
-                  Paper trades: 15m long-liq bar ≥ threshold → Polymarket UP on next window. Red candle → second bet on the following window.
-                </p>
-              )}
-
-              {binanceType === "live_trade_panel" && (
-                <p className={styles.hint}>
-                  Real Polymarket orders for SOL and DOGE. Default threshold $200k per pair on 15m liquidation bars. Requires POLYMARKET_* creds in backend .env.
                 </p>
               )}
 
@@ -289,11 +299,43 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               <label className={styles.label}>
                 <span>Widget Type</span>
                 <div className={styles.typeRow}>
-                  <button type="button" className={`${styles.typeBtn} ${styles.active}`}>
+                  <button
+                    type="button"
+                    className={`${styles.typeBtn} ${pmWidgetType === "polymarket_seconds_chart" ? styles.active : ""}`}
+                    onClick={() => setPmWidgetType("polymarket_seconds_chart")}
+                  >
+                    UP Chart (1s/5s)
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.typeBtn} ${pmWidgetType === "price_ticker" ? styles.active : ""}`}
+                    onClick={() => setPmWidgetType("price_ticker")}
+                  >
                     Price Ticker
                   </button>
                 </div>
               </label>
+
+              {pmWidgetType === "polymarket_seconds_chart" && (
+                <label className={styles.label}>
+                  <span>Interval</span>
+                  <div className={styles.intervalRow}>
+                    {(["1s", "5s"] as const).map((iv) => (
+                      <button
+                        key={iv}
+                        type="button"
+                        className={`${styles.intervalBtn} ${pmInterval === iv ? styles.active : ""}`}
+                        onClick={() => setPmInterval(iv)}
+                      >
+                        {iv}
+                      </button>
+                    ))}
+                  </div>
+                  <p className={styles.hint}>
+                    Live UP probability line; chart clears at each new 15m market window.
+                  </p>
+                </label>
+              )}
 
               <label className={styles.label}>
                 <span>Market (15m Up/Down)</span>

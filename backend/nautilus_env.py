@@ -62,6 +62,14 @@ def clob_client_kwargs(cfg: PolymarketWalletConfig | None = None) -> dict[str, A
     elif c.funder:
         kwargs["signature_type"] = 1
         kwargs["funder"] = c.funder
+    if c.has_l2_api:
+        from py_clob_client_v2.clob_types import ApiCreds
+
+        kwargs["creds"] = ApiCreds(
+            api_key=c.api_key or "",
+            api_secret=c.api_secret or "",
+            api_passphrase=c.passphrase or "",
+        )
     return kwargs
 
 

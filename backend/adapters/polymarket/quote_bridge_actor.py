@@ -16,7 +16,12 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
 from adapters.polymarket.quote_registry import register_slug_instruments, update_slug_quote
-from adapters.polymarket.rolling import series_symbol, slug_for_series
+from adapters.polymarket.rolling import (
+    active_rolling_slugs,
+    seconds_until_window_end,
+    series_symbol,
+    slug_for_series,
+)
 
 ROTATION_POLL_SEC = 20
 
@@ -29,6 +34,17 @@ def _price_as_float(p) -> float:
     if hasattr(p, "as_double"):
         return float(p.as_double())
     return float(p)
+
+
+def should_broadcast_quote(meta: dict, series_slugs: dict[str, str]) -> bool:
+    """True when a quote tick should be forwarded to the UI WebSocket queue."""
+    token = meta.get("token") or "yes"
+    if token != "yes":
+        return False
+    series = meta.get("series")
+    if series is None:
+        return True
+    return meta.get("slug") == series_slugs.get(series)
 
 
 class PolymarketQuoteBridgeActorConfig(ActorConfig, frozen=True):
@@ -100,11 +116,17 @@ class PolymarketQuoteBridgeActor(Actor):
             ask=ask,
             ts_ms=int(tick.ts_event // 1_000_000),
         )
+        if not should_broadcast_quote(meta, self._series_slugs):
+            return
+        # Always derive symbol from series to avoid stale slug-format symbols
+        # that can persist when a slug is re-subscribed with a different series context.
+        _series = meta.get("series")
+        _sym = series_symbol(_series) if _series else meta["symbol"]
         msg: dict = {
             "type": "polymarket",
-            "symbol": meta["symbol"],
+            "symbol": _sym,
             "slug": meta["slug"],
-            "series": meta.get("series"),
+            "series": _series,
             "question": meta["question"],
             "yes_price": round(mid, 4),
             "ts": int(tick.ts_event),
@@ -129,12 +151,11 @@ class PolymarketQuoteBridgeActor(Actor):
         self._ensure_rotation_loop()
 
     async def _add_series(self, series: str) -> None:
-        if series in self._series_slugs:
-            return
-        slug = slug_for_series(series)
-        self._series_slugs[series] = slug
-        self._slug_series[slug] = series
-        await self._ensure_slug(slug, series=series)
+        if series not in self._series_slugs:
+            current, _ = active_rolling_slugs(series)
+            self._series_slugs[series] = current
+            self._slug_series[current] = series
+        await self._sync_series_slugs(series)
         self._ensure_rotation_loop()
 
     async def _rotation_loop(self) -> None:
@@ -143,18 +164,34 @@ class PolymarketQuoteBridgeActor(Actor):
                 await self._check_series_rotation()
             except Exception as e:
                 self.log.warning(f"Polymarket quote bridge rotation error: {e!r}")
-            await asyncio.sleep(ROTATION_POLL_SEC)
+            until_boundary = seconds_until_window_end()
+            if until_boundary <= 1.0:
+                await asyncio.sleep(max(0.05, until_boundary + 0.05))
+            else:
+                await asyncio.sleep(min(ROTATION_POLL_SEC, until_boundary))
+
+    async def _sync_series_slugs(self, series: str) -> None:
+        """Subscribe current 15m UP instrument only (UI price widget)."""
+        current, _ = active_rolling_slugs(series)
+        tracked = self._series_slugs.get(series)
+        if tracked is not None and tracked != current:
+            self.log.info(
+                f"Polymarket bridge: rotating {series!r} {tracked!r} → {current!r}"
+            )
+            await self._drop_slug(tracked)
+            self._series_slugs[series] = current
+            self._slug_series[current] = series
+        elif series not in self._series_slugs:
+            self._series_slugs[series] = current
+            self._slug_series[current] = series
+        await self._ensure_slug(current, series=series)
+        for slug in list(self._slug_series):
+            if self._slug_series.get(slug) == series and slug != current:
+                await self._drop_slug(slug)
 
     async def _check_series_rotation(self) -> None:
-        for series, old_slug in list(self._series_slugs.items()):
-            new_slug = slug_for_series(series)
-            if new_slug == old_slug:
-                continue
-            self.log.info(f"Polymarket bridge: rotating {series!r} {old_slug!r} → {new_slug!r}")
-            await self._drop_slug(old_slug)
-            self._series_slugs[series] = new_slug
-            self._slug_series[new_slug] = series
-            await self._ensure_slug(new_slug, series=series)
+        for series in list(self._series_slugs):
+            await self._sync_series_slugs(series)
 
     async def _drop_slug(self, slug: str) -> None:
         self._slug_quote_iid.pop(slug, None)
@@ -181,6 +218,18 @@ class PolymarketQuoteBridgeActor(Actor):
 
     async def _ensure_slug(self, slug: str, *, series: str | None) -> None:
         if slug in self._slug_quote_iid:
+            # Already subscribed — but if we now have series context, fix any stale
+            # slug-format symbol that was set when series was None (e.g. via subscribe_slug).
+            if series is not None:
+                correct_sym = series_symbol(series)
+                for meta in self._meta_by_iid.values():
+                    if meta.get("slug") == slug and meta.get("symbol") != correct_sym:
+                        self.log.info(
+                            f"Polymarket bridge: fixing symbol for {slug!r} "
+                            f"{meta['symbol']!r} → {correct_sym!r}"
+                        )
+                        meta["symbol"] = correct_sym
+                        meta["series"] = series
             return
         from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
 

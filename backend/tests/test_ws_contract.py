@@ -7,17 +7,9 @@ def test_allowed_types_match_feed_msg_union() -> None:
         "trade",
         "quote",
         "bar",
+        "indicator",
         "polymarket",
         "liquidation",
-        "simulation_signal",
-        "simulation_bet_open",
-        "simulation_bet_settle",
-        "simulation_cycle_closed",
-        "live_signal",
-        "live_bet_open",
-        "live_bet_settle",
-        "live_cycle_closed",
-        "live_order_error",
     }
     assert ALLOWED_WS_TYPES == expected
 
@@ -47,29 +39,22 @@ def test_validate_sample_market_messages() -> None:
             "ts": 2,
         }
     )
-
-
-def test_validate_sample_live_open() -> None:
     validate_ws_payload(
         {
-            "type": "live_bet_open",
-            "bet_id": 1,
-            "cycle_id": 2,
-            "side": "long",
-            "asset": "DOGE",
-            "leg": 1,
-            "poly_slug": "doge-updown-15m-1",
-            "candle_open": 100,
-            "entry_price": 0.5,
-            "shares": 5.0,
-            "cost_usd": 2.5,
+            "type": "indicator",
+            "symbol": "BTCUSDT-PERP.BINANCE",
+            "interval": "5s",
+            "time": 1000,
+            "indicator": "ema",
+            "period": 20,
+            "value": "50000.5",
         }
     )
 
 
 def test_unknown_type_rejected() -> None:
     try:
-        validate_ws_payload({"type": "legacy_polymarket_exec_fill"})
+        validate_ws_payload({"type": "live_bet_open"})
     except ValueError as e:
         assert "unknown" in str(e).lower()
     else:

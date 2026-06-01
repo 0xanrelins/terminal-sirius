@@ -25,6 +25,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.cursor/
 
 # Claude Code
 .claude/

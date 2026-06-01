@@ -4,10 +4,14 @@ import {
   CandlestickSeries,
   LineSeries,
   HistogramSeries,
+  LineStyle,
   type IChartApi,
   type ISeriesApi,
+  type IPriceLine,
   type CandlestickSeriesOptions,
   type CandlestickData,
+  type LineData,
+  type WhitespaceData,
   type UTCTimestamp,
   type LogicalRange,
 } from "lightweight-charts";
@@ -32,7 +36,17 @@ import {
   symbolShort,
   VWAP_LINE_WIDTH,
 } from "../../lib/chartConfig";
-import { barOpenTime, currentBarBucket } from "../../lib/barTime";
+import { barOpenTime, currentBarBucket, sessionBucketOpen } from "../../lib/barTime";
+import {
+  binancePerpToPolySeries,
+  polySeriesToFeedSymbol,
+} from "../../lib/binancePolySeries";
+import {
+  liqApiInterval,
+  liqHistogramPoint,
+  liqToHistogramData,
+  liquidationBarForChart,
+} from "../../lib/liquidationBar";
 import {
   calculateEMA,
   calculateSessionVWAPSegments,
@@ -41,10 +55,13 @@ import {
   type OhlcvBar,
 } from "../../lib/chartIndicators";
 import type {
+  ChartStyle,
   ChartIndicator,
+  IndicatorMsg,
   Kline,
   LiquidationBar,
   LiquidationMsg,
+  PolymarketMsg,
   TradeMsg,
 } from "../../types";
 import styles from "./CandlestickChart.module.css";
@@ -52,12 +69,14 @@ import styles from "./CandlestickChart.module.css";
 type Props = {
   symbol: string;
   interval?: string;
+  chartStyle?: ChartStyle;
   indicators?: ChartIndicator[];
   /** Bar window for this widget (fetch + viewport on every symbol/interval load). */
   initialBars?: number;
   onConfigChange: (patch: {
     symbol?: string;
     interval?: string;
+    chartStyle?: ChartStyle;
     indicators?: ChartIndicator[];
   }) => void;
 };
@@ -71,47 +90,43 @@ const INTERVAL_SECONDS: Record<string, number> = {
 const INITIAL_LIMIT = 500;
 const PAGE_SIZE = 200;
 const LOAD_THRESHOLD = 10;
-const LIQ_PANE_INDEX = 1;
-const LIQ_PANE_HEIGHT = 110;
-const LONG_LIQ_COLOR = "#ef4444";
-const SHORT_LIQ_COLOR = "#22c55e";
-const LIQ_MUTED_COLOR = "#4a4a55";
+const POLY_PANE_INDEX = 1;
+const LIQ_PANE_HEIGHT = 150;
+const POLY_PANE_HEIGHT = 150;
+/** Fixed poly pane Y range: -0.05¢ … 100.5¢ in 0–1 series values. */
+const POLY_PRICE_MIN = -0.0005;
+const POLY_PRICE_MAX = 1.005;
+const POLY_UP_COLOR = "#a78bfa";
+/** ~90 minutes at 1s — keeps multi-session history without unbounded RAM. */
+const MAX_POLY_UP_POINTS = 5400;
 
-type OpenMenu = "symbol" | "interval" | "indicators" | null;
+/** Poly above liq: pane 1 = poly, pane 2 = liq when both enabled. */
+function liqPaneIndex(hasPolymarketUpPane: boolean): number {
+  return hasPolymarketUpPane ? 2 : 1;
+}
+
+function formatPolyUpPrice(v: number): string {
+  return `${(v * 100).toFixed(1)}¢`;
+}
+
+function applyPolyPriceScale(series: ISeriesApi<"Line">) {
+  const scale = series.priceScale();
+  scale.applyOptions({
+    autoScale: false,
+    scaleMargins: { top: 0.02, bottom: 0.02 },
+  });
+  scale.setAutoScale(false);
+  scale.setVisibleRange({ from: POLY_PRICE_MIN, to: POLY_PRICE_MAX });
+}
+type OpenMenu = "symbol" | "interval" | "style" | "indicators" | null;
 
 type LiqBucket = { long: number; short: number };
+type PriceSeriesType = "candlestick" | "line";
 
 const VWAP_SEG = ":seg:";
 
 function vwapSegmentKey(baseId: string, index: number): string {
   return `${baseId}${VWAP_SEG}${index}`;
-}
-
-/** Match sim/live: highlight only when long or short alone ≥ threshold (not combined). */
-function liqHistColor(long: number, short: number, threshold: number): string {
-  const longHit = long >= threshold;
-  const shortHit = short >= threshold;
-  if (!longHit && !shortHit) return LIQ_MUTED_COLOR;
-  if (longHit && shortHit) return long >= short ? LONG_LIQ_COLOR : SHORT_LIQ_COLOR;
-  if (longHit) return LONG_LIQ_COLOR;
-  return SHORT_LIQ_COLOR;
-}
-
-function liqHistValue(long: number, short: number, threshold: number): number {
-  const longHit = long >= threshold;
-  const shortHit = short >= threshold;
-  if (longHit && shortHit) return Math.max(long, short);
-  if (longHit) return long;
-  if (shortHit) return short;
-  return long >= short ? long : short;
-}
-
-function liqToHistogramData(bars: LiquidationBar[], threshold: number) {
-  return bars.map((b) => ({
-    time: b.time as UTCTimestamp,
-    value: liqHistValue(b.long, b.short, threshold),
-    color: liqHistColor(b.long, b.short, threshold),
-  }));
 }
 
 function toOhlcv(data: Kline[]): OhlcvBar[] {
@@ -132,6 +147,13 @@ function toCandles(bars: OhlcvBar[]): CandlestickData<UTCTimestamp>[] {
     high,
     low,
     close,
+  }));
+}
+
+function toLineData(bars: OhlcvBar[]) {
+  return bars.map(({ time, close }) => ({
+    time,
+    value: close,
   }));
 }
 
@@ -259,6 +281,7 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   let vwap: ChartIndicator | null = null;
   let rollingVwap: ChartIndicator | null = null;
   let liquidations: ChartIndicator | null = null;
+  let polymarketUp: ChartIndicator | null = null;
 
   for (const ind of raw) {
     const t = (ind as { type: string }).type;
@@ -268,6 +291,10 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
           ? ind.threshold
           : DEFAULT_LIQ_THRESHOLD;
       liquidations = { id: "liquidations", type: "liquidations", threshold };
+      continue;
+    }
+    if (t === "polymarket_up") {
+      polymarketUp = { id: "polymarket_up", type: "polymarket_up" };
       continue;
     }
     if (t === "vwap") {
@@ -317,23 +344,34 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   if (vwap) out.push(vwap);
   if (rollingVwap) out.push(rollingVwap);
   if (liquidations) out.push(liquidations);
+  if (polymarketUp) out.push(polymarketUp);
   return out;
 }
 
 export function CandlestickChart({
   symbol,
   interval = "1m",
+  chartStyle = "candlestick",
   indicators: indicatorsProp = [],
   initialBars: initialBarsProp,
   onConfigChange,
 }: Props) {
+  const isRealtimeOnlyInterval = interval === "1s" || interval === "5s";
   const indicators = normalizeIndicators(indicatorsProp);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const priceSeriesTypeRef = useRef<PriceSeriesType>("candlestick");
   const maSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const liqSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const liqDataRef = useRef<Map<number, LiqBucket>>(new Map());
+  /** True once setData has been called with real data — update() fails on a never-painted series. */
+  const polySeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const polyMidLineRef = useRef<IPriceLine | null>(null);
+  const polyPointsRef = useRef<(LineData<UTCTimestamp> | WhitespaceData<UTCTimestamp>)[]>([]);
+  const polyCurrentSlugRef = useRef<string | null>(null);
+  const liqPaneWithPolyRef = useRef<boolean | null>(null);
   const ohlcvBarsRef = useRef<OhlcvBar[]>([]);
   const liveBarRef = useRef<OhlcvBar | null>(null);
   const loadingRef = useRef(false);
@@ -349,12 +387,31 @@ export function CandlestickChart({
   indicatorsRef.current = indicators;
   const hasEma = indicators.some((i) => i.type === "ema");
   const hasLiquidations = indicators.some((i) => i.type === "liquidations");
+  const hasPolymarketUp = indicators.some((i) => i.type === "polymarket_up");
+  const polySeries = binancePerpToPolySeries(symbol);
+  const polyPaneActive = hasPolymarketUp && !!polySeries && isRealtimeOnlyInterval;
   const hasVwap = indicators.some((i) => i.type === "vwap");
   const hasRollingVwap = indicators.some((i) => i.type === "rolling_vwap");
   const emaPeriod = getEmaPeriod(indicators);
   const liqThreshold = getLiqThreshold(indicators);
   const vwapPeriod = getVwapPeriod(indicators);
   const rollingVwapPeriod = getRollingVwapPeriod(indicators);
+
+  // Draft states: let the user type freely; commit to config only on blur
+  const [emaDraft, setEmaDraft] = useState<string>(() => String(emaPeriod));
+  const [vwapDraft, setVwapDraft] = useState<string>(() => String(vwapPeriod));
+  const [rollingVwapDraft, setRollingVwapDraft] = useState<string>(() => String(rollingVwapPeriod));
+  const [liqDraft, setLiqDraft] = useState<string>(() => String(liqThreshold));
+
+  // Keep drafts in sync when external config changes (e.g. widget reset)
+  const prevEmaPeriod = useRef(emaPeriod);
+  const prevVwapPeriod = useRef(vwapPeriod);
+  const prevRollingVwapPeriod = useRef(rollingVwapPeriod);
+  const prevLiqThreshold = useRef(liqThreshold);
+  if (prevEmaPeriod.current !== emaPeriod) { prevEmaPeriod.current = emaPeriod; setEmaDraft(String(emaPeriod)); }
+  if (prevVwapPeriod.current !== vwapPeriod) { prevVwapPeriod.current = vwapPeriod; setVwapDraft(String(vwapPeriod)); }
+  if (prevRollingVwapPeriod.current !== rollingVwapPeriod) { prevRollingVwapPeriod.current = rollingVwapPeriod; setRollingVwapDraft(String(rollingVwapPeriod)); }
+  if (prevLiqThreshold.current !== liqThreshold) { prevLiqThreshold.current = liqThreshold; setLiqDraft(String(liqThreshold)); }
 
   const pushLiqToSeries = useCallback(() => {
     const threshold = getLiqThreshold(indicatorsRef.current);
@@ -364,29 +421,134 @@ export function CandlestickChart({
     liqSeriesRef.current?.setData(liqToHistogramData(bars, threshold));
   }, []);
 
+  const trimPolyPoints = useCallback((pts: (LineData<UTCTimestamp> | WhitespaceData<UTCTimestamp>)[]) => {
+    if (pts.length <= MAX_POLY_UP_POINTS) return pts;
+    return pts.slice(pts.length - MAX_POLY_UP_POINTS);
+  }, []);
+
+  const pushPolyToSeries = useCallback(() => {
+    polySeriesRef.current?.setData(polyPointsRef.current);
+  }, []);
+
+  const clearPolyData = useCallback(() => {
+    polyPointsRef.current = [];
+    polyCurrentSlugRef.current = null;
+    polySeriesRef.current?.setData([]);
+  }, []);
+
+  const applyPolyBar = useCallback(
+    (time: number, close: number, slug?: string) => {
+      const line = polySeriesRef.current;
+      if (!line) return;
+
+      const pts = polyPointsRef.current;
+      const slugChanged = slug != null && polyCurrentSlugRef.current != null && slug !== polyCurrentSlugRef.current;
+      if (slugChanged && pts.length > 0) {
+        const boundaryTime = (Math.floor(time / 900) * 900) as UTCTimestamp;
+        const beforeBoundary = pts.filter((p) => (p.time as number) < boundaryTime);
+        const gapPoint: WhitespaceData<UTCTimestamp> = { time: boundaryTime };
+        const withGap = trimPolyPoints([...beforeBoundary, gapPoint]);
+        polyPointsRef.current = withGap;
+        line.setData(withGap);
+      }
+      if (slug != null) polyCurrentSlugRef.current = slug;
+
+      const t = time as UTCTimestamp;
+      const color = close >= 0.5 ? "#22c55e" : "#ef4444";
+      const point: LineData<UTCTimestamp> = { time: t, value: close, color };
+      const current = polyPointsRef.current;
+      const idx = current.findIndex((p) => p.time === t);
+      if (idx >= 0) {
+        current[idx] = point;
+      } else {
+        polyPointsRef.current = trimPolyPoints(
+          [...current, point].sort((a, b) => (a.time as number) - (b.time as number))
+        );
+      }
+      line.update(point);
+    },
+    [trimPolyPoints]
+  );
+
+  const syncPolySeries = useCallback(
+    (chart: IChartApi, enabled: boolean) => {
+      if (!enabled) {
+        if (polySeriesRef.current) {
+          chart.removeSeries(polySeriesRef.current);
+          polySeriesRef.current = null;
+          polyMidLineRef.current = null;
+        }
+        polyPointsRef.current = [];
+        return;
+      }
+
+      if (!polySeriesRef.current) {
+        polySeriesRef.current = chart.addSeries(
+          LineSeries,
+          {
+            color: POLY_UP_COLOR,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            priceFormat: {
+              type: "custom",
+              formatter: (p: number) => formatPolyUpPrice(p),
+            },
+          },
+          POLY_PANE_INDEX
+        );
+        const pane = chart.panes()[POLY_PANE_INDEX];
+        if (pane) pane.setHeight(POLY_PANE_HEIGHT);
+        polyMidLineRef.current = polySeriesRef.current.createPriceLine({
+          price: 0.5,
+          color: "#4a4a55",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          axisLabelVisible: false,
+        });
+        applyPolyPriceScale(polySeriesRef.current);
+      } else if (polySeriesRef.current) {
+        applyPolyPriceScale(polySeriesRef.current);
+      }
+      pushPolyToSeries();
+      if (polySeriesRef.current) {
+        applyPolyPriceScale(polySeriesRef.current);
+      }
+    },
+    [pushPolyToSeries]
+  );
+
   const applyLiqBar = useCallback((time: number, long: number, short: number) => {
     liqDataRef.current.set(time, { long, short });
     if (!liqSeriesRef.current) return;
     const threshold = getLiqThreshold(indicatorsRef.current);
-    liqSeriesRef.current.update({
-      time: time as UTCTimestamp,
-      value: liqHistValue(long, short, threshold),
-      color: liqHistColor(long, short, threshold),
-    });
+    liqSeriesRef.current.update(liqHistogramPoint(time, long, short, threshold));
   }, []);
 
   const syncLiqSeries = useCallback(
-    (chart: IChartApi, enabled: boolean) => {
+    (chart: IChartApi, enabled: boolean, withPoly: boolean) => {
       if (!enabled) {
         if (liqSeriesRef.current) {
           chart.removeSeries(liqSeriesRef.current);
           liqSeriesRef.current = null;
         }
         liqDataRef.current.clear();
+        liqPaneWithPolyRef.current = null;
         return;
       }
 
+      if (
+        liqSeriesRef.current &&
+        liqPaneWithPolyRef.current !== null &&
+        liqPaneWithPolyRef.current !== withPoly
+      ) {
+        chart.removeSeries(liqSeriesRef.current);
+        liqSeriesRef.current = null;
+      }
+      liqPaneWithPolyRef.current = withPoly;
+
       if (!liqSeriesRef.current) {
+        const paneIdx = liqPaneIndex(withPoly);
         liqSeriesRef.current = chart.addSeries(
           HistogramSeries,
           {
@@ -394,9 +556,9 @@ export function CandlestickChart({
             priceLineVisible: false,
             lastValueVisible: false,
           },
-          LIQ_PANE_INDEX
+          paneIdx
         );
-        const liqPane = chart.panes()[LIQ_PANE_INDEX];
+        const liqPane = chart.panes()[paneIdx];
         if (liqPane) liqPane.setHeight(LIQ_PANE_HEIGHT);
       }
       pushLiqToSeries();
@@ -454,15 +616,35 @@ export function CandlestickChart({
       }
       line.setData(lineDataForIndicator(ind, candles, ohlcv, interval));
     },
-    [interval]
+    [interval, isRealtimeOnlyInterval]
   );
 
   const syncMaSeries = useCallback(
     (chart: IChartApi, next: ChartIndicator[]) => {
       const prev = maSeriesRef.current;
+      const activeKeys = new Set<string>();
+
+      if (isRealtimeOnlyInterval) {
+        next.forEach((ind) => {
+          if (ind.type === "ema" || ind.type === "rolling_vwap") {
+            activeKeys.add(ind.id);
+          }
+          if (isAnchoredVwapType(ind.type)) {
+            for (const key of prev.keys()) {
+              if (key.startsWith(`${ind.id}:`)) activeKeys.add(key);
+            }
+          }
+        });
+        for (const [key, line] of prev) {
+          if (activeKeys.has(key)) continue;
+          chart.removeSeries(line);
+          prev.delete(key);
+        }
+        return;
+      }
+
       const ohlcv = ohlcvBarsRef.current;
       const candles = toCandles(ohlcv);
-      const activeKeys = new Set<string>();
 
       next.forEach((ind) => {
         if (
@@ -482,40 +664,125 @@ export function CandlestickChart({
         prev.delete(key);
       }
     },
-    [applyMaIndicator]
+    [applyMaIndicator, isRealtimeOnlyInterval]
   );
 
   const refreshMaSeries = useCallback(() => {
+    if (isRealtimeOnlyInterval) return;
     const chart = chartRef.current;
     if (!chart) return;
     syncMaSeries(chart, indicatorsRef.current);
-  }, [syncMaSeries]);
+  }, [syncMaSeries, isRealtimeOnlyInterval]);
+
+  const applyBackendIndicator = useCallback(
+    (msg: IndicatorMsg) => {
+      if (!historyReadyRef.current) return;
+      const chart = chartRef.current;
+      if (!chart) return;
+
+      const ind =
+        msg.indicator === "ema"
+          ? indicatorsRef.current.find((i) => i.type === "ema")
+          : msg.indicator === "vwap"
+            ? indicatorsRef.current.find(
+                (i) => i.type === "vwap" || i.type === "session_vwap"
+              )
+            : indicatorsRef.current.find((i) => i.type === "rolling_vwap");
+      if (!ind) return;
+
+      const time = msg.time as UTCTimestamp;
+      const point =
+        msg.value != null
+          ? { time, value: parseFloat(msg.value) }
+          : { time };
+
+      const prev = maSeriesRef.current;
+      const lineType =
+        ind.type === "session_vwap" ? "vwap" : ind.type === "rolling_vwap" ? "rolling_vwap" : ind.type;
+      const color = indicatorLineColor(
+        lineType as "ema" | "vwap" | "rolling_vwap"
+      );
+
+      if (msg.indicator === "vwap") {
+        const bucket = sessionBucketOpen(msg.time, interval, ind.period);
+        const key = vwapSegmentKey(ind.id, bucket);
+        let line = prev.get(key);
+        if (!line) {
+          line = chart.addSeries(LineSeries, {
+            color,
+            lineWidth: VWAP_LINE_WIDTH,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          });
+          prev.set(key, line);
+        }
+        line.update(point);
+        return;
+      }
+
+      let line = prev.get(ind.id);
+      if (!line) {
+        line = chart.addSeries(LineSeries, {
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        prev.set(ind.id, line);
+      }
+      line.update(point);
+    },
+    [interval]
+  );
+
+  const setPriceSeriesData = useCallback((data: OhlcvBar[]) => {
+    if (priceSeriesTypeRef.current === "line") {
+      lineSeriesRef.current?.setData(toLineData(data));
+      return;
+    }
+    candleSeriesRef.current?.setData(toCandles(data));
+  }, []);
+
+  const updatePriceSeries = useCallback((bar: OhlcvBar) => {
+    if (priceSeriesTypeRef.current === "line") {
+      lineSeriesRef.current?.update({ time: bar.time, value: bar.close });
+      return;
+    }
+    candleSeriesRef.current?.update({
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+    });
+  }, []);
 
   const setOhlcvData = useCallback(
     (data: OhlcvBar[]) => {
       ohlcvBarsRef.current = data;
-      seriesRef.current?.setData(toCandles(data));
+      setPriceSeriesData(data);
       refreshMaSeries();
     },
-    [refreshMaSeries]
+    [refreshMaSeries, setPriceSeriesData]
   );
 
   const loadLiqForOhlcv = useCallback(async () => {
     if (!indicatorsRef.current.some((i) => i.type === "liquidations")) return;
+    if (isRealtimeOnlyInterval) return;
     const bars = ohlcvBarsRef.current;
     if (bars.length === 0 || liqLoadingRef.current) return;
 
+    const liqInterval = liqApiInterval(interval);
     const fromTime = bars[0].time as number;
     const toTime = bars[bars.length - 1].time as number;
     liqLoadingRef.current = true;
     try {
       const data = await fetchLiquidationsForRange(
         symbol,
-        interval,
+        liqInterval,
         fromTime,
         toTime
       );
-      liqDataRef.current.clear();
       for (const b of data) {
         liqDataRef.current.set(b.time, { long: b.long, short: b.short });
       }
@@ -525,7 +792,7 @@ export function CandlestickChart({
     } finally {
       liqLoadingRef.current = false;
     }
-  }, [symbol, interval, pushLiqToSeries]);
+  }, [symbol, interval, isRealtimeOnlyInterval, pushLiqToSeries]);
 
   // Chart init + history + infinite scroll
   useEffect(() => {
@@ -545,6 +812,8 @@ export function CandlestickChart({
     maSeriesRef.current.clear();
     liqSeriesRef.current = null;
     liqDataRef.current.clear();
+    polySeriesRef.current = null;
+    polyPointsRef.current = [];
 
     const chart = createChart(containerRef.current, {
       layout: {
@@ -568,26 +837,49 @@ export function CandlestickChart({
       timeScale: {
         borderColor: "#2a2a35",
         timeVisible: true,
-        secondsVisible: false,
+        secondsVisible: isRealtimeOnlyInterval,
       },
       rightPriceScale: { borderColor: "#2a2a35" },
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     });
 
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderUpColor: "#22c55e",
-      borderDownColor: "#ef4444",
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
-    } as CandlestickSeriesOptions);
+    if (chartStyle === "line") {
+      const series = chart.addSeries(LineSeries, {
+        color: "#8ab4ff",
+        lineWidth: 2,
+        priceLineVisible: false,
+      });
+      lineSeriesRef.current = series;
+      candleSeriesRef.current = null;
+      priceSeriesTypeRef.current = "line";
+    } else {
+      const series = chart.addSeries(CandlestickSeries, {
+        upColor: "#22c55e",
+        downColor: "#ef4444",
+        borderUpColor: "#22c55e",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#22c55e",
+        wickDownColor: "#ef4444",
+      } as CandlestickSeriesOptions);
+      candleSeriesRef.current = series;
+      lineSeriesRef.current = null;
+      priceSeriesTypeRef.current = "candlestick";
+    }
 
     chartRef.current = chart;
-    seriesRef.current = series;
     syncMaSeries(chart, indicatorsRef.current);
-    syncLiqSeries(chart, indicatorsRef.current.some((i) => i.type === "liquidations"));
+    const inds = indicatorsRef.current;
+    const initPoly =
+      inds.some((i) => i.type === "polymarket_up") &&
+      !!binancePerpToPolySeries(symbol) &&
+      isRealtimeOnlyInterval;
+    syncPolySeries(chart, initPoly);
+    syncLiqSeries(
+      chart,
+      inds.some((i) => i.type === "liquidations"),
+      initPoly
+    );
 
     const fetchKlines = async (before?: number): Promise<Kline[]> => {
       const params = new URLSearchParams({
@@ -642,6 +934,28 @@ export function CandlestickChart({
     const isStale = () =>
       cancelled || chartRef.current !== chart || effectGen !== chartEffectGenRef.current;
 
+    if (isRealtimeOnlyInterval) {
+      historyReadyRef.current = true;
+      exhaustedRef.current = true;
+      return () => {
+        cancelled = true;
+        chartEffectGenRef.current += 1;
+        ro.disconnect();
+        chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+        chart.remove();
+        chartRef.current = null;
+        candleSeriesRef.current = null;
+        lineSeriesRef.current = null;
+        priceSeriesTypeRef.current = "candlestick";
+        maSeriesRef.current.clear();
+        liqSeriesRef.current = null;
+        liqDataRef.current.clear();
+        ohlcvBarsRef.current = [];
+        liveBarRef.current = null;
+        historyReadyRef.current = false;
+      };
+    }
+
     fetchKlines()
       .then((data) => {
         if (isStale()) return;
@@ -679,23 +993,72 @@ export function CandlestickChart({
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
       chart.remove();
       chartRef.current = null;
-      seriesRef.current = null;
+      candleSeriesRef.current = null;
+      lineSeriesRef.current = null;
+      priceSeriesTypeRef.current = "candlestick";
       maSeriesRef.current.clear();
       liqSeriesRef.current = null;
       liqDataRef.current.clear();
+      polySeriesRef.current = null;
+      polyPointsRef.current = [];
       ohlcvBarsRef.current = [];
       liveBarRef.current = null;
       historyReadyRef.current = false;
     };
-  }, [symbol, interval, setOhlcvData, syncMaSeries, syncLiqSeries, loadLiqForOhlcv]);
+  }, [
+    symbol,
+    interval,
+    chartStyle,
+    isRealtimeOnlyInterval,
+    setOhlcvData,
+    syncMaSeries,
+    syncLiqSeries,
+    syncPolySeries,
+    loadLiqForOhlcv,
+  ]);
 
   // Sync indicators when toggled from toolbar
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     syncMaSeries(chart, indicators);
-    syncLiqSeries(chart, hasLiquidations);
-  }, [indicators, hasLiquidations, syncMaSeries, syncLiqSeries]);
+    syncPolySeries(chart, polyPaneActive);
+    syncLiqSeries(chart, hasLiquidations, polyPaneActive);
+  }, [
+    indicators,
+    hasLiquidations,
+    polyPaneActive,
+    syncMaSeries,
+    syncLiqSeries,
+    syncPolySeries,
+  ]);
+
+  useEffect(() => {
+    if (!polyPaneActive) return;
+    clearPolyData();
+  }, [symbol, interval, polyPaneActive, clearPolyData]);
+
+  useEffect(() => {
+    if (!polyPaneActive || !polySeries) return;
+
+    fetch("/polymarket/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ series: polySeries }),
+    }).catch(() => {});
+
+    const pmSymbol = polySeriesToFeedSymbol(polySeries);
+    const unsub = subscribe(pmSymbol, (msg) => {
+      if (msg.type === "bar" && msg.interval === interval) {
+        const t = msg.time ?? barOpenTime(Math.floor(msg.ts / 1e9), interval);
+        applyPolyBar(t, parseFloat(msg.close));
+      } else if (msg.type === "polymarket") {
+        const pm = msg as PolymarketMsg;
+        applyPolyBar(barOpenTime(Math.floor(pm.ts / 1e9), interval), pm.yes_price, pm.slug);
+      }
+    });
+    return unsub;
+  }, [polyPaneActive, polySeries, interval, subscribe, applyPolyBar]);
 
   useEffect(() => {
     if (hasLiquidations) pushLiqToSeries();
@@ -723,10 +1086,8 @@ export function CandlestickChart({
     };
 
     const paintCandleSeries = (bar: OhlcvBar) => {
-      const series = seriesRef.current;
-      if (!series || !historyReadyRef.current) return;
-      const { time, open, high, low, close } = bar;
-      series.update({ time, open, high, low, close });
+      if (!historyReadyRef.current) return;
+      updatePriceSeries(bar);
     };
 
     const flushTradeCandle = (bar: OhlcvBar) => {
@@ -738,8 +1099,7 @@ export function CandlestickChart({
       liveBarRef.current = bar;
       mergeBarIntoStore(bar);
 
-      const series = seriesRef.current;
-      if (!series || !historyReadyRef.current) return;
+      if (!historyReadyRef.current) return;
 
       const elapsed = Date.now() - lastPaintAt;
       if (elapsed >= CANDLE_FLUSH_MS) {
@@ -767,14 +1127,14 @@ export function CandlestickChart({
       liveBarRef.current = bar;
       mergeBarIntoStore(bar);
       paintCandleSeries(bar);
-      refreshMaSeries();
+      if (!isRealtimeOnlyInterval) refreshMaSeries();
       lastPaintAt = Date.now();
     };
 
     const unsub = subscribe(symbol, (msg) => {
       if (msg.type === "liquidation") {
         const liq = msg as LiquidationMsg;
-        const snap = liq.bars?.find((b) => b.interval === interval);
+        const snap = liquidationBarForChart(liq.bars, interval);
         if (snap) {
           applyLiqBar(snap.time, snap.long, snap.short);
         }
@@ -796,6 +1156,13 @@ export function CandlestickChart({
         commitOfficialBar(bar);
         return;
       }
+
+      if (msg.type === "indicator" && msg.interval === interval) {
+        applyBackendIndicator(msg as IndicatorMsg);
+        return;
+      }
+
+      if (isRealtimeOnlyInterval) return;
 
       if (msg.type === "trade") {
         const price = parseFloat((msg as TradeMsg).price);
@@ -833,7 +1200,16 @@ export function CandlestickChart({
       if (paintTimer) clearTimeout(paintTimer);
       unsub();
     };
-  }, [symbol, interval, subscribe, refreshMaSeries, applyLiqBar]);
+  }, [
+    symbol,
+    interval,
+    subscribe,
+    refreshMaSeries,
+    applyLiqBar,
+    updatePriceSeries,
+    isRealtimeOnlyInterval,
+    applyBackendIndicator,
+  ]);
 
   // Close menus on outside click
   useEffect(() => {
@@ -853,11 +1229,13 @@ export function CandlestickChart({
     const added: ChartIndicator =
       preset.type === "liquidations"
         ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
-        : preset.type === "vwap"
-          ? { id, type: "vwap", period: preset.period }
-          : preset.type === "rolling_vwap"
-            ? { id, type: "rolling_vwap", period: preset.period }
-            : { id, type: "ema", period: preset.period };
+        : preset.type === "polymarket_up"
+          ? { id, type: "polymarket_up" }
+          : preset.type === "vwap"
+            ? { id, type: "vwap", period: preset.period }
+            : preset.type === "rolling_vwap"
+              ? { id, type: "rolling_vwap", period: preset.period }
+              : { id, type: "ema", period: preset.period };
     onConfigChange({ indicators: [...indicators, added] });
   };
 
@@ -974,6 +1352,46 @@ export function CandlestickChart({
         <div className={styles.menuWrap}>
           <button
             type="button"
+            className={`${styles.menuBtn} ${openMenu === "style" ? styles.menuBtnActive : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenMenu((m) => (m === "style" ? null : "style"));
+            }}
+          >
+            {chartStyle === "line" ? "Line" : "Candlestick"}
+            <span className={styles.chevron}>▼</span>
+          </button>
+          {openMenu === "style" && (
+            <div className={styles.menu}>
+              <button
+                type="button"
+                className={`${styles.menuItem} ${chartStyle === "candlestick" ? styles.menuItemActive : ""}`}
+                onClick={() => {
+                  onConfigChange({ chartStyle: "candlestick" });
+                  setOpenMenu(null);
+                }}
+              >
+                Candlestick
+                {chartStyle === "candlestick" && <span className={styles.check}>✓</span>}
+              </button>
+              <button
+                type="button"
+                className={`${styles.menuItem} ${chartStyle === "line" ? styles.menuItemActive : ""}`}
+                onClick={() => {
+                  onConfigChange({ chartStyle: "line" });
+                  setOpenMenu(null);
+                }}
+              >
+                Line
+                {chartStyle === "line" && <span className={styles.check}>✓</span>}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className={styles.menuWrap}>
+          <button
+            type="button"
             className={`${styles.menuBtn} ${openMenu === "indicators" ? styles.menuBtnActive : ""}`}
             onClick={(e) => {
               e.stopPropagation();
@@ -1008,9 +1426,15 @@ export function CandlestickChart({
                     className={styles.thresholdInput}
                     min={1}
                     step={1}
-                    value={emaPeriod}
+                    value={emaDraft}
                     onClick={stopMenuClick}
-                    onChange={(e) => setEmaPeriod(Number(e.target.value) || DEFAULT_EMA_PERIOD)}
+                    onChange={(e) => setEmaDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      const next = Number.isFinite(n) && n >= 1 ? n : DEFAULT_EMA_PERIOD;
+                      setEmaDraft(String(next));
+                      setEmaPeriod(next);
+                    }}
                   />
                 </div>
               )}
@@ -1022,9 +1446,15 @@ export function CandlestickChart({
                     className={styles.thresholdInput}
                     min={1}
                     step={1}
-                    value={vwapPeriod}
+                    value={vwapDraft}
                     onClick={stopMenuClick}
-                    onChange={(e) => setVwapPeriod(Number(e.target.value) || DEFAULT_VWAP_PERIOD)}
+                    onChange={(e) => setVwapDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      const next = Number.isFinite(n) && n >= 1 ? n : DEFAULT_VWAP_PERIOD;
+                      setVwapDraft(String(next));
+                      setVwapPeriod(next);
+                    }}
                   />
                 </div>
               )}
@@ -1036,13 +1466,15 @@ export function CandlestickChart({
                     className={styles.thresholdInput}
                     min={1}
                     step={1}
-                    value={rollingVwapPeriod}
+                    value={rollingVwapDraft}
                     onClick={stopMenuClick}
-                    onChange={(e) =>
-                      setRollingVwapPeriod(
-                        Number(e.target.value) || DEFAULT_ROLLING_VWAP_PERIOD
-                      )
-                    }
+                    onChange={(e) => setRollingVwapDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      const next = Number.isFinite(n) && n >= 1 ? n : DEFAULT_ROLLING_VWAP_PERIOD;
+                      setRollingVwapDraft(String(next));
+                      setRollingVwapPeriod(next);
+                    }}
                   />
                 </div>
               )}
@@ -1054,15 +1486,32 @@ export function CandlestickChart({
                     className={styles.thresholdInput}
                     min={0}
                     step={1000}
-                    value={liqThreshold}
+                    value={liqDraft}
                     onClick={stopMenuClick}
-                    onChange={(e) => setLiqThreshold(Number(e.target.value) || 0)}
+                    onChange={(e) => setLiqDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseFloat(e.target.value);
+                      const next = Number.isFinite(n) && n >= 0 ? n : 0;
+                      setLiqDraft(String(next));
+                      setLiqThreshold(next);
+                    }}
                   />
                 </div>
               )}
             </div>
           )}
         </div>
+
+        {hasPolymarketUp && !polySeries && (
+          <span className={styles.menuBtn} style={{ cursor: "default", opacity: 0.65 }}>
+            No Polymarket 15m for this symbol
+          </span>
+        )}
+        {hasPolymarketUp && polySeries && !isRealtimeOnlyInterval && (
+          <span className={styles.menuBtn} style={{ cursor: "default", opacity: 0.65 }}>
+            Polymarket UP: 1s/5s only
+          </span>
+        )}
       </div>
       <div ref={containerRef} className={styles.chart} />
     </div>

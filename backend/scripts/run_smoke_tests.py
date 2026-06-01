@@ -12,16 +12,16 @@ sys.path.insert(0, str(ROOT))
 
 MODULES = [
     "tests.test_ws_contract",
-    "tests.test_liq_poly_live_sim_parity",
-    "tests.test_liq_poly_dedupe",
-    "tests.test_signal_state",
-    "tests.test_simulation_sizing",
-    "tests.test_simulation_pricing",
-    "tests.test_simulation_timing",
+    "tests.test_chart_indicators",
 ]
 
 # Needs backend venv (asyncpg via liquidations → db import)
-OPTIONAL_MODULES = ["tests.test_liquidations_parse"]
+OPTIONAL_MODULES = [
+    "tests.test_liquidations_parse",
+    "tests.test_realtime_bucket_actor",
+    "tests.test_polymarket_realtime_bucket",
+    "tests.test_liq_post_event_service",
+]
 
 
 def _run_module(module_name: str) -> int:

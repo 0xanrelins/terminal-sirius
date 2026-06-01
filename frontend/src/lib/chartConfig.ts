@@ -41,7 +41,7 @@ export function normalizeComparisonSymbols(symbols: unknown): ComparisonSymbol[]
   return picked.length > 0 ? picked : DEFAULT_COMPARISON_SYMBOLS;
 }
 
-export const CHART_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
+export const CHART_INTERVALS = ["1s", "5s", "1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 
 /** Default candles on first chart open (matches legacy INITIAL_LIMIT). */
 export const DEFAULT_CANDLESTICK_BARS = 500;
@@ -57,11 +57,12 @@ export type IndicatorPreset =
   | { label: string; type: "ema"; period: number }
   | { label: string; type: "vwap"; period: number }
   | { label: string; type: "rolling_vwap"; period: number }
-  | { label: string; type: "liquidations" };
+  | { label: string; type: "liquidations" }
+  | { label: string; type: "polymarket_up" };
 
-export const DEFAULT_EMA_PERIOD = 20;
-export const DEFAULT_VWAP_PERIOD = 20;
-export const DEFAULT_ROLLING_VWAP_PERIOD = 20;
+export const DEFAULT_EMA_PERIOD = 180;
+export const DEFAULT_VWAP_PERIOD = 180;
+export const DEFAULT_ROLLING_VWAP_PERIOD = 180;
 
 /** Min total liquidation notional (USD) per bar to highlight candles. */
 export const DEFAULT_LIQ_THRESHOLD = 50_000;
@@ -71,6 +72,7 @@ export const INDICATOR_PRESETS: IndicatorPreset[] = [
   { label: "VWAP", type: "vwap", period: DEFAULT_VWAP_PERIOD },
   { label: "Rolling VWAP", type: "rolling_vwap", period: DEFAULT_ROLLING_VWAP_PERIOD },
   { label: "Liquidations", type: "liquidations" },
+  { label: "Polymarket UP", type: "polymarket_up" },
 ];
 
 const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
@@ -90,6 +92,7 @@ export function symbolShort(symbol: string): string {
 
 export function presetId(preset: IndicatorPreset): string {
   if (preset.type === "liquidations") return "liquidations";
+  if (preset.type === "polymarket_up") return "polymarket_up";
   if (preset.type === "vwap") return "vwap";
   if (preset.type === "rolling_vwap") return "rolling_vwap";
   return "ema";
@@ -104,6 +107,7 @@ export function indicatorLabel(ind: ChartIndicator): string {
     const t = ind.threshold ?? DEFAULT_LIQ_THRESHOLD;
     return `Liquidations ($${t >= 1000 ? `${Math.round(t / 1000)}k` : t})`;
   }
+  if (ind.type === "polymarket_up") return "Polymarket UP";
   if (ind.type === "vwap") return `VWAP ${ind.period}`;
   if (ind.type === "rolling_vwap") return `Rolling VWAP ${ind.period}`;
   if (ind.type === "session_vwap") return `VWAP ${ind.period}`;

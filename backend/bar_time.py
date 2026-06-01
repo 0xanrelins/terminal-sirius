@@ -1,6 +1,8 @@
 """Bar open-time alignment (Binance / Lightweight Charts convention)."""
 
 INTERVAL_SECONDS: dict[str, int] = {
+    "1s": 1,
+    "5s": 5,
     "1m": 60,
     "3m": 180,
     "5m": 300,
