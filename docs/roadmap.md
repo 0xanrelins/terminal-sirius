@@ -26,5 +26,3 @@ Official references: Nautilus docs — *Strategies*, *Execution*, *Polymarket ad
 - `strategy_runtime` + `handle_strategy_events` BFF pattern
 - Duplicate sim vs live motors outside Nautilus
 - `SandboxExecutionClient` paper path unless you explicitly want simulated exchange again
-
-Historical migration notes: [archive/tam-nautilus-entegrasyonu-plan.md](archive/tam-nautilus-entegrasyonu-plan.md).

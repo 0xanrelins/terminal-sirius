@@ -150,8 +150,7 @@ Terminal Sirius/
 │   ├── README.md                 # Doc index (start here)
 │   ├── architecture.md
 │   ├── ws-api-contract.md
-│   ├── roadmap.md
-│   └── archive/                # Historical plans only
+│   └── roadmap.md
 ├── backend/
 │   ├── main.py                   # FastAPI BFF + WS
 │   ├── node.py                   # Nautilus TradingNode (data actors only)

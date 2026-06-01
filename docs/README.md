@@ -1,6 +1,6 @@
 # Documentation index
 
-**Start here** for current system behavior. Archived plans live under [archive/](archive/) (historical only).
+**Start here** for current system behavior.
 
 | Doc | Use when |
 |-----|----------|
