@@ -1,7 +1,7 @@
 .canvas {
   width: 100%;
   min-height: 100%;
-  background: #0d0d0f;
+  background: #131318;
   padding: 6px;
   position: relative;
 }
@@ -103,18 +103,23 @@
 .addBtn {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  left: 24px;
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #7c6aff;
-  border: none;
-  color: #fff;
+  background: #2a2a35;
+  border: 1px solid #3a3a48;
+  color: #c8c8d0;
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 4px 20px rgba(124, 106, 255, 0.35);
-  transition: background 0.12s, transform 0.12s;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.12s;
   z-index: 100;
 }
-.addBtn:hover { background: #9d8fff; transform: scale(1.08); }
+.addBtn:hover {
+  background: #3a3a48;
+  border-color: #4a4a58;
+  color: #e2e2e2;
+  transform: scale(1.08);
+}

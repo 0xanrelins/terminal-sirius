@@ -50,7 +50,7 @@
   border-color: #3a3a48;
 }
 .menuBtnActive {
-  border-color: #7c6aff;
+  border-color: #f97316;
   color: #e2e2e2;
 }
 
@@ -89,7 +89,7 @@
   color: #e2e2e2;
 }
 .menuItemActive {
-  color: #7c6aff;
+  color: #f97316;
 }
 
 .legend {

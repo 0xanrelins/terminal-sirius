@@ -168,8 +168,8 @@ export function ComparisonChart({
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: "#1e1e28" },
-        horzLines: { color: "#1e1e28" },
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
       crosshair: {
         vertLine: { color: "#444" },

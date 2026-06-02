@@ -86,9 +86,9 @@
 
 .typeBtn.active,
 .intervalBtn.active {
-  background: #1e1a3a;
-  border-color: #7c6aff;
-  color: #a89fff;
+  background: #1f0f00;
+  border-color: #f97316;
+  color: #fdba74;
 }
 
 .input {
@@ -102,7 +102,7 @@
   outline: none;
   transition: border-color 0.12s;
 }
-.input:focus { border-color: #7c6aff; }
+.input:focus { border-color: #f97316; }
 
 .actions {
   display: flex;
@@ -124,7 +124,7 @@
 .cancel:hover { border-color: #444; color: #e2e2e2; }
 
 .submit {
-  background: #7c6aff;
+  background: #f97316;
   border: none;
   color: #fff;
   font-size: 12px;
@@ -135,7 +135,7 @@
   cursor: pointer;
   transition: background 0.12s;
 }
-.submit:hover { background: #9d8fff; }
+.submit:hover { background: #fb923c; }
 .submit:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .results {
@@ -161,7 +161,7 @@
   transition: border-color 0.1s;
 }
 .resultItem:hover    { border-color: #444; }
-.resultItem.active   { border-color: #7c6aff; background: #1e1a3a; }
+.resultItem.active   { border-color: #f97316; background: #1f0f00; }
 
 .resultQ {
   font-size: 11px;
@@ -177,7 +177,7 @@
 .resultP {
   font-size: 13px;
   font-weight: 600;
-  color: #7c6aff;
+  color: #f97316;
   flex-shrink: 0;
 }
 

@@ -827,8 +827,8 @@ export function CandlestickChart({
         },
       },
       grid: {
-        vertLines: { color: "#1e1e28" },
-        horzLines: { color: "#1e1e28" },
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
       crosshair: {
         vertLine: { color: "#444" },
@@ -880,7 +880,6 @@ export function CandlestickChart({
       inds.some((i) => i.type === "liquidations"),
       initPoly
     );
-
     const fetchKlines = async (before?: number): Promise<Kline[]> => {
       const params = new URLSearchParams({
         symbol,
