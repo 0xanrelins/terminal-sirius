@@ -19,7 +19,7 @@ from adapters.polymarket.rolling import active_rolling_slugs, series_symbol
 from bar_time import bar_open_time_ns
 
 REALTIME_INTERVALS = ("1s", "5s")
-FORMING_BAR_THROTTLE_NS = 100_000_000
+FORMING_BAR_THROTTLE_NS = 500_000_000  # 500ms — 2 forming bar emits/sec
 ROTATION_POLL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 1.0
 

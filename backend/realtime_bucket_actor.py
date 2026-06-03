@@ -23,7 +23,7 @@ from chart_indicators import (
 )
 
 REALTIME_INTERVALS = ("1s", "5s")
-FORMING_BAR_THROTTLE_NS = 100_000_000  # 100ms
+FORMING_BAR_THROTTLE_NS = 500_000_000  # 500ms — 2 forming bar emits/sec
 
 
 class RealtimeBucketActorConfig(ActorConfig, frozen=True):
