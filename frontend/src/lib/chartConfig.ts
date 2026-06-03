@@ -58,7 +58,9 @@ export type IndicatorPreset =
   | { label: string; type: "vwap"; period: number }
   | { label: string; type: "rolling_vwap"; period: number }
   | { label: string; type: "liquidations" }
-  | { label: string; type: "polymarket_up" };
+  | { label: string; type: "polymarket_up" }
+  | { label: string; type: "session_breaks"; periodMinutes: number }
+  | { label: string; type: "session_hlines"; periodMinutes: number };
 
 export const DEFAULT_EMA_PERIOD = 180;
 export const DEFAULT_VWAP_PERIOD = 180;
@@ -66,6 +68,8 @@ export const DEFAULT_ROLLING_VWAP_PERIOD = 180;
 
 /** Min total liquidation notional (USD) per bar to highlight candles. */
 export const DEFAULT_LIQ_THRESHOLD = 50_000;
+export const DEFAULT_SESSION_BREAK_MINUTES = 15;
+export const DEFAULT_SESSION_HLINE_MINUTES = 15;
 
 export const INDICATOR_PRESETS: IndicatorPreset[] = [
   { label: "EMA", type: "ema", period: DEFAULT_EMA_PERIOD },
@@ -73,6 +77,16 @@ export const INDICATOR_PRESETS: IndicatorPreset[] = [
   { label: "Rolling VWAP", type: "rolling_vwap", period: DEFAULT_ROLLING_VWAP_PERIOD },
   { label: "Liquidations", type: "liquidations" },
   { label: "Polymarket UP", type: "polymarket_up" },
+  {
+    label: "Session breaks",
+    type: "session_breaks",
+    periodMinutes: DEFAULT_SESSION_BREAK_MINUTES,
+  },
+  {
+    label: "Session lines",
+    type: "session_hlines",
+    periodMinutes: DEFAULT_SESSION_HLINE_MINUTES,
+  },
 ];
 
 const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
@@ -80,11 +94,12 @@ const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
 export const INDICATOR_LINE_COLORS = {
   ema: "#2962FF",
   vwap: "#ffffff",
+  session_vwap: "#ffffff",
   rolling_vwap: "#a78bfa",
 } as const;
 
 /** Line width for session-anchored VWAP segments on the candlestick chart. */
-export const VWAP_LINE_WIDTH = 2;
+export const VWAP_LINE_WIDTH = 3;
 
 export function symbolShort(symbol: string): string {
   return symbol.replace("-PERP.BINANCE", "");
@@ -93,6 +108,8 @@ export function symbolShort(symbol: string): string {
 export function presetId(preset: IndicatorPreset): string {
   if (preset.type === "liquidations") return "liquidations";
   if (preset.type === "polymarket_up") return "polymarket_up";
+  if (preset.type === "session_breaks") return "session_breaks";
+  if (preset.type === "session_hlines") return "session_hlines";
   if (preset.type === "vwap") return "vwap";
   if (preset.type === "rolling_vwap") return "rolling_vwap";
   return "ema";
@@ -108,6 +125,8 @@ export function indicatorLabel(ind: ChartIndicator): string {
     return `Liquidations ($${t >= 1000 ? `${Math.round(t / 1000)}k` : t})`;
   }
   if (ind.type === "polymarket_up") return "Polymarket UP";
+  if (ind.type === "session_breaks") return `Session breaks (${ind.periodMinutes}m)`;
+  if (ind.type === "session_hlines") return `Session lines (${ind.periodMinutes}m)`;
   if (ind.type === "vwap") return `VWAP ${ind.period}`;
   if (ind.type === "rolling_vwap") return `Rolling VWAP ${ind.period}`;
   if (ind.type === "session_vwap") return `VWAP ${ind.period}`;
@@ -134,6 +153,20 @@ export function getLiqThreshold(indicators: ChartIndicator[]): number {
   return liq?.type === "liquidations" ? (liq.threshold ?? DEFAULT_LIQ_THRESHOLD) : DEFAULT_LIQ_THRESHOLD;
 }
 
+export function getSessionBreakMinutes(indicators: ChartIndicator[]): number {
+  const sb = indicators.find((i) => i.type === "session_breaks");
+  return sb?.type === "session_breaks"
+    ? sb.periodMinutes
+    : DEFAULT_SESSION_BREAK_MINUTES;
+}
+
+export function getSessionHLineMinutes(indicators: ChartIndicator[]): number {
+  const sh = indicators.find((i) => i.type === "session_hlines");
+  return sh?.type === "session_hlines"
+    ? sh.periodMinutes
+    : DEFAULT_SESSION_HLINE_MINUTES;
+}
+
 export function maColor(index: number): string {
   return MA_COLORS[index % MA_COLORS.length];
 }
@@ -141,7 +174,7 @@ export function maColor(index: number): string {
 export function indicatorLineColor(
   type: "ema" | "vwap" | "rolling_vwap" | "session_vwap"
 ): string {
-  if (type === "session_vwap") return INDICATOR_LINE_COLORS.vwap;
+  if (type === "session_vwap") return INDICATOR_LINE_COLORS.session_vwap;
   if (type === "rolling_vwap") return INDICATOR_LINE_COLORS.rolling_vwap;
   return INDICATOR_LINE_COLORS[type as "ema" | "vwap"];
 }

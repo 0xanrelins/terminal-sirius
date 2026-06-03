@@ -22,12 +22,16 @@ import {
   DEFAULT_EMA_PERIOD,
   DEFAULT_LIQ_THRESHOLD,
   DEFAULT_ROLLING_VWAP_PERIOD,
+  DEFAULT_SESSION_BREAK_MINUTES,
+  DEFAULT_SESSION_HLINE_MINUTES,
   DEFAULT_VWAP_PERIOD,
   INDICATOR_PRESETS,
   clampInitialBars,
   getEmaPeriod,
   getLiqThreshold,
   getRollingVwapPeriod,
+  getSessionBreakMinutes,
+  getSessionHLineMinutes,
   getVwapPeriod,
   type IndicatorPreset,
   indicatorLineColor,
@@ -36,7 +40,22 @@ import {
   symbolShort,
   VWAP_LINE_WIDTH,
 } from "../../lib/chartConfig";
-import { barOpenTime, currentBarBucket, sessionBucketOpen } from "../../lib/barTime";
+import {
+  barOpenTime,
+  currentBarBucket,
+  INTERVAL_SECONDS,
+  sessionBucketOpen,
+} from "../../lib/barTime";
+import {
+  CANDLESTICK_NEXT_SESSION_BREAK_OPTIONS,
+  CANDLESTICK_SESSION_BREAK_OPTIONS,
+  SessionBreaksPrimitive,
+  computeUtcIntervalBoundariesWithNext,
+} from "../../lib/dailySessionBreaks";
+import {
+  SessionHorizontalLinesPrimitive,
+  computeSessionHorizontalSegments,
+} from "../../lib/sessionHorizontalLines";
 import {
   binancePerpToPolySeries,
   polySeriesToFeedSymbol,
@@ -81,28 +100,85 @@ type Props = {
   }) => void;
 };
 
-const INTERVAL_SECONDS: Record<string, number> = {
-  "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
-  "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "12h": 43200,
-  "1d": 86400,
-};
-
 const INITIAL_LIMIT = 500;
 const PAGE_SIZE = 200;
 const LOAD_THRESHOLD = 10;
 const POLY_PANE_INDEX = 1;
 const LIQ_PANE_HEIGHT = 150;
-const POLY_PANE_HEIGHT = 150;
+const POLY_PANE_HEIGHT = 400;
 /** Fixed poly pane Y range: -0.05¢ … 100.5¢ in 0–1 series values. */
 const POLY_PRICE_MIN = -0.0005;
 const POLY_PRICE_MAX = 1.005;
 const POLY_UP_COLOR = "#a78bfa";
-/** ~90 minutes at 1s — keeps multi-session history without unbounded RAM. */
-const MAX_POLY_UP_POINTS = 5400;
+/** Rolling in-memory window for 1s/5s live charts (OHLCV, poly, WS indicator lines). */
+const REALTIME_WINDOW_MINUTES = 90;
+
+function maxRealtimeBars(interval: string): number {
+  const barSec = INTERVAL_SECONDS[interval] ?? 60;
+  return Math.max(1, Math.floor((REALTIME_WINDOW_MINUTES * 60) / barSec));
+}
+
+function trimOhlcvBars(bars: OhlcvBar[], maxBars: number): OhlcvBar[] {
+  if (bars.length <= maxBars) return bars;
+  return bars.slice(bars.length - maxBars);
+}
+
+/** Drop points older than minTime; ISeriesApi.setData when the series window slides. */
+function trimLineSeriesFromTime(
+  series: ISeriesApi<"Line">,
+  minTime: number
+): void {
+  const data = series.data();
+  if (data.length === 0) return;
+  if ((data[0].time as number) >= minTime) return;
+  const trimmed = data.filter((p) => (p.time as number) >= minTime);
+  if (trimmed.length === data.length) return;
+  series.setData(trimmed as LineData<UTCTimestamp>[]);
+}
 
 /** Poly above liq: pane 1 = poly, pane 2 = liq when both enabled. */
 function liqPaneIndex(hasPolymarketUpPane: boolean): number {
   return hasPolymarketUpPane ? 2 : 1;
+}
+
+/** Main chart pane weight; poly/liq use pixel targets as relative weights (LC multi-pane pattern). */
+const MAIN_PANE_STRETCH_WEIGHT = 550;
+
+/**
+ * IPaneApi.setStretchFactor — setHeight on multiple panes fights itself when liq pane is added.
+ * Weights ≈ desired px: poly 300, liq 150, main gets the rest.
+ */
+function applyIndicatorPaneHeights(
+  chart: IChartApi,
+  hasPoly: boolean,
+  hasLiq: boolean
+) {
+  const panes = chart.panes();
+  if (panes.length <= 1 || (!hasPoly && !hasLiq)) return;
+
+  panes[0]?.setStretchFactor(MAIN_PANE_STRETCH_WEIGHT);
+
+  if (hasPoly && hasLiq && panes.length >= 3) {
+    panes[POLY_PANE_INDEX]?.setStretchFactor(POLY_PANE_HEIGHT);
+    panes[2]?.setStretchFactor(LIQ_PANE_HEIGHT);
+  } else if (hasPoly && panes.length >= 2) {
+    panes[POLY_PANE_INDEX]?.setStretchFactor(POLY_PANE_HEIGHT);
+  } else if (hasLiq && panes.length >= 2) {
+    panes[liqPaneIndex(false)]?.setStretchFactor(LIQ_PANE_HEIGHT);
+  }
+}
+
+function scheduleIndicatorPaneHeights(
+  chart: IChartApi,
+  hasPoly: boolean,
+  hasLiq: boolean
+) {
+  const apply = () => applyIndicatorPaneHeights(chart, hasPoly, hasLiq);
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
 }
 
 function formatPolyUpPrice(v: number): string {
@@ -117,6 +193,16 @@ function applyPolyPriceScale(series: ISeriesApi<"Line">) {
   });
   scale.setAutoScale(false);
   scale.setVisibleRange({ from: POLY_PRICE_MIN, to: POLY_PRICE_MAX });
+}
+
+/** IPriceScaleApi — liq histogram needs autoscale after setData (empty setData on init breaks ticks until dbl-click). */
+function applyLiqPriceScaleAutoscale(series: ISeriesApi<"Histogram">) {
+  const scale = series.priceScale();
+  scale.applyOptions({
+    autoScale: true,
+    scaleMargins: { top: 0.08, bottom: 0 },
+  });
+  scale.setAutoScale(true);
 }
 type OpenMenu = "symbol" | "interval" | "style" | "indicators" | null;
 
@@ -282,6 +368,8 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   let rollingVwap: ChartIndicator | null = null;
   let liquidations: ChartIndicator | null = null;
   let polymarketUp: ChartIndicator | null = null;
+  let sessionBreaks: ChartIndicator | null = null;
+  let sessionHlines: ChartIndicator | null = null;
 
   for (const ind of raw) {
     const t = (ind as { type: string }).type;
@@ -295,6 +383,30 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
     }
     if (t === "polymarket_up") {
       polymarketUp = { id: "polymarket_up", type: "polymarket_up" };
+      continue;
+    }
+    if (t === "session_breaks") {
+      const periodMinutes =
+        "periodMinutes" in ind && typeof ind.periodMinutes === "number"
+          ? ind.periodMinutes
+          : DEFAULT_SESSION_BREAK_MINUTES;
+      sessionBreaks = {
+        id: "session_breaks",
+        type: "session_breaks",
+        periodMinutes: Math.max(1, Math.floor(periodMinutes)),
+      };
+      continue;
+    }
+    if (t === "session_hlines") {
+      const periodMinutes =
+        "periodMinutes" in ind && typeof ind.periodMinutes === "number"
+          ? ind.periodMinutes
+          : DEFAULT_SESSION_HLINE_MINUTES;
+      sessionHlines = {
+        id: "session_hlines",
+        type: "session_hlines",
+        periodMinutes: Math.max(1, Math.floor(periodMinutes)),
+      };
       continue;
     }
     if (t === "vwap") {
@@ -345,6 +457,8 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   if (rollingVwap) out.push(rollingVwap);
   if (liquidations) out.push(liquidations);
   if (polymarketUp) out.push(polymarketUp);
+  if (sessionBreaks) out.push(sessionBreaks);
+  if (sessionHlines) out.push(sessionHlines);
   return out;
 }
 
@@ -396,35 +510,73 @@ export function CandlestickChart({
   const liqThreshold = getLiqThreshold(indicators);
   const vwapPeriod = getVwapPeriod(indicators);
   const rollingVwapPeriod = getRollingVwapPeriod(indicators);
+  const hasSessionBreaks = indicators.some((i) => i.type === "session_breaks");
+  const hasSessionHlines = indicators.some((i) => i.type === "session_hlines");
+  const sessionBreakMinutes = getSessionBreakMinutes(indicators);
+  const sessionHlineMinutes = getSessionHLineMinutes(indicators);
 
   // Draft states: let the user type freely; commit to config only on blur
   const [emaDraft, setEmaDraft] = useState<string>(() => String(emaPeriod));
   const [vwapDraft, setVwapDraft] = useState<string>(() => String(vwapPeriod));
   const [rollingVwapDraft, setRollingVwapDraft] = useState<string>(() => String(rollingVwapPeriod));
   const [liqDraft, setLiqDraft] = useState<string>(() => String(liqThreshold));
+  const [sessionBreakDraft, setSessionBreakDraft] = useState<string>(() =>
+    String(sessionBreakMinutes)
+  );
+  const [sessionHlineDraft, setSessionHlineDraft] = useState<string>(() =>
+    String(sessionHlineMinutes)
+  );
 
   // Keep drafts in sync when external config changes (e.g. widget reset)
   const prevEmaPeriod = useRef(emaPeriod);
   const prevVwapPeriod = useRef(vwapPeriod);
   const prevRollingVwapPeriod = useRef(rollingVwapPeriod);
   const prevLiqThreshold = useRef(liqThreshold);
+  const prevSessionBreakMinutes = useRef(sessionBreakMinutes);
+  const prevSessionHlineMinutes = useRef(sessionHlineMinutes);
   if (prevEmaPeriod.current !== emaPeriod) { prevEmaPeriod.current = emaPeriod; setEmaDraft(String(emaPeriod)); }
   if (prevVwapPeriod.current !== vwapPeriod) { prevVwapPeriod.current = vwapPeriod; setVwapDraft(String(vwapPeriod)); }
   if (prevRollingVwapPeriod.current !== rollingVwapPeriod) { prevRollingVwapPeriod.current = rollingVwapPeriod; setRollingVwapDraft(String(rollingVwapPeriod)); }
   if (prevLiqThreshold.current !== liqThreshold) { prevLiqThreshold.current = liqThreshold; setLiqDraft(String(liqThreshold)); }
+  if (prevSessionBreakMinutes.current !== sessionBreakMinutes) {
+    prevSessionBreakMinutes.current = sessionBreakMinutes;
+    setSessionBreakDraft(String(sessionBreakMinutes));
+  }
+  if (prevSessionHlineMinutes.current !== sessionHlineMinutes) {
+    prevSessionHlineMinutes.current = sessionHlineMinutes;
+    setSessionHlineDraft(String(sessionHlineMinutes));
+  }
+
+  const sessionBreaksRef = useRef<SessionBreaksPrimitive | null>(null);
+  const sessionBreakAttachedRef = useRef(false);
+  const sessionHlinesRef = useRef<SessionHorizontalLinesPrimitive | null>(null);
+  const sessionHlinesAttachedRef = useRef(false);
 
   const pushLiqToSeries = useCallback(() => {
+    const series = liqSeriesRef.current;
+    if (!series) return;
     const threshold = getLiqThreshold(indicatorsRef.current);
     const bars: LiquidationBar[] = Array.from(liqDataRef.current.entries())
       .map(([time, v]) => ({ time, long: v.long, short: v.short }))
       .sort((a, b) => a.time - b.time);
-    liqSeriesRef.current?.setData(liqToHistogramData(bars, threshold));
+    if (bars.length === 0) return;
+
+    series.setData(liqToHistogramData(bars, threshold));
+    applyLiqPriceScaleAutoscale(series);
+    requestAnimationFrame(() => {
+      if (liqSeriesRef.current !== series) return;
+      series.priceScale().setAutoScale(true);
+    });
   }, []);
 
-  const trimPolyPoints = useCallback((pts: (LineData<UTCTimestamp> | WhitespaceData<UTCTimestamp>)[]) => {
-    if (pts.length <= MAX_POLY_UP_POINTS) return pts;
-    return pts.slice(pts.length - MAX_POLY_UP_POINTS);
-  }, []);
+  const trimPolyPoints = useCallback(
+    (pts: (LineData<UTCTimestamp> | WhitespaceData<UTCTimestamp>)[]) => {
+      const maxPts = maxRealtimeBars(interval);
+      if (pts.length <= maxPts) return pts;
+      return pts.slice(pts.length - maxPts);
+    },
+    [interval]
+  );
 
   const pushPolyToSeries = useCallback(() => {
     polySeriesRef.current?.setData(polyPointsRef.current);
@@ -497,8 +649,6 @@ export function CandlestickChart({
           },
           POLY_PANE_INDEX
         );
-        const pane = chart.panes()[POLY_PANE_INDEX];
-        if (pane) pane.setHeight(POLY_PANE_HEIGHT);
         polyMidLineRef.current = polySeriesRef.current.createPriceLine({
           price: 0.5,
           color: "#4a4a55",
@@ -514,15 +664,22 @@ export function CandlestickChart({
       if (polySeriesRef.current) {
         applyPolyPriceScale(polySeriesRef.current);
       }
+      const liqOn = indicatorsRef.current.some((i) => i.type === "liquidations");
+      scheduleIndicatorPaneHeights(chart, true, liqOn);
     },
     [pushPolyToSeries]
   );
 
   const applyLiqBar = useCallback((time: number, long: number, short: number) => {
     liqDataRef.current.set(time, { long, short });
-    if (!liqSeriesRef.current) return;
+    const series = liqSeriesRef.current;
+    if (!series) return;
     const threshold = getLiqThreshold(indicatorsRef.current);
-    liqSeriesRef.current.update(liqHistogramPoint(time, long, short, threshold));
+    const hadData = series.data().length > 0;
+    series.update(liqHistogramPoint(time, long, short, threshold));
+    if (!hadData) {
+      applyLiqPriceScaleAutoscale(series);
+    }
   }, []);
 
   const syncLiqSeries = useCallback(
@@ -558,10 +715,12 @@ export function CandlestickChart({
           },
           paneIdx
         );
-        const liqPane = chart.panes()[paneIdx];
-        if (liqPane) liqPane.setHeight(LIQ_PANE_HEIGHT);
+        applyLiqPriceScaleAutoscale(liqSeriesRef.current);
       }
-      pushLiqToSeries();
+      if (liqDataRef.current.size > 0) {
+        pushLiqToSeries();
+      }
+      scheduleIndicatorPaneHeights(chart, withPoly, true);
     },
     [pushLiqToSeries]
   );
@@ -757,13 +916,121 @@ export function CandlestickChart({
     });
   }, []);
 
+  const getPriceSeries = useCallback(() => {
+    return candleSeriesRef.current ?? lineSeriesRef.current;
+  }, []);
+
+  const updateSessionBreakBoundaries = useCallback(() => {
+    const primitive = sessionBreaksRef.current;
+    if (!primitive) return;
+    if (!indicatorsRef.current.some((i) => i.type === "session_breaks")) return;
+    const bars = ohlcvBarsRef.current;
+    const minutes = getSessionBreakMinutes(indicatorsRef.current);
+    const { boundaries, next } = computeUtcIntervalBoundariesWithNext(
+      bars,
+      minutes * 60
+    );
+    primitive.setBoundaries(boundaries, next);
+  }, []);
+
+  const updateSessionHLines = useCallback(() => {
+    const primitive = sessionHlinesRef.current;
+    if (!primitive) return;
+    if (!indicatorsRef.current.some((i) => i.type === "session_hlines")) return;
+    const bars = ohlcvBarsRef.current;
+    const minutes = getSessionHLineMinutes(indicatorsRef.current);
+    primitive.setSegments(
+      computeSessionHorizontalSegments(
+        bars.map((b) => ({ time: b.time as number, open: b.open })),
+        minutes
+      )
+    );
+  }, []);
+
+  const syncSessionBreaks = useCallback(() => {
+    const series = getPriceSeries();
+    const primitive = sessionBreaksRef.current;
+    if (!series || !primitive) return;
+
+    const enabled = indicatorsRef.current.some((i) => i.type === "session_breaks");
+    if (enabled) {
+      if (!sessionBreakAttachedRef.current) {
+        series.attachPrimitive(primitive);
+        sessionBreakAttachedRef.current = true;
+      }
+      updateSessionBreakBoundaries();
+    } else if (sessionBreakAttachedRef.current) {
+      series.detachPrimitive(primitive);
+      sessionBreakAttachedRef.current = false;
+    }
+  }, [getPriceSeries, updateSessionBreakBoundaries]);
+
+  const syncSessionHlines = useCallback(() => {
+    const series = getPriceSeries();
+    const primitive = sessionHlinesRef.current;
+    if (!series || !primitive) return;
+
+    const enabled = indicatorsRef.current.some((i) => i.type === "session_hlines");
+    if (enabled) {
+      if (!sessionHlinesAttachedRef.current) {
+        series.attachPrimitive(primitive);
+        sessionHlinesAttachedRef.current = true;
+      }
+      updateSessionHLines();
+    } else if (sessionHlinesAttachedRef.current) {
+      series.detachPrimitive(primitive);
+      sessionHlinesAttachedRef.current = false;
+    }
+  }, [getPriceSeries, updateSessionHLines]);
+
+  const enforceRealtimeWindow = useCallback((): boolean => {
+    if (interval !== "1s" && interval !== "5s") return false;
+
+    const maxBars = maxRealtimeBars(interval);
+    const bars = ohlcvBarsRef.current;
+    if (bars.length <= maxBars) return false;
+
+    const trimmed = trimOhlcvBars(bars, maxBars);
+    const minTime = trimmed[0]?.time as number;
+    ohlcvBarsRef.current = trimmed;
+    setPriceSeriesData(trimmed);
+
+    for (const t of [...liqDataRef.current.keys()]) {
+      if (t < minTime) liqDataRef.current.delete(t);
+    }
+    if (liqSeriesRef.current && liqDataRef.current.size > 0) {
+      pushLiqToSeries();
+    }
+
+    for (const line of maSeriesRef.current.values()) {
+      trimLineSeriesFromTime(line, minTime);
+    }
+
+    updateSessionBreakBoundaries();
+    updateSessionHLines();
+    return true;
+  }, [
+    interval,
+    setPriceSeriesData,
+    pushLiqToSeries,
+    updateSessionBreakBoundaries,
+    updateSessionHLines,
+  ]);
+
   const setOhlcvData = useCallback(
     (data: OhlcvBar[]) => {
       ohlcvBarsRef.current = data;
       setPriceSeriesData(data);
       refreshMaSeries();
+      updateSessionBreakBoundaries();
+      updateSessionHLines();
     },
-    [refreshMaSeries, setPriceSeriesData]
+    [
+      refreshMaSeries,
+      setPriceSeriesData,
+      updateSessionBreakBoundaries,
+      updateSessionHLines,
+    ]
   );
 
   const loadLiqForOhlcv = useCallback(async () => {
@@ -846,7 +1113,7 @@ export function CandlestickChart({
 
     if (chartStyle === "line") {
       const series = chart.addSeries(LineSeries, {
-        color: "#8ab4ff",
+        color: "#facc15",
         lineWidth: 2,
         priceLineVisible: false,
       });
@@ -868,6 +1135,18 @@ export function CandlestickChart({
     }
 
     chartRef.current = chart;
+
+    const sessionBreaks = new SessionBreaksPrimitive(
+      CANDLESTICK_SESSION_BREAK_OPTIONS,
+      CANDLESTICK_NEXT_SESSION_BREAK_OPTIONS
+    );
+    sessionBreaksRef.current = sessionBreaks;
+    sessionBreakAttachedRef.current = false;
+
+    const sessionHlines = new SessionHorizontalLinesPrimitive();
+    sessionHlinesRef.current = sessionHlines;
+    sessionHlinesAttachedRef.current = false;
+
     syncMaSeries(chart, indicatorsRef.current);
     const inds = indicatorsRef.current;
     const initPoly =
@@ -880,6 +1159,14 @@ export function CandlestickChart({
       inds.some((i) => i.type === "liquidations"),
       initPoly
     );
+    scheduleIndicatorPaneHeights(
+      chart,
+      initPoly,
+      inds.some((i) => i.type === "liquidations")
+    );
+    syncSessionBreaks();
+    syncSessionHlines();
+
     const fetchKlines = async (before?: number): Promise<Kline[]> => {
       const params = new URLSearchParams({
         symbol,
@@ -915,6 +1202,8 @@ export function CandlestickChart({
     };
 
     const onVisibleRangeChange = (range: LogicalRange | null) => {
+      sessionBreaksRef.current?.refresh();
+      sessionHlinesRef.current?.refresh();
       if (!historyScrollEnabled || !range || range.from >= LOAD_THRESHOLD) return;
       void loadOlder();
     };
@@ -927,6 +1216,11 @@ export function CandlestickChart({
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
+      scheduleIndicatorPaneHeights(
+        chart,
+        initPoly,
+        inds.some((i) => i.type === "liquidations")
+      );
     });
     ro.observe(containerRef.current);
 
@@ -949,6 +1243,10 @@ export function CandlestickChart({
         maSeriesRef.current.clear();
         liqSeriesRef.current = null;
         liqDataRef.current.clear();
+        sessionBreaksRef.current = null;
+        sessionBreakAttachedRef.current = false;
+        sessionHlinesRef.current = null;
+        sessionHlinesAttachedRef.current = false;
         ohlcvBarsRef.current = [];
         liveBarRef.current = null;
         historyReadyRef.current = false;
@@ -1000,6 +1298,10 @@ export function CandlestickChart({
       liqDataRef.current.clear();
       polySeriesRef.current = null;
       polyPointsRef.current = [];
+      sessionBreaksRef.current = null;
+      sessionBreakAttachedRef.current = false;
+      sessionHlinesRef.current = null;
+      sessionHlinesAttachedRef.current = false;
       ohlcvBarsRef.current = [];
       liveBarRef.current = null;
       historyReadyRef.current = false;
@@ -1013,6 +1315,8 @@ export function CandlestickChart({
     syncMaSeries,
     syncLiqSeries,
     syncPolySeries,
+    syncSessionBreaks,
+    syncSessionHlines,
     loadLiqForOhlcv,
   ]);
 
@@ -1023,6 +1327,9 @@ export function CandlestickChart({
     syncMaSeries(chart, indicators);
     syncPolySeries(chart, polyPaneActive);
     syncLiqSeries(chart, hasLiquidations, polyPaneActive);
+    scheduleIndicatorPaneHeights(chart, polyPaneActive, hasLiquidations);
+    syncSessionBreaks();
+    syncSessionHlines();
   }, [
     indicators,
     hasLiquidations,
@@ -1030,6 +1337,8 @@ export function CandlestickChart({
     syncMaSeries,
     syncLiqSeries,
     syncPolySeries,
+    syncSessionBreaks,
+    syncSessionHlines,
   ]);
 
   useEffect(() => {
@@ -1125,8 +1434,15 @@ export function CandlestickChart({
       }
       liveBarRef.current = bar;
       mergeBarIntoStore(bar);
-      paintCandleSeries(bar);
+      const windowTrimmed = isRealtimeOnlyInterval && enforceRealtimeWindow();
+      if (!windowTrimmed) paintCandleSeries(bar);
       if (!isRealtimeOnlyInterval) refreshMaSeries();
+      if (indicatorsRef.current.some((i) => i.type === "session_breaks")) {
+        updateSessionBreakBoundaries();
+      }
+      if (indicatorsRef.current.some((i) => i.type === "session_hlines")) {
+        updateSessionHLines();
+      }
       lastPaintAt = Date.now();
     };
 
@@ -1208,6 +1524,9 @@ export function CandlestickChart({
     updatePriceSeries,
     isRealtimeOnlyInterval,
     applyBackendIndicator,
+    enforceRealtimeWindow,
+    updateSessionBreakBoundaries,
+    updateSessionHLines,
   ]);
 
   // Close menus on outside click
@@ -1230,11 +1549,23 @@ export function CandlestickChart({
         ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
         : preset.type === "polymarket_up"
           ? { id, type: "polymarket_up" }
-          : preset.type === "vwap"
-            ? { id, type: "vwap", period: preset.period }
-            : preset.type === "rolling_vwap"
-              ? { id, type: "rolling_vwap", period: preset.period }
-              : { id, type: "ema", period: preset.period };
+          : preset.type === "session_breaks"
+            ? {
+                id,
+                type: "session_breaks",
+                periodMinutes: preset.periodMinutes,
+              }
+            : preset.type === "session_hlines"
+              ? {
+                  id,
+                  type: "session_hlines",
+                  periodMinutes: preset.periodMinutes,
+                }
+              : preset.type === "vwap"
+              ? { id, type: "vwap", period: preset.period }
+              : preset.type === "rolling_vwap"
+                ? { id, type: "rolling_vwap", period: preset.period }
+                : { id, type: "ema", period: preset.period };
     onConfigChange({ indicators: [...indicators, added] });
   };
 
@@ -1270,6 +1601,24 @@ export function CandlestickChart({
     onConfigChange({
       indicators: indicators.map((i) =>
         i.type === "liquidations" ? { ...i, threshold: next } : i
+      ),
+    });
+  };
+
+  const setSessionBreakMinutes = (value: number) => {
+    const next = Math.max(1, Math.floor(value) || DEFAULT_SESSION_BREAK_MINUTES);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "session_breaks" ? { ...i, periodMinutes: next } : i
+      ),
+    });
+  };
+
+  const setSessionHlineMinutes = (value: number) => {
+    const next = Math.max(1, Math.floor(value) || DEFAULT_SESSION_HLINE_MINUTES);
+    onConfigChange({
+      indicators: indicators.map((i) =>
+        i.type === "session_hlines" ? { ...i, periodMinutes: next } : i
       ),
     });
   };
@@ -1473,6 +1822,52 @@ export function CandlestickChart({
                       const next = Number.isFinite(n) && n >= 1 ? n : DEFAULT_ROLLING_VWAP_PERIOD;
                       setRollingVwapDraft(String(next));
                       setRollingVwapPeriod(next);
+                    }}
+                  />
+                </div>
+              )}
+              {hasSessionBreaks && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>Session (minutes)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={1}
+                    step={1}
+                    value={sessionBreakDraft}
+                    onClick={stopMenuClick}
+                    onChange={(e) => setSessionBreakDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      const next =
+                        Number.isFinite(n) && n >= 1
+                          ? n
+                          : DEFAULT_SESSION_BREAK_MINUTES;
+                      setSessionBreakDraft(String(next));
+                      setSessionBreakMinutes(next);
+                    }}
+                  />
+                </div>
+              )}
+              {hasSessionHlines && (
+                <div className={styles.thresholdRow}>
+                  <span className={styles.thresholdLabel}>Session lines (minutes)</span>
+                  <input
+                    type="number"
+                    className={styles.thresholdInput}
+                    min={1}
+                    step={1}
+                    value={sessionHlineDraft}
+                    onClick={stopMenuClick}
+                    onChange={(e) => setSessionHlineDraft(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      const next =
+                        Number.isFinite(n) && n >= 1
+                          ? n
+                          : DEFAULT_SESSION_HLINE_MINUTES;
+                      setSessionHlineDraft(String(next));
+                      setSessionHlineMinutes(next);
                     }}
                   />
                 </div>

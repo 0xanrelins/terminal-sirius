@@ -126,7 +126,9 @@ export type ChartIndicator =
   | { id: string; type: "rolling_vwap"; period: number }
   | { id: string; type: "session_vwap"; period: number }
   | { id: string; type: "liquidations"; threshold?: number }
-  | { id: string; type: "polymarket_up" };
+  | { id: string; type: "polymarket_up" }
+  | { id: string; type: "session_breaks"; periodMinutes: number }
+  | { id: string; type: "session_hlines"; periodMinutes: number };
 
 export type ChartStyle = "candlestick" | "line";
 

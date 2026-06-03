@@ -18,7 +18,7 @@ import {
 } from "../../lib/chartConfig";
 import { barOpenTime, currentBarBucket } from "../../lib/barTime";
 import {
-  DailySessionBreaksPrimitive,
+  SessionBreaksPrimitive,
   computeUtcDayBoundaries,
 } from "../../lib/dailySessionBreaks";
 import type { BarMsg, Kline } from "../../types";
@@ -134,7 +134,7 @@ export function ComparisonChart({
   const reindexTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleGenRef = useRef(0);
   const settleReindexRef = useRef<(() => void) | null>(null);
-  const sessionBreaksRef = useRef<DailySessionBreaksPrimitive | null>(null);
+  const sessionBreaksRef = useRef<SessionBreaksPrimitive | null>(null);
   const [openIntervalMenu, setOpenIntervalMenu] = useState(false);
   const [loading, setLoading] = useState(true);
   const { subscribe } = useFeed();
@@ -204,7 +204,7 @@ export function ComparisonChart({
 
     chartRef.current = chart;
 
-    const sessionBreaks = new DailySessionBreaksPrimitive();
+    const sessionBreaks = new SessionBreaksPrimitive();
     sessionBreaksRef.current = sessionBreaks;
 
     const updateSessionBreaks = () => {
