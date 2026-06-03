@@ -11,7 +11,7 @@ Environment variables:
   POLYMARKET_15M_SERIES   — comma-separated rolling 15m series
   POLYMARKET_EXEC_ENABLED — register Polymarket ExecutionClient when true + creds
   POLYMARKET_DATA_ENABLED — default true; PolymarketDataClient + quote bridge for UI
-  MARKET_RECORDER_ENABLED   — default true; ParquetDataCatalog via MarketRecorderActor
+  MARKET_RECORDER_ENABLED   — default false; ParquetDataCatalog via MarketRecorderActor
 """
 from __future__ import annotations
 

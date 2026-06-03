@@ -54,6 +54,6 @@ def max_batch_rows_from_env() -> int:
 
 
 def is_enabled() -> bool:
-    """Parquet market recorder on the shared TradingNode (default on)."""
-    raw = os.environ.get("MARKET_RECORDER_ENABLED", "true").strip().lower()
+    """Parquet market recorder on the shared TradingNode (default off)."""
+    raw = os.environ.get("MARKET_RECORDER_ENABLED", "false").strip().lower()
     return raw in ("1", "true", "yes", "on")

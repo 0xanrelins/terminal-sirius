@@ -14,7 +14,7 @@ Start:
 
 `cd backend && ./scripts/run_backend.sh`
 
-Disable parquet recording: `MARKET_RECORDER_ENABLED=0`
+Parquet recording is **off** by default (`MARKET_RECORDER_ENABLED=false`). Historical data: `archive/parquet-catalog-2026-06-03/`.
 
 `scripts/run_market_recorder.py` is deprecated (do not run a second node).
 

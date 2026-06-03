@@ -13,10 +13,8 @@ from typing import Optional
 import websockets
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
-from nautilus_trader.model.data import DataType
 
 from liquidations import build_liquidation_message
-from recorders.data_types import BinanceLiquidationEvent
 
 WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 
@@ -64,26 +62,6 @@ class LiquidationActor(Actor):
                             if msg is None:
                                 continue
                             self._enqueue(msg)
-                            order = (item.get("o") or {})
-                            try:
-                                side_raw = str(order.get("S", ""))
-                                liq_side = "LONG" if side_raw == "SELL" else "SHORT"
-                                price = float(order.get("ap") or 0.0)
-                                quantity = float(order.get("z") or 0.0)
-                                ts_event = int(order.get("T") or 0) * 1_000_000
-                                self.publish_data(
-                                    DataType(BinanceLiquidationEvent),
-                                    BinanceLiquidationEvent(
-                                        ts_event=ts_event,
-                                        ts_init=ts_event,
-                                        symbol=str(msg["symbol"]),
-                                        side=liq_side,
-                                        price=price,
-                                        quantity=quantity,
-                                    ),
-                                )
-                            except Exception:
-                                pass
                             sym = msg["symbol"]
                             if sym not in subscribed:
                                 subscribed.add(sym)
