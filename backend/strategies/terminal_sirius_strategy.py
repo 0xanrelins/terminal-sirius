@@ -147,17 +147,16 @@ class TerminalSiriusStrategy(Strategy):
         )
 
     def on_position_opened(self, event: PositionOpened) -> None:
-        pos = event.position
+        # PositionOpened is a PositionEvent — fields live on the event, not event.position.
         self.log.info(
-            f"PAPER position OPEN {pos.instrument_id} {pos.side.name} "
-            f"qty={pos.quantity} avg={pos.avg_px_open}",
+            f"PAPER position OPEN {event.instrument_id} {event.side} "
+            f"qty={event.quantity} avg={event.avg_px_open}",
             color=LogColor.YELLOW,
         )
 
     def on_position_closed(self, event: PositionClosed) -> None:
-        pos = event.position
         self.log.info(
-            f"PAPER position CLOSE {pos.instrument_id} pnl={pos.realized_pnl}",
+            f"PAPER position CLOSE {event.instrument_id} pnl={event.realized_pnl}",
             color=LogColor.MAGENTA,
         )
 
