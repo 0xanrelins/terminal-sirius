@@ -74,9 +74,10 @@ def streaming_config():
 
     Used on ``TradingNodeConfig.streaming`` when ``streaming_enabled()`` is true.
     """
-    from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
     from nautilus_trader.model.data import QuoteTick, TradeTick
     from nautilus_trader.persistence.config import StreamingConfig
+
+    from recorders.data_types import LiquidationTick
 
     path = str(catalog_path_from_env())
     flush_ms = flush_interval_ms_from_env()
@@ -87,6 +88,6 @@ def streaming_config():
         include_types=[
             TradeTick,
             QuoteTick,
-            BinanceFuturesLiquidation,
+            LiquidationTick,
         ],
     )

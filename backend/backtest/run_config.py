@@ -18,8 +18,7 @@ from nautilus_trader.model.data import QuoteTick, TradeTick
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.trading.config import ImportableStrategyConfig
 
-from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
-
+from recorders.data_types import LiquidationTick
 from strategies.mapping import BINANCE_TO_POLY_SERIES, STRATEGY_BINANCE_INSTRUMENTS
 
 
@@ -41,6 +40,7 @@ def build_terminal_sirius_run_config(
     end_time: str | int | None = None,
     binance_instruments: tuple[str, ...] = STRATEGY_BINANCE_INSTRUMENTS,
     include_strategy: bool = True,
+    include_liquidations: bool = True,
     log_level: str = "INFO",
 ) -> BacktestRunConfig:
     """Assemble a single ``BacktestRunConfig`` for catalog replay."""
@@ -58,14 +58,15 @@ def build_terminal_sirius_run_config(
         )
         data_configs.append(BacktestDataConfig(data_cls=TradeTick, **common))
 
-    data_configs.append(
-        BacktestDataConfig(
-            catalog_path=path,
-            data_cls=BinanceFuturesLiquidation,
-            start_time=start_ns,
-            end_time=end_ns,
-        ),
-    )
+    if include_liquidations:
+        data_configs.append(
+            BacktestDataConfig(
+                catalog_path=path,
+                data_cls=LiquidationTick,
+                start_time=start_ns,
+                end_time=end_ns,
+            ),
+        )
 
     data_configs.append(
         BacktestDataConfig(
@@ -117,11 +118,19 @@ def build_terminal_sirius_run_config(
     )
 
     venues = [
+        # Binance is data-only here (strategy trades on Polymarket); the venue must exist
+        # because TradeTick/instruments reference it.
+        BacktestVenueConfig(
+            name="BINANCE",
+            oms_type="NETTING",
+            account_type="MARGIN",
+            starting_balances=["1_000_000 USDT"],
+        ),
         BacktestVenueConfig(
             name=str(POLYMARKET_VENUE),
             oms_type="NETTING",
             account_type="CASH",
-            starting_balances=["10_000 USDC.e"],
+            starting_balances=["10_000 pUSD"],
         ),
     ]
 

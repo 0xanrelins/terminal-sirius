@@ -1,24 +1,19 @@
 """
 LiquidationSignalActor — rolling 900s liq volume → ``publish_data`` LiquidationTrigger.
 
-Data: native ``BinanceFuturesLiquidation`` via ``subscribe_data`` on the Binance
-data client (all-market ``!forceOrder@arr`` when Rust adapter is active).
+Data: ``LiquidationTick`` from ``LiquidationFeedActor`` (custom Binance ``!forceOrder``
+feed). Native ``BinanceFuturesLiquidation`` is unusable in Nautilus 1.228.0 (pyo3 type
+cannot enter the Cython data pipeline).
 """
 
 from __future__ import annotations
 
-from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 
-from recorders.binance_liquidation import (
-    instrument_symbol,
-    liquidation_notional_usd,
-    liquidation_side_str,
-)
+from recorders.data_types import LiquidationTick
 from strategies.config import LiquidationSignalActorConfig
 from strategies.indicators.rolling_liquidation_volume import RollingLiquidationVolume
 from strategies.messages import LiquidationTrigger
@@ -50,17 +45,14 @@ class LiquidationSignalActor(Actor):
         self._last_short_trigger: dict[str, bool] = {sym: False for sym in self._symbols}
 
     def on_start(self) -> None:
-        self.subscribe_data(
-            DataType(BinanceFuturesLiquidation),
-            client_id=ClientId("BINANCE"),
-        )
+        self.subscribe_data(DataType(LiquidationTick))
 
     def on_data(self, data: Data) -> None:
-        if not isinstance(data, BinanceFuturesLiquidation):
+        if not isinstance(data, LiquidationTick):
             return
-        symbol = instrument_symbol(data)
-        side = liquidation_side_str(data)
-        notional = liquidation_notional_usd(data)
+        symbol = data.symbol
+        side = data.side
+        notional = data.notional
         ts_event = int(data.ts_event)
         if symbol not in self._indicators:
             return

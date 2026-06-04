@@ -171,9 +171,9 @@ class TerminalSiriusStrategy(Strategy):
 
         poly_iid = self._poly_iid.get(symbol)
         if poly_iid is not None:
-            pos = self.cache.position_for_instrument(poly_iid)
-            if pos is not None and not pos.is_flat():
-                return self._exit_decision(symbol, st, pos)
+            open_positions = self.cache.positions_open(instrument_id=poly_iid)
+            if open_positions:
+                return self._exit_decision(symbol, st, open_positions[0])
 
         direction = self._entry_direction(st)
         if direction is None:

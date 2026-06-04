@@ -4,14 +4,13 @@ from __future__ import annotations
 import queue
 from typing import TYPE_CHECKING
 
-from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.identifiers import ClientId
 
-from liquidations import liquidation_message_from_native
+from liquidations import liquidation_message_from_tick
+from recorders.data_types import LiquidationTick
 
 if TYPE_CHECKING:
     import multiprocessing
@@ -39,15 +38,12 @@ class LiquidationUiBridgeActor(Actor):
             pass
 
     def on_start(self) -> None:
-        self.subscribe_data(
-            DataType(BinanceFuturesLiquidation),
-            client_id=ClientId("BINANCE"),
-        )
-        print("[liquidations] LiquidationUiBridge → native BinanceFuturesLiquidation → WS queue")
+        self.subscribe_data(DataType(LiquidationTick))
+        print("[liquidations] LiquidationUiBridge → LiquidationTick → WS queue")
 
     def on_data(self, data: Data) -> None:
-        if not isinstance(data, BinanceFuturesLiquidation):
+        if not isinstance(data, LiquidationTick):
             return
-        msg = liquidation_message_from_native(data)
+        msg = liquidation_message_from_tick(data)
         if msg is not None:
             self._enqueue(msg)

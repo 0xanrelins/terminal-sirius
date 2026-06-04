@@ -56,6 +56,10 @@ from adapters.polymarket.quote_bridge_actor import (
     PolymarketQuoteBridgeActorConfig,
 )
 from bridge_actor import BridgeActor, BridgeActorConfig
+from liquidation_feed_actor import (
+    LiquidationFeedActor,
+    LiquidationFeedActorConfig,
+)
 from liquidation_ui_bridge_actor import (
     LiquidationUiBridgeActor,
     LiquidationUiBridgeActorConfig,
@@ -220,7 +224,7 @@ def build_node(
 
         exec_cfg = SandboxExecutionClientConfig(
             venue="POLYMARKET",
-            starting_balances=[os.environ.get("STRATEGY_STARTING_BALANCE", "10_000 USDC")],
+            starting_balances=[os.environ.get("STRATEGY_STARTING_BALANCE", "10_000 pUSD")],
             instrument_provider=InstrumentProviderConfig(load_all=True),
             account_type="CASH",
             oms_type="NETTING",
@@ -293,6 +297,13 @@ def build_node(
 
     bridge = BridgeActor(config=bridge_cfg, data_queue=data_queue)
     node.trader.add_actor(bridge)
+
+    feed_cfg = LiquidationFeedActorConfig(
+        component_id="LiquidationFeed-001",
+        instrument_ids=instruments,
+    )
+    node.trader.add_actor(LiquidationFeedActor(config=feed_cfg))
+    print("[liquidations] LiquidationFeedActor → custom !forceOrder feed → LiquidationTick bus")
 
     liq_ui_cfg = LiquidationUiBridgeActorConfig(component_id="LiquidationUiBridge-001")
     node.trader.add_actor(LiquidationUiBridgeActor(config=liq_ui_cfg, data_queue=data_queue))

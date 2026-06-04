@@ -153,6 +153,42 @@ def liquidation_message_from_native(liq: Any) -> dict[str, Any] | None:
     }
 
 
+def liquidation_message_from_tick(tick: Any) -> dict[str, Any] | None:
+    """``LiquidationTick`` (custom feed) → WS/DB queue message with bar-bucket deltas."""
+    try:
+        symbol = str(tick.symbol)
+        side = str(tick.side)
+        notional = float(tick.notional)
+        trade_ms = int(tick.ts_event) // 1_000_000
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    sym_tag = sum(ord(c) for c in symbol) % 10_000
+    trade_id = trade_ms * 10_000 + sym_tag * 10 + (1 if side == "SELL" else 2)
+    updates = record_liquidation(symbol, side, notional, trade_ms)
+    bar_snapshots: list[dict[str, Any]] = []
+    with _lock:
+        for u in updates:
+            bucket = _buckets[(u["symbol"], u["interval"], u["time"])]
+            bar_snapshots.append({
+                "interval": u["interval"],
+                "time": u["time"],
+                "long": round(bucket["long"], 2),
+                "short": round(bucket["short"], 2),
+            })
+    return {
+        "type": "liquidation",
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "side": side,
+        "notional": round(notional, 2),
+        "time": trade_ms // 1000,
+        "bars": bar_snapshots,
+        "_payload": None,
+        "_updates": updates,
+    }
+
+
 def bucket_time(ts_ms: int, interval: str) -> int:
     sec = INTERVAL_SECONDS.get(interval, 60)
     ts_s = ts_ms // 1000
