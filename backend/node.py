@@ -327,6 +327,11 @@ def build_node(
         print("[nautilus] PolymarketRealtimeBucketActor enabled (1s/5s UP bars → WS queue)")
 
     if strategy_on:
+        if data_cfg is None:
+            print(
+                "[warn] STRATEGY_ENABLED but POLYMARKET_DATA_ENABLED=false — no quote bridge, "
+                "so the strategy receives no ActivePolymarketMarket and cannot trade Polymarket"
+            )
         from strategies.env_config import (
             build_liquidation_signal_config,
             build_terminal_sirius_config,

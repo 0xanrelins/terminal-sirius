@@ -1,18 +1,19 @@
 """
 TerminalSiriusStrategy — 3-layer signal fusion + Polymarket execution.
 
-Uses ``Strategy.subscribe_signal``, ``clock.set_timer``, ``submit_order`` (market).
+Uses ``Strategy.subscribe_data`` (typed custom data), ``clock.set_timer``,
+``submit_order`` (market).
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from enum import Enum
 
 from nautilus_trader.common.enums import LogColor
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
@@ -23,11 +24,11 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.trading.strategy import Strategy
 
-from adapters.polymarket.rolling import active_rolling_slugs
+from adapters.polymarket.messages import ActivePolymarketMarket
 from strategies.config import TerminalSiriusStrategyConfig
 from strategies.mapping import BINANCE_TO_POLY_SERIES
-from strategies.signals import signal_name
-from strategies.signals import signals
+from strategies.messages import LiquidationTrigger
+from strategies.messages import VwapZoneSnapshot
 
 
 class Decision(str, Enum):
@@ -59,27 +60,26 @@ class TerminalSiriusStrategy(Strategy):
             sym: None for sym in config.binance_instruments
         }
         self._poly_mid: dict[str, float | None] = {sym: None for sym in config.binance_instruments}
-        self._rotation_task: asyncio.Task | None = None
+        # series → binance instrument, to route ActivePolymarketMarket announcements
+        self._series_to_binance: dict[str, str] = {
+            BINANCE_TO_POLY_SERIES[sym]: sym
+            for sym in config.binance_instruments
+            if sym in BINANCE_TO_POLY_SERIES
+        }
 
     def on_start(self) -> None:
-        for sym in self.config.binance_instruments:
-            self.subscribe_signal(signal_name(signals.LIQ_LONG_TRIGGER, sym))
-            self.subscribe_signal(signal_name(signals.LIQ_SHORT_TRIGGER, sym))
-            self.subscribe_signal(signal_name(signals.VWAP_SNAPSHOT, sym))
-            self.subscribe_signal(signal_name(signals.SLOPE_SNAPSHOT, sym))
-            self.subscribe_signal(signal_name(signals.ZONE_SNAPSHOT, sym))
+        self.subscribe_data(DataType(VwapZoneSnapshot))
+        self.subscribe_data(DataType(LiquidationTrigger))
+        self.subscribe_data(DataType(ActivePolymarketMarket))
 
         self.clock.set_timer(
             "recalc",
             timedelta(seconds=float(self.config.recalc_interval_sec)),
             callback=self._on_recalc_timer,
         )
-        self._rotation_task = asyncio.create_task(self._polymarket_rotation_loop())
 
     def on_stop(self) -> None:
         self.clock.cancel_timer("recalc")
-        if self._rotation_task and not self._rotation_task.done():
-            self._rotation_task.cancel()
 
     def _on_recalc_timer(self, _event) -> None:
         for sym in self.config.binance_instruments:
@@ -88,37 +88,51 @@ class TerminalSiriusStrategy(Strategy):
                 self.log.info(f"{sym} → {decision.value}", color=LogColor.CYAN)
             self._maybe_execute(sym, decision)
 
-    def on_signal(self, signal) -> None:
-        name: str = signal.name
-        value = signal.value
-        if ":" not in name:
-            return
-        base, symbol = name.rsplit(":", 1)
-        st = self._states.get(symbol)
-        if st is None:
-            return
+    def on_data(self, data) -> None:
+        if isinstance(data, VwapZoneSnapshot):
+            st = self._states.get(str(data.instrument_id))
+            if st is None:
+                return
+            st.vwap = data.vwap
+            st.slope = data.slope
+            st.low_zone = data.low_zone
+            st.high_zone = data.high_zone
+            st.last_price = data.close
+            st.vwap_ready = True
+        elif isinstance(data, LiquidationTrigger):
+            symbol = str(data.instrument_id)
+            st = self._states.get(symbol)
+            if st is None:
+                return
+            if data.long_triggered:
+                st.liq_long_trigger = True
+            if data.short_triggered:
+                st.liq_short_trigger = True
+            self._maybe_execute(symbol, self._recalculate(symbol))
+        elif isinstance(data, ActivePolymarketMarket):
+            self._on_active_market(data)
 
-        if base == signals.LIQ_LONG_TRIGGER:
-            st.liq_long_trigger = bool(value)
-            self._maybe_execute(symbol, self._recalculate(symbol))
-        elif base == signals.LIQ_SHORT_TRIGGER:
-            st.liq_short_trigger = bool(value)
-            self._maybe_execute(symbol, self._recalculate(symbol))
-        elif base == signals.VWAP_SNAPSHOT:
-            st.vwap = float(value)
-            st.vwap_ready = True
-        elif base == signals.SLOPE_SNAPSHOT:
-            st.slope = float(value)
-            st.vwap_ready = True
-        elif base == signals.ZONE_SNAPSHOT:
-            parts = str(value).split(",")
-            if len(parts) == 3:
-                st.low_zone, st.high_zone, st.last_price = (
-                    float(parts[0]),
-                    float(parts[1]),
-                    float(parts[2]),
-                )
-                st.vwap_ready = True
+    def _on_active_market(self, data: ActivePolymarketMarket) -> None:
+        """Adopt the active Polymarket instrument announced by the quote bridge."""
+        binance = self._series_to_binance.get(data.series)
+        if binance is None or binance not in self._poly_iid:
+            return
+        new_iid = data.instrument_id
+        prev = self._poly_iid.get(binance)
+        if prev == new_iid:
+            return
+        if prev is not None:
+            try:
+                self.unsubscribe_quote_ticks(prev)
+            except Exception:  # noqa: BLE001 — best-effort cleanup on rotation
+                pass
+            self._poly_mid[binance] = None
+        self._poly_iid[binance] = new_iid
+        self.subscribe_quote_ticks(new_iid)
+        self.log.info(
+            f"Polymarket market for {binance}: {new_iid} (series={data.series})",
+            color=LogColor.BLUE,
+        )
 
     def on_order_filled(self, event: OrderFilled) -> None:
         self.log.info(
@@ -231,41 +245,3 @@ class TerminalSiriusStrategy(Strategy):
             st.liq_short_trigger = False
         elif decision == Decision.CLOSE:
             self.close_all_positions(poly_iid)
-
-    async def _polymarket_rotation_loop(self) -> None:
-        await asyncio.sleep(2.0)
-        while True:
-            try:
-                for sym in self.config.binance_instruments:
-                    series = BINANCE_TO_POLY_SERIES.get(sym)
-                    if series is None:
-                        continue
-                    await self._ensure_poly_instrument(sym, series)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log.warning(f"Polymarket rotation: {e!r}")
-            await asyncio.sleep(20.0)
-
-    async def _ensure_poly_instrument(self, binance_sym: str, series: str) -> None:
-        from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
-
-        slug, _ = active_rolling_slugs(series)
-        try:
-            loader = await PolymarketDataLoader.from_market_slug(slug, token_index=0)
-            instrument = loader.instrument
-        except Exception as e:
-            self.log.warning(f"Strategy skip slug={slug!r}: {e!r}")
-            return
-        iid = instrument.id
-        prev = self._poly_iid.get(binance_sym)
-        if prev is not None and prev != iid:
-            try:
-                self.unsubscribe_quote_ticks(prev)
-            except Exception:
-                pass
-        if self.cache.instrument(iid) is None:
-            self.cache.add_instrument(instrument)
-        self.request_instrument(iid)
-        self.subscribe_quote_ticks(iid)
-        self._poly_iid[binance_sym] = iid

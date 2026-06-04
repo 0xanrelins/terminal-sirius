@@ -15,12 +15,12 @@ from nautilus_trader.indicators import AverageTrueRange
 from nautilus_trader.indicators import LinearRegression
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.identifiers import InstrumentId
 
 from strategies.config import VwapSignalActorConfig
 from strategies.indicators.rolling_vwap import RollingWindowVwap
-from strategies.signals import signal_name
-from strategies.signals import signals
+from strategies.messages import VwapZoneSnapshot
 
 
 class _SymbolIndicators:
@@ -70,21 +70,16 @@ class VwapSignalActor(Actor):
         high_zone = vwap + atr * self._atr_mult
         ts = bar.ts_event
 
-        self.publish_signal(
-            name=signal_name(signals.VWAP_SNAPSHOT, symbol),
-            value=vwap,
-            ts_event=ts,
-        )
-        self.publish_signal(
-            name=signal_name(signals.SLOPE_SNAPSHOT, symbol),
-            value=slope,
-            ts_event=ts,
-        )
-        # Pack low/high/close into a single float pair via msgbus would be better;
-        # strategy reads latest bar close from cache of snapshots — publish close as zone anchor
-        zone_payload = f"{low_zone},{high_zone},{close}"
-        self.publish_signal(
-            name=signal_name(signals.ZONE_SNAPSHOT, symbol),
-            value=zone_payload,
-            ts_event=ts,
+        self.publish_data(
+            DataType(VwapZoneSnapshot),
+            VwapZoneSnapshot(
+                instrument_id=bar.bar_type.instrument_id,
+                vwap=vwap,
+                slope=slope,
+                low_zone=low_zone,
+                high_zone=high_zone,
+                close=close,
+                ts_event=ts,
+                ts_init=ts,
+            ),
         )

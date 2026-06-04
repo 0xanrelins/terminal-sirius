@@ -1,0 +1,39 @@
+"""
+Typed Actor → Strategy messages (native Nautilus custom data).
+
+Replaces the previous ``publish_signal`` string-packing (``"low,high,close"`` and
+``base:symbol`` name encoding). Follows the official pattern in
+``examples/backtest/example_10_messaging_with_actor_data``: a ``Data`` subclass
+flows over the msgbus via ``Actor.publish_data`` / ``Strategy.subscribe_data`` and
+arrives in ``on_data`` — typed, per-instrument, and backtest-compatible.
+
+``@customdataclass`` adds ``ts_event``/``ts_init`` and serialization; all fields use
+the supported types (``InstrumentId``, ``float``, ``bool``). Note: no
+``from __future__ import annotations`` — ``@customdataclass`` introspects real type
+objects to build its Arrow schema, which PEP 563 stringized annotations break.
+"""
+
+from nautilus_trader.core.data import Data
+from nautilus_trader.model.custom import customdataclass
+from nautilus_trader.model.identifiers import InstrumentId
+
+
+@customdataclass
+class VwapZoneSnapshot(Data):
+    """One VWAP/zone snapshot per closed bar for a Binance instrument."""
+
+    instrument_id: InstrumentId
+    vwap: float = 0.0
+    slope: float = 0.0
+    low_zone: float = 0.0
+    high_zone: float = 0.0
+    close: float = 0.0
+
+
+@customdataclass
+class LiquidationTrigger(Data):
+    """Edge-triggered liquidation event; only the firing side is ``True``."""
+
+    instrument_id: InstrumentId
+    long_triggered: bool = False
+    short_triggered: bool = False

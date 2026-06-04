@@ -6,9 +6,3 @@ import nautilus_env
 
 def credentials_configured() -> bool:
     return nautilus_env.credentials_configured()
-
-
-def can_place_orders() -> bool:
-    from live import config as live_cfg
-
-    return live_cfg.is_enabled() and credentials_configured()

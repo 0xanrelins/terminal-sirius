@@ -1,5 +1,5 @@
 """
-LiquidationSignalActor — rolling 900s liq volume → ``publish_signal`` triggers.
+LiquidationSignalActor — rolling 900s liq volume → ``publish_data`` LiquidationTrigger.
 
 Data: native ``BinanceFuturesLiquidation`` via ``subscribe_data`` on the Binance
 data client (all-market ``!forceOrder@arr`` when Rust adapter is active).
@@ -12,6 +12,7 @@ from nautilus_trader.common.actor import Actor
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import InstrumentId
 
 from recorders.binance_liquidation import (
     instrument_symbol,
@@ -20,8 +21,7 @@ from recorders.binance_liquidation import (
 )
 from strategies.config import LiquidationSignalActorConfig
 from strategies.indicators.rolling_liquidation_volume import RollingLiquidationVolume
-from strategies.signals import signal_name
-from strategies.signals import signals
+from strategies.messages import LiquidationTrigger
 
 
 def _threshold_for_symbol(config: LiquidationSignalActorConfig, symbol: str) -> float:
@@ -84,17 +84,18 @@ class LiquidationSignalActor(Actor):
         threshold = self._thresholds[symbol]
         long_hit = ind.long_volume >= threshold
         short_hit = ind.short_volume >= threshold
-        if long_hit and not self._last_long_trigger[symbol]:
-            self.publish_signal(
-                name=signal_name(signals.LIQ_LONG_TRIGGER, symbol),
-                value=1.0,
-                ts_event=ts_event,
-            )
-        if short_hit and not self._last_short_trigger[symbol]:
-            self.publish_signal(
-                name=signal_name(signals.LIQ_SHORT_TRIGGER, symbol),
-                value=1.0,
-                ts_event=ts_event,
+        long_edge = long_hit and not self._last_long_trigger[symbol]
+        short_edge = short_hit and not self._last_short_trigger[symbol]
+        if long_edge or short_edge:
+            self.publish_data(
+                DataType(LiquidationTrigger),
+                LiquidationTrigger(
+                    instrument_id=InstrumentId.from_str(symbol),
+                    long_triggered=long_edge,
+                    short_triggered=short_edge,
+                    ts_event=ts_event,
+                    ts_init=ts_event,
+                ),
             )
         self._last_long_trigger[symbol] = long_hit
         self._last_short_trigger[symbol] = short_hit

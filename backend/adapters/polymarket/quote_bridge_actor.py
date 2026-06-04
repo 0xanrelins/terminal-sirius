@@ -11,10 +11,12 @@ from typing import Optional
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.messages import ActivePolymarketMarket
 from adapters.polymarket.quote_registry import register_slug_instruments, update_slug_quote
 from adapters.polymarket.rolling import (
     active_rolling_slugs,
@@ -77,6 +79,19 @@ class PolymarketQuoteBridgeActor(Actor):
             self._queue.put_nowait(msg)
         except queue.Full:
             pass
+
+    def _publish_active_market(self, series: str, quote_iid: InstrumentId) -> None:
+        """Announce the active YES/Up instrument (native data) for in-engine consumers (strategy)."""
+        ts = self.clock.timestamp_ns()
+        self.publish_data(
+            DataType(ActivePolymarketMarket),
+            ActivePolymarketMarket(
+                instrument_id=quote_iid,
+                series=series,
+                ts_event=ts,
+                ts_init=ts,
+            ),
+        )
 
     def on_start(self) -> None:
         if self._initial_slugs or self._initial_series:
@@ -185,6 +200,10 @@ class PolymarketQuoteBridgeActor(Actor):
             self._series_slugs[series] = current
             self._slug_series[current] = series
         await self._ensure_slug(current, series=series)
+        quote_iid = self._slug_quote_iid.get(current)
+        if quote_iid is not None:
+            # Re-announce each sync so a late-starting strategy still learns the active market.
+            self._publish_active_market(series, quote_iid)
         for slug in list(self._slug_series):
             if self._slug_series.get(slug) == series and slug != current:
                 await self._drop_slug(slug)
