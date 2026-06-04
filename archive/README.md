@@ -1,6 +1,8 @@
 # Parquet catalog archive
 
-**Archived:** 2026-06-03
+**Archived:** 2026-06-03 · **Moved out of repo:** 2026-06-04
+
+> The ~200 MB snapshot was moved to **`~/Documents/sirius-archive/parquet-catalog-2026-06-03/`** to keep this project folder light. Only this pointer stays in the repo.
 
 Legacy custom parquet (`BinanceSecondPrice`, `PolymarketSecondPrice`). Current live capture uses native `StreamingConfig` → `TradeTick`, `QuoteTick`, `BinanceFuturesLiquidation` under `backend/catalog/`.
 
@@ -13,4 +15,4 @@ Legacy custom parquet (`BinanceSecondPrice`, `PolymarketSecondPrice`). Current l
 | Binance liquidations | `data/custom_binance_liquidation_event/` |
 | Import (legacy) | `data/bar/`, `data/custom_liquidation_tick/` |
 
-Read via `CATALOG_PATH=archive/parquet-catalog-2026-06-03` (also the default in `backend/catalog/__init__.py`).
+Read via `CATALOG_PATH=~/Documents/sirius-archive/parquet-catalog-2026-06-03`, or set `CATALOG_USE_ARCHIVE=1` (resolves to that path in `backend/catalog/__init__.py`; override with `CATALOG_ARCHIVE_PATH`).

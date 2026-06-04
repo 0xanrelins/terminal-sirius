@@ -7,9 +7,12 @@ from pathlib import Path
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
 # Default: live recorder output under backend/catalog. Override with CATALOG_PATH.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# Legacy snapshot moved outside the repo (2026-06-04); override with CATALOG_ARCHIVE_PATH.
 _LIVE_CATALOG = Path(__file__).resolve().parent
-_ARCHIVE_PATH = _REPO_ROOT / "archive" / "parquet-catalog-2026-06-03"
+_ARCHIVE_PATH = Path(
+    os.environ.get("CATALOG_ARCHIVE_PATH")
+    or (Path.home() / "Documents" / "sirius-archive" / "parquet-catalog-2026-06-03")
+)
 _DEFAULT_PATH = _LIVE_CATALOG if os.environ.get("CATALOG_USE_ARCHIVE", "").lower() not in (
     "1",
     "true",
