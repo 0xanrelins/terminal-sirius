@@ -18,7 +18,7 @@ Exchange → Nautilus Actors → Queue → FastAPI → Browser
 
 ## Single writer (liquidations)
 
-- **Live path:** `LiquidationActor` (in node) or fallback `liquidation_stream` when Nautilus is unavailable.
+- **Live path:** native `BinanceFuturesLiquidation` on the Nautilus node → `LiquidationUiBridgeActor` → FastAPI queue.
 - **Parse/aggregate:** [`backend/liquidations.py`](../backend/liquidations.py) only.
 - **Persist:** `liquidation_bars` always; `liquidation_events` + watchlist when `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (default).
 
@@ -45,8 +45,9 @@ Next steps: [roadmap.md](roadmap.md).
 
 ## Nautilus alignment (current)
 
-- `TradingNode`: Binance + Polymarket data clients; optional idle `PolymarketExecutionClient`.
-- Actors: `BridgeActor`, `RealtimeBucketActor`, `LiquidationActor`, `PolymarketQuoteBridgeActor`, `PolymarketRealtimeBucketActor`, optional `MarketRecorderActor`.
+- `TradingNode`: Binance + Polymarket data clients; optional `PolymarketExecutionClient` or Sandbox (paper).
+- Actors: `BridgeActor`, `RealtimeBucketActor`, `LiquidationUiBridgeActor`, `PolymarketQuoteBridgeActor`, `PolymarketRealtimeBucketActor`. Optional strategy: `LiquidationSignalActor`, `VwapSignalActor`, `TerminalSiriusStrategy` when `STRATEGY_ENABLED=true`.
+- Catalog: native `StreamingConfig` when `CATALOG_STREAMING_ENABLED=true` (default).
 - Polymarket env/L2: `nautilus_env.prepare_polymarket_env()` at FastAPI startup.
 - Polymarket UI quotes: `PolymarketQuoteBridgeActor` (`POLYMARKET_DATA_ENABLED=false` disables).
 

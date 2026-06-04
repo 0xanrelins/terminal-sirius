@@ -7,7 +7,16 @@ from typing import Any, Literal
 import bisect
 
 from catalog import get_catalog
-from recorders.data_types import BinanceLiquidationEvent, BinanceSecondPrice
+from recorders.binance_liquidation import (
+    instrument_symbol,
+    liquidation_anchor_price,
+    liquidation_notional_usd,
+    liquidation_side_str,
+)
+from recorders.data_types import LiquidationTick
+from recorders.second_prices import SecondPrice
+from recorders.second_prices import SymbolPriceSeries
+from recorders.second_prices import load_second_prices_by_symbol
 
 WINDOW_SEC = 1800
 DEFAULT_LOOKBACK_SEC = 7 * 86400
@@ -128,7 +137,7 @@ def build_points_for_event(
     event_time_sec: int,
     anchor_price: float,
     now_sec: int,
-    price_rows: list[BinanceSecondPrice],
+    price_rows: list[SecondPrice],
 ) -> tuple[list[PostEventPoint], SessionStatus]:
     if anchor_price <= 0:
         return ([PostEventPoint(0, 0.0)], "completed")
@@ -154,44 +163,11 @@ def build_points_for_event(
     return points, status
 
 
-@dataclass(frozen=True)
-class SymbolPriceSeries:
-    rows: tuple[BinanceSecondPrice, ...]
-    times_ns: tuple[int, ...]
-
-
-def _load_prices_by_symbol(
-    catalog: Any,
-    symbols: set[str],
-    start_ns: int,
-    end_ns: int,
-) -> dict[str, SymbolPriceSeries]:
-    """One catalog query for all symbols in range (avoids N+1 per liq event)."""
-    buckets: dict[str, list[BinanceSecondPrice]] = {s: [] for s in symbols}
-    price_rows_raw = catalog.query(
-        data_cls=BinanceSecondPrice,
-        start=start_ns,
-        end=end_ns,
-    )
-    for raw in price_rows_raw:
-        row = _unwrap(raw)
-        if isinstance(row, BinanceSecondPrice) and row.symbol in symbols:
-            buckets[row.symbol].append(row)
-    out: dict[str, SymbolPriceSeries] = {}
-    for sym, rows in buckets.items():
-        rows.sort(key=lambda r: int(r.ts_event))
-        out[sym] = SymbolPriceSeries(
-            rows=tuple(rows),
-            times_ns=tuple(int(r.ts_event) for r in rows),
-        )
-    return out
-
-
 def _price_rows_for_event(
     series: SymbolPriceSeries | None,
     event_time_sec: int,
     event_ts_ns: int,
-) -> list[BinanceSecondPrice]:
+) -> list[SecondPrice]:
     if series is None or not series.rows:
         return []
     window_end_ns = (event_time_sec + WINDOW_SEC) * 1_000_000_000
@@ -220,47 +196,79 @@ def build_sessions(
     start_ns = max(0, (now - lookback_sec) * 1_000_000_000)
     end_ns = now * 1_000_000_000
 
-    liq_rows = catalog.query(
-        data_cls=BinanceLiquidationEvent,
+    events: list[tuple[object, int, float, LiqSide]] = []
+
+    try:
+        from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
+    except ImportError:
+        BinanceFuturesLiquidation = None  # type: ignore[misc, assignment]
+
+    if BinanceFuturesLiquidation is not None:
+        for raw in catalog.query(
+            data_cls=BinanceFuturesLiquidation,
+            start=start_ns,
+            end=end_ns,
+        ):
+            liq = _unwrap(raw)
+            if not isinstance(liq, BinanceFuturesLiquidation):
+                continue
+            symbol = instrument_symbol(liq)
+            if symbol not in symbol_set:
+                continue
+            side = _normalize_side(liquidation_side_str(liq))
+            if side is None or side not in sides:
+                continue
+            notional = liquidation_notional_usd(liq)
+            if notional < min_notional:
+                continue
+            event_time = int(liq.ts_event) // 1_000_000_000
+            events.append((liq, event_time, notional, side))
+
+    for raw in catalog.query(
+        data_cls=LiquidationTick,
         start=start_ns,
         end=end_ns,
-    )
-
-    events: list[tuple[BinanceLiquidationEvent, int, float, LiqSide]] = []
-    for raw in liq_rows:
-        liq = _unwrap(raw)
-        if not isinstance(liq, BinanceLiquidationEvent):
+    ):
+        tick = _unwrap(raw)
+        if not isinstance(tick, LiquidationTick):
             continue
-        if liq.symbol not in symbol_set:
+        if tick.symbol not in symbol_set:
             continue
-        side = _normalize_side(str(liq.side))
+        side = _normalize_side(str(tick.side))
         if side is None or side not in sides:
             continue
-        notional = float(liq.price) * float(liq.quantity)
+        notional = float(tick.notional) if tick.notional else float(tick.price) * float(
+            tick.quantity
+        )
         if notional < min_notional:
             continue
-        event_time = int(liq.ts_event) // 1_000_000_000
-        events.append((liq, event_time, notional, side))
+        event_time = int(tick.ts_event) // 1_000_000_000
+        events.append((tick, event_time, notional, side))
 
     events.sort(key=lambda x: x[1], reverse=True)
     if limit is not None:
         events = events[: max(1, limit)]
 
-    prices_by_symbol = _load_prices_by_symbol(
+    prices_by_symbol = load_second_prices_by_symbol(
         catalog, symbol_set, start_ns, end_ns
     )
 
     sessions: list[PostEventSession] = []
     for liq, event_time, notional, side in events:
-        anchor = float(liq.price)
+        if BinanceFuturesLiquidation is not None and isinstance(liq, BinanceFuturesLiquidation):
+            symbol = instrument_symbol(liq)
+            anchor = liquidation_anchor_price(liq)
+        else:
+            symbol = liq.symbol
+            anchor = float(liq.price)
         price_rows = _price_rows_for_event(
-            prices_by_symbol.get(liq.symbol),
+            prices_by_symbol.get(symbol),
             event_time,
             int(liq.ts_event),
         )
 
         points, status = build_points_for_event(
-            symbol=liq.symbol,
+            symbol=symbol,
             event_time_sec=event_time,
             anchor_price=anchor,
             now_sec=now,
@@ -268,10 +276,10 @@ def build_sessions(
         )
         points = display_points(points)
 
-        coin = NAUTILUS_TO_COIN.get(liq.symbol, liq.symbol)
+        coin = NAUTILUS_TO_COIN.get(symbol, symbol)
         sessions.append(
             PostEventSession(
-                session_id=_session_id(liq.symbol, side, event_time),
+                session_id=_session_id(symbol, side, event_time),
                 symbol=coin,
                 side=side,
                 notional=notional,

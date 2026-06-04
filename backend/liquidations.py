@@ -111,6 +111,48 @@ def build_liquidation_message(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def liquidation_message_from_native(liq: Any) -> dict[str, Any] | None:
+    """Native ``BinanceFuturesLiquidation`` → WS/DB queue message (no raw WS payload)."""
+    from recorders.binance_liquidation import (
+        instrument_symbol,
+        liquidation_notional_usd,
+        liquidation_side_str,
+        liquidation_trade_id,
+        liquidation_trade_ms,
+    )
+
+    try:
+        symbol = instrument_symbol(liq)
+        side = liquidation_side_str(liq)
+        notional = liquidation_notional_usd(liq)
+        trade_ms = liquidation_trade_ms(liq)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    updates = record_liquidation(symbol, side, notional, trade_ms)
+    bar_snapshots: list[dict[str, Any]] = []
+    with _lock:
+        for u in updates:
+            bucket = _buckets[(u["symbol"], u["interval"], u["time"])]
+            bar_snapshots.append({
+                "interval": u["interval"],
+                "time": u["time"],
+                "long": round(bucket["long"], 2),
+                "short": round(bucket["short"], 2),
+            })
+    return {
+        "type": "liquidation",
+        "trade_id": liquidation_trade_id(liq),
+        "symbol": symbol,
+        "side": side,
+        "notional": round(notional, 2),
+        "time": trade_ms // 1000,
+        "bars": bar_snapshots,
+        "_payload": None,
+        "_updates": updates,
+    }
+
+
 def bucket_time(ts_ms: int, interval: str) -> int:
     sec = INTERVAL_SECONDS.get(interval, 60)
     ts_s = ts_ms // 1000

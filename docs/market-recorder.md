@@ -1,61 +1,63 @@
-# Nautilus Market Recorder
+# Nautilus catalog streaming
 
-Lightweight historical recorder for:
-
-- Binance perpetual `TradeTick` -> 1-second last price snapshots.
-- Polymarket `QuoteTick` -> 1-second UP/DOWN snapshots.
-- Binance force-order liquidations -> event-level rows (no aggregation).
+Historical data for backtest and Liq Post Event research. Captured on the **same** `TradingNode` as the live backend (`node.py`).
 
 ## Runtime
 
-Recorder runs on the **same** `TradingNode` as the live backend (`node.py`).
+Native Nautilus `StreamingConfig` writes feather/parquet while the node runs:
 
-Start:
+```bash
+cd backend && ./scripts/run_catalog_recorder_daemon.sh start
+```
 
-`cd backend && ./scripts/run_backend.sh`
+Or foreground: `cd backend && ./scripts/run_backend.sh` with `CATALOG_STREAMING_ENABLED=true` (default).
 
-Parquet recording is **off** by default (`MARKET_RECORDER_ENABLED=false`). Historical data: `archive/parquet-catalog-2026-06-03/`.
+Use `RELOAD=0` (default in `run_backend.sh`). `uvicorn --reload` restarts the Nautilus node and interrupts catalog flushes.
 
-`scripts/run_market_recorder.py` is deprecated (do not run a second node).
+Archive snapshot (read-only): set `CATALOG_USE_ARCHIVE=1` or see `archive/parquet-catalog-2026-06-03/`.
 
-For continuous recording, run with `RELOAD=0` (default in `run_backend.sh`).
-`uvicorn --reload` restarts the Nautilus node and interrupts parquet flushes.
+## Environment
 
-Live catalog appends use `ParquetDataCatalog.write_data(..., skip_disjoint_check=True)`
-per Nautilus docs (`concepts/data.md`).
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CATALOG_STREAMING_ENABLED` | `true` | Native `StreamingConfig` on `TradingNode` |
+| `CATALOG_PATH` | `backend/catalog/` | Parquet root |
+| `RECORDER_FLUSH_INTERVAL_MS` | `1000` | Streaming flush interval |
+| `RECORDER_MAX_BATCH_ROWS` | `5000` | Streaming batch size |
 
-### Environment
+## Stored data (native types)
 
-- `RECORDER_BINANCE_INSTRUMENTS`: CSV, default:
-  `BTCUSDT-PERP.BINANCE,ETHUSDT-PERP.BINANCE,SOLUSDT-PERP.BINANCE,XRPUSDT-PERP.BINANCE,DOGEUSDT-PERP.BINANCE,HYPEUSDT-PERP.BINANCE`
-- `RECORDER_POLYMARKET_SERIES`: CSV, default:
-  `btc-updown-15m,eth-updown-15m,sol-updown-15m,xrp-updown-15m,doge-updown-15m,hype-updown-15m`
-- `RECORDER_FLUSH_INTERVAL_MS`: default `1000`
-- `RECORDER_MAX_BATCH_ROWS`: default `5000`
-- `CATALOG_PATH`: optional parquet catalog root
+| Type | Source | Used by |
+|------|--------|---------|
+| `TradeTick` | Binance perp | Backtest, Liq Post Event (% lines) |
+| `QuoteTick` | Polymarket | Backtest |
+| `BinanceFuturesLiquidation` | Binance `!forceOrder@arr` | Backtest, Liq Post Event (events) |
 
-## Stored Data Types
+Live feather files land under `catalog/live/<run-id>/`.
 
-- `BinanceSecondPrice(ts_event, symbol, last_price, ts_init)`
-- `PolymarketSecondPrice(ts_event, market, up_last_price, down_last_price, ts_init)`
-- `BinanceLiquidationEvent(ts_event, symbol, side, price, quantity, ts_init)`
+Legacy custom types (`BinanceSecondPrice`, `PolymarketSecondPrice`, `LiquidationTick`) may exist in older archive parquet — not written by the current node.
 
-## Lookup
+## Scripts
 
-Use `backend/recorders/lookup.py` for nearest timestamp lookups:
+```bash
+cd backend
+python scripts/write_instruments_to_catalog.py   # one-time instrument defs
+python scripts/catalog_stats.py                  # row counts
+python scripts/run_terminal_sirius_backtest.py   # backtest (needs data)
+python scripts/import_to_catalog.py              # optional CandleFeed import
+```
 
-- liquidation event time -> nearest Binance second price
-- generic event time -> nearest Polymarket UP/DOWN snapshot
+## Liq Post Event
 
-## Reconnect and Stability
+`GET /liq-post-event/sessions` reads native catalog rows:
 
-- Actors resubscribe in `on_start`.
-- Liquidation stream reconnect loop stays inside `LiquidationActor`.
-- Catalog writer is bounded and flushes by interval or row limit.
+- Events: `BinanceFuturesLiquidation` (+ legacy `LiquidationTick` from imports)
+- Prices: `TradeTick` aggregated to per-second last price (`recorders/second_prices.py`)
 
-## Smoke Checklist
+Requires `CATALOG_STREAMING_ENABLED=true` and enough live runtime to accumulate data.
 
-- Backend starts; log shows `MarketRecorderActor enabled`.
-- Binance and Polymarket snapshots are written every second under normal flow.
-- Liquidation rows appear as event-level parquet entries.
-- Process restart does not crash and resumes writing.
+## Smoke checklist
+
+- Backend starts; log shows `Catalog streaming → …`
+- After a few minutes: `python scripts/catalog_stats.py` shows `TradeTick` rows
+- Liq Post Event endpoint returns sessions when liquidations + ticks exist in range

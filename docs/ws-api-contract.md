@@ -15,7 +15,7 @@ JSON messages; one object per frame. Optional `?symbols=` filters by `symbol`.
 | `indicator` | `RealtimeBucketActor` | EMA / session VWAP / rolling VWAP point on `1s`/`5s` bucket close |
 | `polymarket` | `PolymarketQuoteBridgeActor` | `yes_price` 0–1; optional `bid`/`ask` |
 | `quote` | `BridgeActor` | Optional; Binance BBO |
-| `liquidation` | `LiquidationActor` / stream | Optional `bars[]` snapshot |
+| `liquidation` | `LiquidationUiBridgeActor` | Optional `bars[]` snapshot |
 
 TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 

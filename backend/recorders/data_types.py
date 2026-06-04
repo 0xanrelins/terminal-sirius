@@ -1,4 +1,8 @@
-"""Custom Nautilus data types for lightweight market recorder."""
+"""Custom Nautilus data types (legacy archive + CandleFeed import only).
+
+Live capture uses native ``TradeTick``, ``QuoteTick``, ``BinanceFuturesLiquidation``
+via ``StreamingConfig``. Liq Post Event reads ``TradeTick`` from the catalog.
+"""
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.custom import customdataclass
 
@@ -18,16 +22,6 @@ class PolymarketSecondPrice(Data):
     market: str = ""
     up_last_price: float = 0.0
     down_last_price: float = 0.0
-
-
-@customdataclass
-class BinanceLiquidationEvent(Data):
-    """Single Binance force-order liquidation event (no aggregation)."""
-
-    symbol: str = ""
-    side: str = ""  # SELL -> long liquidation, BUY -> short liquidation
-    price: float = 0.0
-    quantity: float = 0.0
 
 
 @customdataclass

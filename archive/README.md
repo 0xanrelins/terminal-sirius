@@ -2,7 +2,7 @@
 
 **Archived:** 2026-06-03
 
-Market recorder stopped (`MARKET_RECORDER_ENABLED=false`). Live writes go to `backend/catalog/data/` only if recording is re-enabled.
+Legacy custom parquet (`BinanceSecondPrice`, `PolymarketSecondPrice`). Current live capture uses native `StreamingConfig` → `TradeTick`, `QuoteTick`, `BinanceFuturesLiquidation` under `backend/catalog/`.
 
 ## `parquet-catalog-2026-06-03/`
 

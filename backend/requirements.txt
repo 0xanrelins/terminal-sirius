@@ -1,4 +1,6 @@
-nautilus_trader>=1.200.0
+# BinanceFuturesLiquidation (native liquidations): Nautilus ≥1.228 — PyPI wheel pending;
+# install from ~/Documents/nautilus_trader develop: pip install -e .
+nautilus_trader>=1.228.0
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 websockets>=12.0

@@ -45,7 +45,7 @@ Adapter → Subscription → on_data() → Indicator → publish_signal()
 Her domain ayrı bir `Actor` — birbirinden bağımsız, test edilebilir:
 
 ```
-LiquidationActor  →  BinanceFuturesLiquidation dinler  →  sinyal yayınlar
+LiquidationSignalActor  →  BinanceFuturesLiquidation dinler  →  sinyal yayınlar
 VWAPActor         →  TradeTick → Bar → VWAP/ATR/LR     →  sinyal yayınlar
                               ↓
 Strategy          →  hepsini dinler  →  recalculate()  →  karar
@@ -281,11 +281,48 @@ BacktestDataConfig(
 
 ## 10. Açık Kararlar
 
-- [ ] Polymarket market ID'leri — implementasyonda eklenecek
+- [x] Polymarket market ID'leri — rolling slug + `PolymarketDataLoader.from_market_slug` (UP token)
 - [ ] Diğer trigger eventler — likidasyon dışında _(ileriye bırakıldı)_
-- [ ] `StreamingConfig` implementasyonu — TradeTick + BinanceFuturesLiquidation kaydı
-- [ ] Instrument tanımları kataloga yazılacak (Binance + Polymarket)
-- [ ] `BacktestVenueConfig` + `BacktestDataConfig` kurulumu
+- [x] `StreamingConfig` — `CATALOG_STREAMING_ENABLED` → `node.py`
+- [x] Instrument tanımları — `scripts/write_instruments_to_catalog.py`
+- [x] `BacktestVenueConfig` + `BacktestDataConfig` — `backtest/run_config.py`, `scripts/run_terminal_sirius_backtest.py`
+
+### 10.1 Implementasyon durumu (Terminal Sirius)
+
+| Bileşen | Dosya | Not |
+|---|---|---|
+| `LiquidationSignalActor` | `backend/strategies/liquidation_signal_actor.py` | `BinanceFuturesLiquidation` (native) |
+| `VwapSignalActor` | `backend/strategies/vwap_signal_actor.py` | `1-SECOND-LAST-INTERNAL` + LR/ATR |
+| `TerminalSiriusStrategy` | `backend/strategies/terminal_sirius_strategy.py` | `STRATEGY_ENABLED=1` |
+| `LiquidationUiBridgeActor` | `backend/liquidation_ui_bridge_actor.py` | UI/DB likidasyon köprüsü |
+| Paper exec | `node.py` | `STRATEGY_PAPER_TRADE=true` → `SandboxExecutionClientConfig` |
+
+**Likidasyon veri kaynağı:** `LiquidationSignalActor` ve `LiquidationUiBridgeActor` native `BinanceFuturesLiquidation` dinler (Binance DataClient `!forceOrder@arr`); custom WS yok.
+
+**WIP:** Exit mantığı ve `pos_multiplier_*` pozisyon boyutu henüz plana göre tam değil.
+
+### 10.2 Catalog + backtest akışı
+
+```bash
+# 1) Canlı veri biriktir (backend çalışırken)
+CATALOG_STREAMING_ENABLED=true
+CATALOG_PATH=backend/catalog   # varsayılan: backend/catalog/
+
+# 2) Enstrüman tanımları
+cd backend && python scripts/write_instruments_to_catalog.py
+
+# 3) İsteğe bağlı: CandleFeed import
+python scripts/import_to_catalog.py
+
+# 4) Katalog envanteri
+python scripts/catalog_stats.py
+
+# 5) Backtest
+python scripts/run_terminal_sirius_backtest.py --start 2026-06-01T00:00:00Z --end 2026-06-03T00:00:00Z
+```
+
+Native tipler: `StreamingConfig` → `TradeTick`, `QuoteTick`, `BinanceFuturesLiquidation`.
+Liq Post Event fiyatları: `TradeTick` → saniyelik last price (`recorders/second_prices.py`).
 
 ---
 

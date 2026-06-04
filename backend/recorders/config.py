@@ -1,7 +1,8 @@
-"""Configuration helpers for the Nautilus market recorder runtime."""
+"""Configuration helpers for Nautilus catalog streaming on TradingNode."""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 DEFAULT_BINANCE_INSTRUMENTS: tuple[str, ...] = (
     "BTCUSDT-PERP.BINANCE",
@@ -53,7 +54,39 @@ def max_batch_rows_from_env() -> int:
     return max(100, int(raw))
 
 
-def is_enabled() -> bool:
-    """Parquet market recorder on the shared TradingNode (default off)."""
-    raw = os.environ.get("MARKET_RECORDER_ENABLED", "false").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+def catalog_path_from_env() -> Path:
+    from catalog import get_catalog
+
+    return Path(get_catalog().path)
+
+
+def streaming_enabled() -> bool:
+    """Native ``StreamingConfig`` feather/parquet capture on the TradingNode."""
+    raw = os.environ.get("CATALOG_STREAMING_ENABLED", "")
+    if not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def streaming_config():
+    """
+    Nautilus ``StreamingConfig`` for live capture (TradeTick, quotes, liquidations).
+
+    Used on ``TradingNodeConfig.streaming`` when ``streaming_enabled()`` is true.
+    """
+    from nautilus_trader.adapters.binance import BinanceFuturesLiquidation
+    from nautilus_trader.model.data import QuoteTick, TradeTick
+    from nautilus_trader.persistence.config import StreamingConfig
+
+    path = str(catalog_path_from_env())
+    flush_ms = flush_interval_ms_from_env()
+    return StreamingConfig(
+        catalog_path=path,
+        flush_interval_ms=flush_ms,
+        replace_existing=False,
+        include_types=[
+            TradeTick,
+            QuoteTick,
+            BinanceFuturesLiquidation,
+        ],
+    )

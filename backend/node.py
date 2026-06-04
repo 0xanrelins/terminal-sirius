@@ -11,43 +11,24 @@ Environment variables:
   POLYMARKET_15M_SERIES   — comma-separated rolling 15m series
   POLYMARKET_EXEC_ENABLED — register Polymarket ExecutionClient when true + creds
   POLYMARKET_DATA_ENABLED — default true; PolymarketDataClient + quote bridge for UI
-  MARKET_RECORDER_ENABLED   — default false; ParquetDataCatalog via MarketRecorderActor
+  CATALOG_STREAMING_ENABLED — default true; native StreamingConfig on TradingNode
+  CATALOG_PATH              — Parquet root (default backend/catalog)
+  NAUTILUS_LOG_LEVEL        — Nautilus stdout log level (default WARNING)
+  STRATEGY_ENABLED          — register TerminalSirius strategy + signal actors
+  STRATEGY_PAPER_TRADE      — use SandboxExecutionClient for POLYMARKET (with STRATEGY_ENABLED)
 """
 from __future__ import annotations
 
+import multiprocessing
 import os
 import queue
-import signal
-import threading
+from typing import TYPE_CHECKING
 
-# Nautilus TradingNode registers signal handlers during __init__ via both
-# signal.signal() and loop.add_signal_handler(). Both require the main thread.
-# We run the node in a daemon thread (so FastAPI owns the main thread), so we
-# patch both to be no-ops when called from a non-main thread.
-
-_orig_signal = signal.signal
-
-
-def _safe_signal(sig, handler):
-    if threading.current_thread() is threading.main_thread():
-        return _orig_signal(sig, handler)
-
-
-signal.signal = _safe_signal  # type: ignore[assignment]
-
-try:
-    import uvloop as _uvloop
-    _orig_add_sig = _uvloop.Loop.add_signal_handler
-
-    def _safe_add_signal_handler(self, sig, callback, *args):
-        if threading.current_thread() is threading.main_thread():
-            return _orig_add_sig(self, sig, callback, *args)
-
-    _uvloop.Loop.add_signal_handler = _safe_add_signal_handler  # type: ignore[method-assign]
-except ImportError:
-    pass
-
-from nautilus_trader.adapters.binance.config import BinanceAccountType, BinanceDataClientConfig
+from nautilus_trader.adapters.binance.config import (
+    BinanceAccountType,
+    BinanceDataClientConfig,
+    BinanceInstrumentProviderConfig,
+)
 from nautilus_trader.adapters.binance.factories import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.polymarket.config import (
     PolymarketDataClientConfig,
@@ -59,8 +40,14 @@ from nautilus_trader.adapters.polymarket.factories import (
     PolymarketLiveExecClientFactory,
 )
 from nautilus_trader.cache.config import CacheConfig
-from nautilus_trader.config import LiveDataEngineConfig, LiveExecEngineConfig, TradingNodeConfig
+from nautilus_trader.config import (
+    LiveDataEngineConfig,
+    LiveExecEngineConfig,
+    LoggingConfig,
+    TradingNodeConfig,
+)
 from nautilus_trader.live.node import TradingNode
+from nautilus_trader.model.identifiers import InstrumentId
 
 import nautilus_env
 from adapters.polymarket.orders import credentials_configured
@@ -69,12 +56,18 @@ from adapters.polymarket.quote_bridge_actor import (
     PolymarketQuoteBridgeActorConfig,
 )
 from bridge_actor import BridgeActor, BridgeActorConfig
+from liquidation_ui_bridge_actor import (
+    LiquidationUiBridgeActor,
+    LiquidationUiBridgeActorConfig,
+)
 from polymarket_realtime_bucket_actor import (
     PolymarketRealtimeBucketActor,
     PolymarketRealtimeBucketActorConfig,
 )
 from realtime_bucket_actor import RealtimeBucketActor, RealtimeBucketActorConfig
-from liquidation_actor import LiquidationActor, LiquidationActorConfig
+
+if TYPE_CHECKING:
+    from multiprocessing.context import BaseContext
 
 DEFAULT_INSTRUMENTS = (
     "BTCUSDT-PERP.BINANCE",
@@ -86,8 +79,8 @@ DEFAULT_INSTRUMENTS = (
 )
 
 _polymarket_quote_bridge: PolymarketQuoteBridgeActor | None = None
-_catalog_writer = None
 _trading_node: TradingNode | None = None
+_mp_ctx: BaseContext = multiprocessing.get_context("spawn")
 
 
 def get_polymarket_quote_bridge() -> PolymarketQuoteBridgeActor | None:
@@ -98,6 +91,24 @@ def get_trading_node() -> TradingNode | None:
     return _trading_node
 
 
+def _strategy_enabled() -> bool:
+    return os.environ.get("STRATEGY_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _strategy_paper_trade() -> bool:
+    return os.environ.get("STRATEGY_PAPER_TRADE", "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _polymarket_exec_enabled() -> bool:
     raw = os.environ.get(
         "POLYMARKET_EXEC_ENABLED",
@@ -106,12 +117,21 @@ def _polymarket_exec_enabled() -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _nautilus_logging_config() -> LoggingConfig:
+    """Keep TradingNode logs quiet in uvicorn.log (WARNING default, no log file)."""
+    return LoggingConfig(
+        log_level=os.environ.get("NAUTILUS_LOG_LEVEL", "WARNING"),
+        log_level_file=os.environ.get("NAUTILUS_LOG_LEVEL_FILE", "OFF"),
+    )
+
+
 def _cache_config() -> CacheConfig:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         return CacheConfig()
     try:
         from nautilus_trader.cache.postgres.config import PostgresCacheConfig
+
         return PostgresCacheConfig(database=dsn)
     except ImportError:
         return CacheConfig()
@@ -173,35 +193,57 @@ def _polymarket_data_config(
         **_polymarket_client_fields(wallet),
         auto_load_missing_instruments=True,
         instrument_config=PolymarketInstrumentProviderConfig(
-            use_gamma_markets=False,
+            use_gamma_markets=True,
         ),
     )
 
 
 def build_node(
-    data_queue: queue.Queue,
+    data_queue: queue.Queue | multiprocessing.queues.Queue,
     instruments: tuple[str, ...] = DEFAULT_INSTRUMENTS,
 ) -> TradingNode:
-    global _polymarket_quote_bridge, _catalog_writer, _trading_node
+    global _polymarket_quote_bridge, _trading_node
+
+    wallet = nautilus_env.polymarket_wallet_config()
+    data_cfg = _polymarket_data_config(wallet)
+    strategy_on = _strategy_enabled()
+    paper_trade = _strategy_paper_trade()
 
     bridge_cfg = BridgeActorConfig(
         component_id="BridgeActor-001",
         instrument_ids=instruments,
     )
-    liq_cfg = LiquidationActorConfig(component_id="LiquidationActor-001")
-
-    wallet = nautilus_env.polymarket_wallet_config()
-    data_cfg = _polymarket_data_config(wallet)
     exec_cfg = _polymarket_exec_config(wallet)
+    if strategy_on and paper_trade:
+        from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
+        from nautilus_trader.config import InstrumentProviderConfig
+
+        exec_cfg = SandboxExecutionClientConfig(
+            venue="POLYMARKET",
+            starting_balances=[os.environ.get("STRATEGY_STARTING_BALANCE", "10_000 USDC")],
+            instrument_provider=InstrumentProviderConfig(load_all=True),
+            account_type="CASH",
+            oms_type="NETTING",
+        )
+        print("[nautilus] Polymarket Sandbox execution (paper trade)")
+    elif strategy_on and exec_cfg is None:
+        print(
+            "[warn] STRATEGY_ENABLED but no execution client — set STRATEGY_PAPER_TRADE=true "
+            "or POLYMARKET_EXEC_ENABLED with creds"
+        )
     if data_cfg is None:
         print("[warn] Polymarket DataClient disabled — no Polymarket ticker stream")
 
     exec_clients: dict = {}
+    binance_load_ids = frozenset(InstrumentId.from_str(sym) for sym in instruments)
     data_clients: dict = {
         "BINANCE": BinanceDataClientConfig(
             account_type=BinanceAccountType.USDT_FUTURES,
             api_key=None,
             api_secret=None,
+            instrument_provider=BinanceInstrumentProviderConfig(
+                load_ids=binance_load_ids,
+            ),
         )
     }
     if data_cfg is not None:
@@ -213,10 +255,20 @@ def build_node(
     )
     if exec_cfg is not None:
         exec_clients["POLYMARKET"] = exec_cfg
-        print("[nautilus] Polymarket ExecutionClient enabled (idle, no strategies)")
+        if strategy_on:
+            print("[nautilus] Polymarket execution enabled for TerminalSiriusStrategy")
+        else:
+            print("[nautilus] Polymarket ExecutionClient enabled (idle, no strategies)")
+
+    from recorders.config import streaming_config, streaming_enabled
+
+    streaming = streaming_config() if streaming_enabled() else None
+    if streaming is not None:
+        print(f"[nautilus] Catalog streaming → {streaming.catalog_path}")
 
     config = TradingNodeConfig(
         trader_id="TERMINAL-SIRIUS-001",
+        logging=_nautilus_logging_config(),
         cache=_cache_config(),
         data_clients=data_clients,
         exec_clients=exec_clients,
@@ -224,6 +276,7 @@ def build_node(
             time_bars_build_with_no_updates=False,
         ),
         exec_engine=exec_engine,
+        streaming=streaming,
     )
 
     node = TradingNode(config=config)
@@ -231,10 +284,18 @@ def build_node(
     if data_cfg is not None:
         node.add_data_client_factory("POLYMARKET", PolymarketLiveDataClientFactory)
     if exec_cfg is not None:
-        node.add_exec_client_factory("POLYMARKET", PolymarketLiveExecClientFactory)
+        if strategy_on and paper_trade:
+            from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
+
+            node.add_exec_client_factory("POLYMARKET", SandboxLiveExecClientFactory)
+        else:
+            node.add_exec_client_factory("POLYMARKET", PolymarketLiveExecClientFactory)
 
     bridge = BridgeActor(config=bridge_cfg, data_queue=data_queue)
     node.trader.add_actor(bridge)
+
+    liq_ui_cfg = LiquidationUiBridgeActorConfig(component_id="LiquidationUiBridge-001")
+    node.trader.add_actor(LiquidationUiBridgeActor(config=liq_ui_cfg, data_queue=data_queue))
 
     rt_cfg = RealtimeBucketActorConfig(
         component_id="RealtimeBucketActor-001",
@@ -265,52 +326,94 @@ def build_node(
         )
         print("[nautilus] PolymarketRealtimeBucketActor enabled (1s/5s UP bars → WS queue)")
 
-    liq_actor = LiquidationActor(config=liq_cfg, data_queue=data_queue)
-    node.trader.add_actor(liq_actor)
-
-    from recorders.config import (
-        binance_instruments_from_env,
-        flush_interval_ms_from_env,
-        is_enabled as market_recorder_enabled,
-        max_batch_rows_from_env,
-        polymarket_series_from_env,
-    )
-    from recorders.catalog_writer import CatalogWriter
-    from recorders.market_recorder_actor import MarketRecorderActor, MarketRecorderActorConfig
-
-    if market_recorder_enabled():
-        _catalog_writer = CatalogWriter(
-            flush_interval_ms=flush_interval_ms_from_env(),
-            max_batch_rows=max_batch_rows_from_env(),
+    if strategy_on:
+        from strategies.env_config import (
+            build_liquidation_signal_config,
+            build_terminal_sirius_config,
+            build_vwap_signal_config,
+            log_strategy_env_summary,
         )
-        _catalog_writer.start()
-        recorder_cfg = MarketRecorderActorConfig(
-            component_id="MarketRecorder-001",
-            binance_instruments=binance_instruments_from_env(),
-            polymarket_series=polymarket_series_from_env() if data_cfg is not None else (),
+        from strategies.liquidation_signal_actor import LiquidationSignalActor
+        from strategies.mapping import BINANCE_TO_POLY_SERIES, STRATEGY_BINANCE_INSTRUMENTS
+        from strategies.terminal_sirius_strategy import TerminalSiriusStrategy
+        from strategies.vwap_signal_actor import VwapSignalActor
+
+        strategy_symbols = tuple(
+            s for s in instruments if s in STRATEGY_BINANCE_INSTRUMENTS
+        ) or STRATEGY_BINANCE_INSTRUMENTS
+        poly_series = tuple(
+            BINANCE_TO_POLY_SERIES[s]
+            for s in strategy_symbols
+            if s in BINANCE_TO_POLY_SERIES
         )
-        node.trader.add_actor(MarketRecorderActor(config=recorder_cfg, writer=_catalog_writer))
-        print("[nautilus] MarketRecorderActor enabled → ParquetDataCatalog")
+
+        node.trader.add_actor(
+            LiquidationSignalActor(
+                config=build_liquidation_signal_config(
+                    component_id="LiqSignalActor-001",
+                    instrument_ids=strategy_symbols,
+                ),
+            ),
+        )
+        node.trader.add_actor(
+            VwapSignalActor(
+                config=build_vwap_signal_config(
+                    component_id="VwapSignalActor-001",
+                    instrument_ids=strategy_symbols,
+                ),
+            ),
+        )
+        node.trader.add_strategy(
+            TerminalSiriusStrategy(
+                config=build_terminal_sirius_config(
+                    binance_instruments=strategy_symbols,
+                    polymarket_series=poly_series,
+                ),
+            ),
+        )
+        log_strategy_env_summary()
+        mode = "paper (Sandbox)" if paper_trade else "live exec"
+        print(f"[nautilus] TerminalSiriusStrategy + signal actors enabled — {mode}")
 
     node.build()
     _trading_node = node
     return node
 
 
-def run_node_in_thread(data_queue: queue.Queue) -> threading.Thread:
-    def _run() -> None:
-        global _polymarket_quote_bridge, _catalog_writer, _trading_node
-        node = build_node(data_queue)
+def _node_process_main(data_queue: queue.Queue | multiprocessing.queues.Queue) -> None:
+    """Child process entry — main thread owns signal handlers (no monkey-patch)."""
+    global _polymarket_quote_bridge, _trading_node
+    node = build_node(data_queue)
+    try:
+        node.run()
+    finally:
+        _trading_node = None
         try:
-            node.run()
-        finally:
-            _trading_node = None
-            node.dispose()
-            _polymarket_quote_bridge = None
-            if _catalog_writer is not None:
-                _catalog_writer.stop()
-                _catalog_writer = None
+            node.stop()
+        except Exception:
+            pass
+        node.dispose()
+        _polymarket_quote_bridge = None
 
-    thread = threading.Thread(target=_run, daemon=True, name="nautilus-node")
-    thread.start()
-    return thread
+
+def create_data_queue() -> multiprocessing.queues.Queue:
+    """Process-safe queue for Nautilus child ↔ FastAPI parent."""
+    return _mp_ctx.Queue(maxsize=10_000)
+
+
+def run_node_in_process(
+    data_queue: queue.Queue | multiprocessing.queues.Queue,
+) -> multiprocessing.Process:
+    """Start TradingNode in a child process (Nautilus-native signal handling)."""
+    proc = _mp_ctx.Process(
+        target=_node_process_main,
+        args=(data_queue,),
+        name="nautilus-node",
+        daemon=True,
+    )
+    proc.start()
+    return proc
+
+
+# Backward-compatible alias for scripts/tests.
+run_node_in_thread = run_node_in_process

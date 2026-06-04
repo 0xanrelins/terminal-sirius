@@ -13,8 +13,8 @@ Nautilus TradingNode (Python)
   ├── BridgeActor / RealtimeBucketActor     → Binance bars, 1s/5s, indicators
   ├── PolymarketQuoteBridgeActor            → Polymarket quotes (DataClient)
   ├── PolymarketRealtimeBucketActor         → Polymarket 1s/5s UP bars
-  ├── LiquidationActor                      → !forceOrder@arr (tek liq writer)
-  └── MarketRecorderActor (optional)        → Parquet catalog
+  ├── LiquidationUiBridgeActor              → native BinanceFuturesLiquidation → UI/DB
+  └── StreamingConfig (default on)        → Parquet catalog (TradeTick, QuoteTick, liq)
 
         ↓  thread-safe Queue
         
@@ -86,7 +86,7 @@ cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-**Likidasyon:** Tek yazıcı = backend stream (`liquidation_stream` veya Nautilus `LiquidationActor`). `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (varsayılan) ile `liquidation_bars`, ham events ve Liq Signals geçmişi aynı hat üzerinden dolar.
+**Likidasyon:** Tek yazıcı = Nautilus native `BinanceFuturesLiquidation` → `LiquidationUiBridgeActor`. `PERSIST_LIQUIDATION_EVENTS_TO_DB=1` (varsayılan) ile `liquidation_bars`, ham events ve Liq Signals geçmişi aynı hat üzerinden dolar.
 
 ### 3. Frontend
 

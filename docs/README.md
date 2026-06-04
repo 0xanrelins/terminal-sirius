@@ -6,9 +6,11 @@
 |-----|----------|
 | [architecture.md](architecture.md) | Layers, Nautilus `TradingNode`, liquidation single-writer, what was removed |
 | [ws-api-contract.md](ws-api-contract.md) | Frozen `/ws` and REST shapes (`types.ts`, `ws_contract.py`) |
-| [market-recorder.md](market-recorder.md) | Parquet `MarketRecorderActor` on the shared node |
+| [market-recorder.md](market-recorder.md) | Native `StreamingConfig` catalog capture on the shared node |
 | [nautilus-migration-smoke.md](nautilus-migration-smoke.md) | Offline smoke + manual restart checklist |
 | [roadmap.md](roadmap.md) | Next work: new `Strategy` on Nautilus (no BFF trade bridge) |
+| [paper-trade.md](paper-trade.md) | Sandbox paper trade checklist + `LIQ_THRESHOLD_*` tuning |
+| [strategy-build.md](strategy-build.md) | Full strategy spec (3-layer signals, backtest params) |
 
 ## Nautilus rule of thumb
 

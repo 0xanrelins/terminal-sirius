@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start FastAPI + Nautilus with stdout/stderr appended to backend/logs/uvicorn.log
+# Start FastAPI + Nautilus (logs → backend/logs/uvicorn.log, Nautilus WARN by default)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"

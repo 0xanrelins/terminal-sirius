@@ -32,11 +32,14 @@ Thumbs.db
 
 # Logs
 *.log
+backend/logs/*.bak
+backend/logs/run/
 
 # Local data (SQLite experiments, old NDJSON — not used by main app)
 backend/data/
 
 # Nautilus catalog parquet (live writes if recorder re-enabled)
 backend/catalog/data/
+backend/catalog/live/
 # Archived market-recorder snapshot (~200MB)
 archive/parquet-catalog-2026-06-03/

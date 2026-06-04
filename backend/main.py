@@ -13,14 +13,13 @@ Endpoints:
   POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
-Liquidation: single writer via `liquidation_stream` (or Nautilus LiquidationActor) →
-`liquidation_bars` + optional `liquidation_events` / watchlist when
-PERSIST_LIQUIDATION_EVENTS_TO_DB=1 (default).
+Liquidation: native ``BinanceFuturesLiquidation`` on the Nautilus node →
+``LiquidationUiBridgeActor`` → `liquidation_bars` + optional `liquidation_events`.
 """
 import asyncio
 import json
+import multiprocessing
 import os
-import queue
 import sys
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -51,43 +50,41 @@ from liquidations import (
     fetch_liquidation_bars,
     fetch_liquidation_events,
 )
-from liquidation_stream import run_liquidation_stream
+from node import create_data_queue, run_node_in_process
 
-data_queue: queue.Queue = queue.Queue(maxsize=10_000)
+data_queue = create_data_queue()
+_node_process: multiprocessing.Process | None = None
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _node_process
     await db.init()
 
-    from node import DEFAULT_INSTRUMENTS, run_node_in_thread
-
-    nautilus_ok = False
     try:
-        run_node_in_thread(data_queue)
-        nautilus_ok = True
+        _node_process = run_node_in_process(data_queue)
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
+        _node_process = None
 
-    if not nautilus_ok:
-        asyncio.create_task(run_liquidation_stream(data_queue, DEFAULT_INSTRUMENTS))
-        print("[liquidations] fallback: standalone liquidation_stream (no Nautilus)")
-    if _persist_liquidation_events_to_db_enabled():
-        print(
-            "[liquidations] single writer: stream → bars + liquidation_events "
-            "(watchlist trigger)"
-        )
-    else:
-        print(
-            "[liquidations] single writer: stream → liquidation_bars + WS only "
-            "(PERSIST_LIQUIDATION_EVENTS_TO_DB=0)"
-        )
+    if _node_process is not None:
+        if _persist_liquidation_events_to_db_enabled():
+            print("[liquidations] native BinanceFuturesLiquidation → UI/DB via node bridge")
+        else:
+            print(
+                "[liquidations] native BinanceFuturesLiquidation → liquidation_bars + WS only "
+                "(PERSIST_LIQUIDATION_EVENTS_TO_DB=0)"
+            )
 
     asyncio.create_task(_broadcast_loop())
     asyncio.create_task(_liquidation_events_retention_loop())
 
     yield
+
+    if _node_process is not None and _node_process.is_alive():
+        _node_process.terminate()
+        _node_process.join(timeout=8)
 
     await db.close()
 
@@ -321,6 +318,12 @@ def _persist_liquidation_events_to_db_enabled() -> bool:
 
 async def _persist_liquidation(msg: dict) -> None:
     try:
+        from liquidations import record_liquidation
+
+        # Child process updated its own _buckets; replay here so parent-process
+        # in-memory state (read by fetch_liquidation_bars) stays current.
+        record_liquidation(msg["symbol"], msg["side"], msg["notional"], msg["time"] * 1000)
+
         payload = msg.get("_payload")
         if payload is not None and _persist_liquidation_events_to_db_enabled():
             from liquidations import force_order_trade_id

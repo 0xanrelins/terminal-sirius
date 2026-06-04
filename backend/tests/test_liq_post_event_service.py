@@ -5,11 +5,14 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import AggressorSide
+from nautilus_trader.model.identifiers import InstrumentId, TradeId
+from nautilus_trader.model.objects import Price, Quantity
 
 from catalog import get_catalog
-from recorders.data_types import BinanceLiquidationEvent, BinanceSecondPrice
+from recorders.data_types import LiquidationTick
 from recorders.liq_post_event_service import (
-    SymbolPriceSeries,
     _price_rows_for_event,
     build_points_for_event,
     build_sessions,
@@ -18,6 +21,7 @@ from recorders.liq_post_event_service import (
     parse_symbols_param,
     PostEventPoint,
 )
+from recorders.second_prices import SecondPrice, SymbolPriceSeries
 
 
 @pytest.fixture
@@ -30,13 +34,15 @@ def temp_catalog(monkeypatch: pytest.MonkeyPatch):
 
 def _write_liq(catalog, *, ts_sec: int, symbol: str, side: str, price: float, qty: float):
     ts = ts_sec * 1_000_000_000
+    notional = price * qty
     catalog.write_data(
         [
-            BinanceLiquidationEvent(
+            LiquidationTick(
                 ts_event=ts,
                 ts_init=ts,
                 symbol=symbol,
                 side=side,
+                notional=notional,
                 price=price,
                 quantity=qty,
             )
@@ -44,15 +50,19 @@ def _write_liq(catalog, *, ts_sec: int, symbol: str, side: str, price: float, qt
     )
 
 
-def _write_price(catalog, *, ts_sec: int, symbol: str, last_price: float):
+def _write_trade(catalog, *, ts_sec: int, symbol: str, last_price: float):
     ts = ts_sec * 1_000_000_000
+    iid = InstrumentId.from_str(symbol)
     catalog.write_data(
         [
-            BinanceSecondPrice(
+            TradeTick(
+                instrument_id=iid,
+                price=Price.from_str(str(last_price)),
+                size=Quantity.from_str("1.0"),
+                aggressor_side=AggressorSide.BUYER,
+                trade_id=TradeId(str(ts_sec)),
                 ts_event=ts,
                 ts_init=ts,
-                symbol=symbol,
-                last_price=last_price,
             )
         ]
     )
@@ -72,15 +82,13 @@ def test_build_points_pct_and_status():
     event_time = 1_700_000_000
     anchor = 100.0
     rows = [
-        BinanceSecondPrice(
+        SecondPrice(
             ts_event=event_time * 1_000_000_000,
-            ts_init=0,
             symbol=symbol,
             last_price=100.0,
         ),
-        BinanceSecondPrice(
+        SecondPrice(
             ts_event=(event_time + 60) * 1_000_000_000,
-            ts_init=0,
             symbol=symbol,
             last_price=101.0,
         ),
@@ -135,8 +143,8 @@ def test_build_sessions_filters_notional_and_side(temp_catalog: Path):
 
     _write_liq(catalog, ts_sec=t0, symbol=symbol, side="LONG", price=100.0, qty=500.0)
     _write_liq(catalog, ts_sec=t0 + 10, symbol=symbol, side="SHORT", price=100.0, qty=100.0)
-    _write_price(catalog, ts_sec=t0, symbol=symbol, last_price=100.0)
-    _write_price(catalog, ts_sec=t0 + 5, symbol=symbol, last_price=100.5)
+    _write_trade(catalog, ts_sec=t0, symbol=symbol, last_price=100.0)
+    _write_trade(catalog, ts_sec=t0 + 5, symbol=symbol, last_price=100.5)
 
     sessions = build_sessions(
         symbols=(symbol,),
@@ -159,8 +167,8 @@ def test_build_sessions_unlimited_returns_all_matching(temp_catalog: Path):
 
     _write_liq(catalog, ts_sec=t0, symbol=symbol, side="LONG", price=100.0, qty=500.0)
     _write_liq(catalog, ts_sec=t0 + 10, symbol=symbol, side="SHORT", price=100.0, qty=500.0)
-    _write_price(catalog, ts_sec=t0, symbol=symbol, last_price=100.0)
-    _write_price(catalog, ts_sec=t0 + 10, symbol=symbol, last_price=100.0)
+    _write_trade(catalog, ts_sec=t0, symbol=symbol, last_price=100.0)
+    _write_trade(catalog, ts_sec=t0 + 10, symbol=symbol, last_price=100.0)
 
     sessions = build_sessions(
         symbols=(symbol,),
@@ -174,9 +182,8 @@ def test_build_sessions_unlimited_returns_all_matching(temp_catalog: Path):
 def test_price_rows_for_event_slices_sorted_series():
     symbol = "BTCUSDT-PERP.BINANCE"
     rows = [
-        BinanceSecondPrice(
+        SecondPrice(
             ts_event=(1_700_000_000 + i) * 1_000_000_000,
-            ts_init=0,
             symbol=symbol,
             last_price=100.0 + i,
         )
