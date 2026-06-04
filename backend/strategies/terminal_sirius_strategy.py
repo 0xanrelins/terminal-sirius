@@ -27,6 +27,7 @@ from strategies.config import TerminalSiriusStrategyConfig
 from strategies.mapping import BINANCE_TO_POLY_SERIES
 from strategies.messages import LiquidationTrigger
 from strategies.messages import VwapZoneSnapshot
+from strategies.subscriptions import subscribe_custom_data
 
 
 class Decision(str, Enum):
@@ -68,9 +69,10 @@ class TerminalSiriusStrategy(Strategy):
         }
 
     def on_start(self) -> None:
-        self.subscribe_data(DataType(VwapZoneSnapshot))
-        self.subscribe_data(DataType(LiquidationTrigger))
-        self.subscribe_data(DataType(ActivePolymarketMarket))
+        bt = self.config.backtest_mode
+        subscribe_custom_data(self, VwapZoneSnapshot, backtest=bt)
+        subscribe_custom_data(self, LiquidationTrigger, backtest=bt)
+        subscribe_custom_data(self, ActivePolymarketMarket, backtest=bt)
 
         self.clock.set_timer(
             "recalc",

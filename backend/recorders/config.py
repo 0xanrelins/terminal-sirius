@@ -70,14 +70,15 @@ def streaming_enabled() -> bool:
 
 def streaming_config():
     """
-    Nautilus ``StreamingConfig`` for live capture (TradeTick, quotes, liquidations).
+    Nautilus ``StreamingConfig`` for live capture (TradeTick, QuoteTick).
+
+    ``LiquidationTick`` is written by ``LiquidationFeedActor`` via
+    ``ParquetDataCatalog.write_data`` (``publish_data`` is not streamed).
 
     Used on ``TradingNodeConfig.streaming`` when ``streaming_enabled()`` is true.
     """
     from nautilus_trader.model.data import QuoteTick, TradeTick
     from nautilus_trader.persistence.config import StreamingConfig
-
-    from recorders.data_types import LiquidationTick
 
     path = str(catalog_path_from_env())
     flush_ms = flush_interval_ms_from_env()
@@ -88,6 +89,5 @@ def streaming_config():
         include_types=[
             TradeTick,
             QuoteTick,
-            LiquidationTick,
         ],
     )

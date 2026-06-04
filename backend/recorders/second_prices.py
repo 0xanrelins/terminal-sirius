@@ -57,7 +57,7 @@ def load_second_prices_by_symbol(
         iid = InstrumentId.from_str(sym)
         raw_ticks = catalog.query(
             data_cls=TradeTick,
-            instrument_ids=[iid],
+            identifiers=[str(iid)],
             start=start_ns,
             end=end_ns,
         )

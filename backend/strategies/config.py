@@ -12,6 +12,7 @@ from nautilus_trader.config import StrategyConfig
 
 class LiquidationSignalActorConfig(ActorConfig, frozen=True):
     instrument_ids: tuple[str, ...]
+    backtest_mode: bool = False
     window_sec: PositiveInt = 900
     liq_threshold_btc: PositiveFloat = 500_000.0
     liq_threshold_eth: PositiveFloat = 200_000.0
@@ -30,6 +31,7 @@ class VwapSignalActorConfig(ActorConfig, frozen=True):
 class TerminalSiriusStrategyConfig(StrategyConfig, frozen=True):
     binance_instruments: tuple[str, ...]
     polymarket_series: tuple[str, ...]
+    backtest_mode: bool = False
     bar_period: PositiveInt = 900
     atr_multiplier: PositiveFloat = 1.5
     slope_range_threshold: PositiveFloat = 0.05

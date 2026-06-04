@@ -1,10 +1,12 @@
 """Custom Nautilus data types (legacy archive + CandleFeed import only).
 
-Live capture uses native ``TradeTick``, ``QuoteTick``, ``BinanceFuturesLiquidation``
-via ``StreamingConfig``. Liq Post Event reads ``TradeTick`` from the catalog.
+Live capture: ``TradeTick`` / ``QuoteTick`` via ``StreamingConfig``;
+``LiquidationTick`` via ``LiquidationFeedActor`` → ``ParquetDataCatalog.write_data``.
+Liq Post Event reads ``TradeTick`` from the catalog.
 """
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.custom import customdataclass
+from nautilus_trader.model.custom import customdataclass_pyo3
 
 
 @customdataclass
@@ -24,7 +26,7 @@ class PolymarketSecondPrice(Data):
     down_last_price: float = 0.0
 
 
-@customdataclass
+@customdataclass_pyo3()
 class LiquidationTick(Data):
     """Single liquidation event for ParquetDataCatalog replay."""
 

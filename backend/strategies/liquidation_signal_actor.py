@@ -15,6 +15,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 from recorders.data_types import LiquidationTick
 from strategies.config import LiquidationSignalActorConfig
+from strategies.subscriptions import subscribe_custom_data
 from strategies.indicators.rolling_liquidation_volume import RollingLiquidationVolume
 from strategies.messages import LiquidationTrigger
 
@@ -45,7 +46,11 @@ class LiquidationSignalActor(Actor):
         self._last_short_trigger: dict[str, bool] = {sym: False for sym in self._symbols}
 
     def on_start(self) -> None:
-        self.subscribe_data(DataType(LiquidationTick))
+        subscribe_custom_data(
+            self,
+            LiquidationTick,
+            backtest=self.config.backtest_mode,
+        )
 
     def on_data(self, data: Data) -> None:
         if not isinstance(data, LiquidationTick):

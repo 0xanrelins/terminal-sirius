@@ -298,12 +298,29 @@ def build_node(
     bridge = BridgeActor(config=bridge_cfg, data_queue=data_queue)
     node.trader.add_actor(bridge)
 
+    from recorders.config import (
+        catalog_path_from_env,
+        flush_interval_ms_from_env,
+        max_batch_rows_from_env,
+        streaming_enabled,
+    )
+
+    liq_catalog_path = str(catalog_path_from_env()) if streaming_enabled() else None
     feed_cfg = LiquidationFeedActorConfig(
         component_id="LiquidationFeed-001",
         instrument_ids=instruments,
+        catalog_path=liq_catalog_path,
+        catalog_flush_interval_sec=flush_interval_ms_from_env() / 1000.0,
+        catalog_max_batch=max_batch_rows_from_env(),
     )
     node.trader.add_actor(LiquidationFeedActor(config=feed_cfg))
-    print("[liquidations] LiquidationFeedActor → custom !forceOrder feed → LiquidationTick bus")
+    if liq_catalog_path:
+        print(
+            "[liquidations] LiquidationFeedActor → LiquidationTick bus + "
+            f"catalog.write_data → {liq_catalog_path}"
+        )
+    else:
+        print("[liquidations] LiquidationFeedActor → LiquidationTick bus (catalog flush off)")
 
     liq_ui_cfg = LiquidationUiBridgeActorConfig(component_id="LiquidationUiBridge-001")
     node.trader.add_actor(LiquidationUiBridgeActor(config=liq_ui_cfg, data_queue=data_queue))

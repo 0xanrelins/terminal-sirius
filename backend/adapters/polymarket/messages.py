@@ -13,11 +13,11 @@ type objects for its Arrow schema, which PEP 563 stringized annotations break.
 """
 
 from nautilus_trader.core.data import Data
-from nautilus_trader.model.custom import customdataclass
+from nautilus_trader.model.custom import customdataclass_pyo3
 from nautilus_trader.model.identifiers import InstrumentId
 
 
-@customdataclass
+@customdataclass_pyo3()
 class ActivePolymarketMarket(Data):
     """Active Polymarket instruments for a rolling 15m series (both outcome tokens).
 

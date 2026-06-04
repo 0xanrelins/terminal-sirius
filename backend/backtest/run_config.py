@@ -18,6 +18,7 @@ from nautilus_trader.model.data import QuoteTick, TradeTick
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.trading.config import ImportableStrategyConfig
 
+from adapters.polymarket.messages import ActivePolymarketMarket
 from recorders.data_types import LiquidationTick
 from strategies.mapping import BINANCE_TO_POLY_SERIES, STRATEGY_BINANCE_INSTRUMENTS
 
@@ -41,6 +42,7 @@ def build_terminal_sirius_run_config(
     binance_instruments: tuple[str, ...] = STRATEGY_BINANCE_INSTRUMENTS,
     include_strategy: bool = True,
     include_liquidations: bool = True,
+    include_polymarket_quotes: bool = True,
     log_level: str = "INFO",
 ) -> BacktestRunConfig:
     """Assemble a single ``BacktestRunConfig`` for catalog replay."""
@@ -63,19 +65,32 @@ def build_terminal_sirius_run_config(
             BacktestDataConfig(
                 catalog_path=path,
                 data_cls=LiquidationTick,
+                client_id="BACKTEST",
                 start_time=start_ns,
                 end_time=end_ns,
             ),
         )
 
-    data_configs.append(
-        BacktestDataConfig(
-            catalog_path=path,
-            data_cls=QuoteTick,
-            start_time=start_ns,
-            end_time=end_ns,
-        ),
-    )
+    if include_polymarket_quotes:
+        data_configs.append(
+            BacktestDataConfig(
+                catalog_path=path,
+                data_cls=QuoteTick,
+                start_time=start_ns,
+                end_time=end_ns,
+            ),
+        )
+
+    if include_strategy:
+        data_configs.append(
+            BacktestDataConfig(
+                catalog_path=path,
+                data_cls=ActivePolymarketMarket,
+                client_id="BACKTEST",
+                start_time=start_ns,
+                end_time=end_ns,
+            ),
+        )
 
     actors = [
         ImportableActorConfig(
@@ -84,6 +99,7 @@ def build_terminal_sirius_run_config(
             config={
                 "component_id": "LiqSignalActor-BT",
                 "instrument_ids": list(binance_instruments),
+                "backtest_mode": True,
             },
         ),
         ImportableActorConfig(
@@ -105,6 +121,7 @@ def build_terminal_sirius_run_config(
                 config={
                     "binance_instruments": list(binance_instruments),
                     "polymarket_series": list(BINANCE_TO_POLY_SERIES.values()),
+                    "backtest_mode": True,
                 },
             ),
         )

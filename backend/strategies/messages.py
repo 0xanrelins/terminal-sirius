@@ -14,11 +14,11 @@ objects to build its Arrow schema, which PEP 563 stringized annotations break.
 """
 
 from nautilus_trader.core.data import Data
-from nautilus_trader.model.custom import customdataclass
+from nautilus_trader.model.custom import customdataclass_pyo3
 from nautilus_trader.model.identifiers import InstrumentId
 
 
-@customdataclass
+@customdataclass_pyo3()
 class VwapZoneSnapshot(Data):
     """One VWAP/zone snapshot per closed bar for a Binance instrument."""
 
@@ -30,7 +30,7 @@ class VwapZoneSnapshot(Data):
     close: float = 0.0
 
 
-@customdataclass
+@customdataclass_pyo3()
 class LiquidationTrigger(Data):
     """Edge-triggered liquidation event; only the firing side is ``True``."""
 

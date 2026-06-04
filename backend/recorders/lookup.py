@@ -37,7 +37,7 @@ def nearest_binance_price(symbol: str, ts_ns: int, window_seconds: int = 120) ->
     iid = InstrumentId.from_str(symbol)
     rows = catalog.query(
         data_cls=TradeTick,
-        instrument_ids=[iid],
+        identifiers=[str(iid)],
         start=ts_ns - span,
         end=ts_ns + span,
     )
@@ -59,7 +59,7 @@ def nearest_polymarket_price(instrument_id: str, ts_ns: int, window_seconds: int
     iid = InstrumentId.from_str(instrument_id)
     rows = catalog.query(
         data_cls=QuoteTick,
-        instrument_ids=[iid],
+        identifiers=[str(iid)],
         start=ts_ns - span,
         end=ts_ns + span,
     )

@@ -31,17 +31,19 @@ Archive snapshot (read-only): set `CATALOG_USE_ARCHIVE=1` or see `archive/parque
 |------|--------|---------|
 | `TradeTick` | Binance perp | Backtest, Liq Post Event (% lines) |
 | `QuoteTick` | Polymarket | Backtest |
-| `BinanceFuturesLiquidation` | Binance `!forceOrder@arr` | Backtest, Liq Post Event (events) |
+| `LiquidationTick` | `LiquidationFeedActor` → `catalog.write_data` | Backtest, liquidation signals |
 
 Live feather files land under `catalog/live/<run-id>/`.
 
-Legacy custom types (`BinanceSecondPrice`, `PolymarketSecondPrice`, `LiquidationTick`) may exist in older archive parquet — not written by the current node.
+Legacy custom types (`BinanceSecondPrice`, `PolymarketSecondPrice`) may exist in older archive parquet.
 
 ## Scripts
 
 ```bash
 cd backend
-python scripts/write_instruments_to_catalog.py   # one-time instrument defs
+python scripts/repair_catalog.py                 # fix broken trade_tick metadata / rebuild from live
+python scripts/repair_catalog.py --symbols BTCUSDT-PERP.BINANCE  # one symbol only (keeps others)
+python scripts/write_instruments_to_catalog.py   # one-time instrument defs (repair also writes Binance)
 python scripts/catalog_stats.py                  # row counts
 python scripts/run_terminal_sirius_backtest.py   # backtest (needs data)
 python scripts/import_to_catalog.py              # optional CandleFeed import

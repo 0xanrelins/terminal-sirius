@@ -15,6 +15,15 @@ from nautilus_trader.model.data import QuoteTick, TradeTick
 from catalog import get_catalog
 from recorders.data_types import BinanceSecondPrice, LiquidationTick, PolymarketSecondPrice
 
+BINANCE_TRADE_IDS = (
+    "BTCUSDT-PERP.BINANCE",
+    "ETHUSDT-PERP.BINANCE",
+    "SOLUSDT-PERP.BINANCE",
+    "XRPUSDT-PERP.BINANCE",
+    "DOGEUSDT-PERP.BINANCE",
+    "HYPEUSDT-PERP.BINANCE",
+)
+
 
 def _count_and_range(catalog, data_cls, **query_kw) -> None:
     name = getattr(data_cls, "__name__", str(data_cls))
@@ -39,8 +48,25 @@ def main() -> None:
     catalog = get_catalog(args.catalog)
     print(f"Catalog: {catalog.path}\n")
 
+    total = 0
+    ts_min = ts_max = None
+    for sym in BINANCE_TRADE_IDS:
+        try:
+            rows = catalog.query(data_cls=TradeTick, identifiers=[sym])
+        except Exception as e:
+            print(f"  TradeTick: query failed ({e!r})")
+            total = -1
+            break
+        total += len(rows)
+        if rows:
+            lo = min(int(r.ts_event) for r in rows)
+            hi = max(int(r.ts_event) for r in rows)
+            ts_min = lo if ts_min is None else min(ts_min, lo)
+            ts_max = hi if ts_max is None else max(ts_max, hi)
+    if total >= 0:
+        print(f"  TradeTick (Binance): {total:,} rows  ({ts_min} … {ts_max})")
+
     for cls in (
-        TradeTick,
         QuoteTick,
         LiquidationTick,
         BinanceFuturesLiquidation,
