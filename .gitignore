@@ -32,8 +32,7 @@ Thumbs.db
 
 # Logs
 *.log
-backend/logs/*.bak
-backend/logs/run/
+backend/logs/
 
 # Local data (SQLite experiments, old NDJSON — not used by main app)
 backend/data/
