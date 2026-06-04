@@ -19,7 +19,13 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 @customdataclass
 class ActivePolymarketMarket(Data):
-    """Active YES/Up Polymarket instrument for a rolling 15m series."""
+    """Active Polymarket instruments for a rolling 15m series (both outcome tokens).
+
+    ``instrument_id`` is the YES/Up token, ``no_instrument_id`` is the NO/Down token.
+    The strategy goes long by BUYing YES and short by BUYing NO (Polymarket has no
+    short-sell; a CASH account can only buy the outcome it wants).
+    """
 
     instrument_id: InstrumentId
+    no_instrument_id: InstrumentId
     series: str = ""

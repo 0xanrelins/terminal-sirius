@@ -80,13 +80,19 @@ class PolymarketQuoteBridgeActor(Actor):
         except queue.Full:
             pass
 
-    def _publish_active_market(self, series: str, quote_iid: InstrumentId) -> None:
-        """Announce the active YES/Up instrument (native data) for in-engine consumers (strategy)."""
+    def _publish_active_market(self, series: str, slug: str) -> None:
+        """Announce active YES + NO instruments (native data) for in-engine consumers (strategy)."""
+        yes_iid = self._slug_quote_iid.get(slug)
+        if yes_iid is None:
+            return
+        all_iids = self._slug_to_iids.get(slug, [])
+        no_iid = all_iids[1] if len(all_iids) > 1 else yes_iid
         ts = self.clock.timestamp_ns()
         self.publish_data(
             DataType(ActivePolymarketMarket),
             ActivePolymarketMarket(
-                instrument_id=quote_iid,
+                instrument_id=yes_iid,
+                no_instrument_id=no_iid,
                 series=series,
                 ts_event=ts,
                 ts_init=ts,
@@ -200,10 +206,9 @@ class PolymarketQuoteBridgeActor(Actor):
             self._series_slugs[series] = current
             self._slug_series[current] = series
         await self._ensure_slug(current, series=series)
-        quote_iid = self._slug_quote_iid.get(current)
-        if quote_iid is not None:
+        if self._slug_quote_iid.get(current) is not None:
             # Re-announce each sync so a late-starting strategy still learns the active market.
-            self._publish_active_market(series, quote_iid)
+            self._publish_active_market(series, current)
         for slug in list(self._slug_series):
             if self._slug_series.get(slug) == series and slug != current:
                 await self._drop_slug(slug)

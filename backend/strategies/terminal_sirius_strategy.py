@@ -14,14 +14,12 @@ from enum import Enum
 
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import PositionClosed
 from nautilus_trader.model.events import PositionOpened
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Quantity
 from nautilus_trader.trading.strategy import Strategy
 
 from adapters.polymarket.messages import ActivePolymarketMarket
@@ -56,10 +54,12 @@ class TerminalSiriusStrategy(Strategy):
         self._states: dict[str, _LayerState] = {
             sym: _LayerState() for sym in config.binance_instruments
         }
-        self._poly_iid: dict[str, InstrumentId | None] = {
+        self._poly_iid: dict[str, InstrumentId | None] = {  # YES/Up token
             sym: None for sym in config.binance_instruments
         }
-        self._poly_mid: dict[str, float | None] = {sym: None for sym in config.binance_instruments}
+        self._poly_no_iid: dict[str, InstrumentId | None] = {  # NO/Down token
+            sym: None for sym in config.binance_instruments
+        }
         # series → binance instrument, to route ActivePolymarketMarket announcements
         self._series_to_binance: dict[str, str] = {
             BINANCE_TO_POLY_SERIES[sym]: sym
@@ -113,24 +113,26 @@ class TerminalSiriusStrategy(Strategy):
             self._on_active_market(data)
 
     def _on_active_market(self, data: ActivePolymarketMarket) -> None:
-        """Adopt the active Polymarket instrument announced by the quote bridge."""
+        """Adopt the active Polymarket YES + NO instruments announced by the quote bridge."""
         binance = self._series_to_binance.get(data.series)
         if binance is None or binance not in self._poly_iid:
             return
-        new_iid = data.instrument_id
-        prev = self._poly_iid.get(binance)
-        if prev == new_iid:
+        yes_iid = data.instrument_id
+        no_iid = data.no_instrument_id
+        if self._poly_iid.get(binance) == yes_iid and self._poly_no_iid.get(binance) == no_iid:
             return
-        if prev is not None:
-            try:
-                self.unsubscribe_quote_ticks(prev)
-            except Exception:  # noqa: BLE001 — best-effort cleanup on rotation
-                pass
-            self._poly_mid[binance] = None
-        self._poly_iid[binance] = new_iid
-        self.subscribe_quote_ticks(new_iid)
+        for prev in (self._poly_iid.get(binance), self._poly_no_iid.get(binance)):
+            if prev is not None and prev not in (yes_iid, no_iid):
+                try:
+                    self.unsubscribe_quote_ticks(prev)
+                except Exception:  # noqa: BLE001 — best-effort cleanup on rotation
+                    pass
+        self._poly_iid[binance] = yes_iid
+        self._poly_no_iid[binance] = no_iid
+        self.subscribe_quote_ticks(yes_iid)
+        self.subscribe_quote_ticks(no_iid)
         self.log.info(
-            f"Polymarket market for {binance}: {new_iid} (series={data.series})",
+            f"Polymarket market for {binance}: YES={yes_iid} NO={no_iid} (series={data.series})",
             color=LogColor.BLUE,
         )
 
@@ -157,23 +159,15 @@ class TerminalSiriusStrategy(Strategy):
             color=LogColor.MAGENTA,
         )
 
-    def on_quote_tick(self, tick: QuoteTick) -> None:
-        for sym, iid in self._poly_iid.items():
-            if iid is not None and tick.instrument_id == iid:
-                bid = float(tick.bid_price.as_double())
-                ask = float(tick.ask_price.as_double())
-                self._poly_mid[sym] = (bid + ask) / 2 if bid > 0 and ask > 0 else max(bid, ask)
-
     def _recalculate(self, symbol: str) -> Decision:
         st = self._states[symbol]
         if not st.vwap_ready or st.slope is None or st.low_zone is None:
             return Decision.HOLD
 
-        poly_iid = self._poly_iid.get(symbol)
-        if poly_iid is not None:
-            open_positions = self.cache.positions_open(instrument_id=poly_iid)
-            if open_positions:
-                return self._exit_decision(symbol, st, open_positions[0])
+        # Open position can be on the YES (long) or NO (short) token.
+        for held_iid in (self._poly_iid.get(symbol), self._poly_no_iid.get(symbol)):
+            if held_iid is not None and self.cache.positions_open(instrument_id=held_iid):
+                return self._exit_decision(symbol, st, held_iid)
 
         direction = self._entry_direction(st)
         if direction is None:
@@ -195,53 +189,58 @@ class TerminalSiriusStrategy(Strategy):
             return "SHORT"
         return None
 
-    def _exit_decision(self, symbol: str, st: _LayerState, pos) -> Decision:
-        poly_iid = self._poly_iid[symbol]
-        if poly_iid is None:
-            return Decision.HOLD
-        instrument = self.cache.instrument(poly_iid)
-        if instrument is None:
-            return Decision.HOLD
-        mid = self._poly_mid.get(symbol)
-        if mid is None or st.vwap is None:
+    def _exit_decision(self, symbol: str, st: _LayerState, held_iid: InstrumentId) -> Decision:
+        instrument = self.cache.instrument(held_iid)
+        if instrument is None or st.vwap is None:
             return Decision.HOLD
         time_left = instrument.expiration_ns - self.clock.timestamp_ns()
         if time_left <= 0:
             return Decision.CLOSE
-        # Target: session VWAP mapped to Polymarket mid scale — use relative progress heuristic
-        if st.vwap and abs(mid - 0.5) < 0.02:
-            return Decision.CLOSE
+        qt = self.cache.quote_tick(held_iid)
+        if qt is not None:
+            bid = qt.bid_price.as_double()
+            ask = qt.ask_price.as_double()
+            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else max(bid, ask)
+            # Near 50/50 → exit (held-token mid as session-VWAP-progress proxy)
+            if mid and abs(mid - 0.5) < 0.02:
+                return Decision.CLOSE
         if time_left < 60 * 1_000_000_000 and not st.liq_long_trigger and not st.liq_short_trigger:
             return Decision.CLOSE
         return Decision.HOLD
 
     def _maybe_execute(self, symbol: str, decision: Decision) -> None:
-        poly_iid = self._poly_iid.get(symbol)
-        if poly_iid is None:
-            return
-        instrument = self.cache.instrument(poly_iid)
-        if instrument is None:
-            return
-
         if decision == Decision.OPEN:
             st = self._states[symbol]
             direction = self._entry_direction(st)
             if direction is None:
                 return
-            side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
-            qty = Quantity.from_str(str(self.config.trade_size))
+            # Polymarket: long = BUY the YES/Up token, short = BUY the NO/Down token
+            # (no short-selling in a CASH account — you buy the outcome you want).
+            target_iid = (
+                self._poly_iid.get(symbol)
+                if direction == "LONG"
+                else self._poly_no_iid.get(symbol)
+            )
+            instrument = self.cache.instrument(target_iid) if target_iid is not None else None
+            if instrument is None:
+                return
+            # Quantity must carry the instrument's size precision (Polymarket=6); a bare
+            # Quantity.from_str("10") has precision 0 and the exec engine rejects it.
+            qty = instrument.make_qty(self.config.trade_size)
             order = self.order_factory.market(
-                instrument_id=poly_iid,
-                order_side=side,
+                instrument_id=target_iid,
+                order_side=OrderSide.BUY,
                 quantity=qty,
                 time_in_force=TimeInForce.IOC,
             )
             self.log.info(
-                f"PAPER submit {direction} {poly_iid} qty={qty}",
+                f"PAPER submit {direction} (BUY {target_iid}) qty={qty}",
                 color=LogColor.CYAN,
             )
             self.submit_order(order)
             st.liq_long_trigger = False
             st.liq_short_trigger = False
         elif decision == Decision.CLOSE:
-            self.close_all_positions(poly_iid)
+            for iid in (self._poly_iid.get(symbol), self._poly_no_iid.get(symbol)):
+                if iid is not None:
+                    self.close_all_positions(iid)
