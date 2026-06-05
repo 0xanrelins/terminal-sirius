@@ -12,12 +12,23 @@ GAMMA_BASE = "https://gamma-api.polymarket.com"
 
 
 async def get_market_by_slug(slug: str) -> dict | None:
-    """Return the market record for a single slug, or None if not found."""
+    """Return market record for a slug (active first, then closed fallback)."""
     async with httpx.AsyncClient(timeout=8.0) as client:
         resp = await client.get(f"{GAMMA_BASE}/markets", params={"slug": slug})
         resp.raise_for_status()
         data = resp.json()
-    return data[0] if data else None
+        if data:
+            return data[0]
+
+        # Resolved 15m markets often disappear from the default active query surface.
+        # Retry against the closed slice so post-expiry lookups still resolve metadata.
+        resp_closed = await client.get(
+            f"{GAMMA_BASE}/markets",
+            params={"slug": slug, "closed": "true"},
+        )
+        resp_closed.raise_for_status()
+        closed_data = resp_closed.json()
+    return closed_data[0] if closed_data else None
 
 
 async def search_markets(q: str, limit: int = 20) -> list[dict]:

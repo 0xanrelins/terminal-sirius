@@ -233,9 +233,19 @@ def _polymarket_data_config(
     enabled = os.environ.get("POLYMARKET_DATA_ENABLED", "true").strip().lower()
     if enabled in {"0", "false", "no", "off"}:
         return None
+    resolve_poll_enabled = os.environ.get("POLYMARKET_RESOLVE_POLL_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     return PolymarketDataClientConfig(
         **_polymarket_client_fields(wallet),
         auto_load_missing_instruments=True,
+        resolve_poll_enabled=resolve_poll_enabled,
+        resolve_poll_interval_secs=int(os.environ.get("POLYMARKET_RESOLVE_POLL_INTERVAL_SECS", "5")),
+        resolve_poll_grace_secs=int(os.environ.get("POLYMARKET_RESOLVE_POLL_GRACE_SECS", "2")),
+        resolve_poll_max_wait_secs=int(os.environ.get("POLYMARKET_RESOLVE_POLL_MAX_WAIT_SECS", "3600")),
         instrument_config=PolymarketInstrumentProviderConfig(
             use_gamma_markets=True,
         ),

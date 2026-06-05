@@ -77,11 +77,14 @@ async def _load_polymarket_for_range(
             no_inst = no_loader.instrument
             instruments.extend([yes_inst, no_inst])
             ts = window_start * 1_000_000_000
+            question = str(getattr(yes_inst, "description", None) or "")
             events.append(
                 ActivePolymarketMarket(
                     instrument_id=yes_inst.id,
                     no_instrument_id=no_inst.id,
                     series=s,
+                    slug=slug,
+                    question=question,
                     ts_event=ts,
                     ts_init=ts,
                 ),

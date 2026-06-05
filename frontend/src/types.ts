@@ -75,16 +75,30 @@ export type LiquidationMsg = {
 
 // ── Paper-trade monitoring (account-level; no `symbol`) ──────────────────────
 
+/** Polymarket market context (from ActivePolymarketMarket + Cache instrument). */
+export type PaperMarketFields = {
+  market_label?: string;
+  market_slug?: string;
+  market_series?: string;
+  market_question?: string;
+  market_outcome?: string;
+  /** e.g. ``June 4, 11:45PM-12:00AM ET`` (from Gamma question or slug window). */
+  market_window?: string;
+  underlying?: string;
+};
+
 export type PaperPosition = {
   instrument_id: string;
   side: string;
   quantity: number | null;
   avg_px_open: number | null;
+  avg_px_close?: number | null;
   unrealized_pnl: number | null;
   realized_pnl: number | null;
   opened_ts: number;
+  closed_ts?: number;
   duration_s: number;
-};
+} & PaperMarketFields;
 
 export type PaperOrder = {
   client_order_id: string;
@@ -97,7 +111,7 @@ export type PaperOrder = {
   ts: number;
   entry_signal: string;
   entry_signal_tooltip: string;
-};
+} & PaperMarketFields;
 
 export type PaperSnapshotMsg = {
   type: "paper_snapshot";
@@ -126,6 +140,7 @@ export type PaperSnapshotMsg = {
   };
   exposure: { net?: number | null; net_all?: Record<string, number> };
   positions: PaperPosition[];
+  closed_positions?: PaperPosition[];
   orders: PaperOrder[];
   stats: Record<string, number | string>;
   counts: {
@@ -154,11 +169,14 @@ export type PaperEventMsg = {
   price?: number | null;
   commission?: number | null;
   realized_pnl?: number | null;
+  duration_s?: number | null;
+  opened_ts?: number;
+  closed_ts?: number;
   client_order_id?: string;
   reason?: string;
   entry_signal?: string;
   entry_signal_tooltip?: string;
-};
+} & PaperMarketFields;
 
 /** REST `/paper/equity` point (mirrors backend db row). */
 export type PaperEquityPoint = {

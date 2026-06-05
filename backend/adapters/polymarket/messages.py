@@ -29,3 +29,5 @@ class ActivePolymarketMarket(Data):
     instrument_id: InstrumentId
     no_instrument_id: InstrumentId
     series: str = ""
+    slug: str = ""
+    question: str = ""

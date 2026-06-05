@@ -7,10 +7,17 @@ import {
   type LineData,
   type UTCTimestamp,
 } from "lightweight-charts";
+import {
+  Group as PanelGroup,
+  Panel,
+  Separator as PanelResizeHandle,
+  useDefaultLayout,
+} from "react-resizable-panels";
 import { useFeed } from "../../context/FeedContext";
 import type {
   PaperEquityPoint,
   PaperEventMsg,
+  PaperMarketFields,
   PaperSnapshotMsg,
 } from "../../types";
 import styles from "./PaperTradeDashboard.module.css";
@@ -25,6 +32,7 @@ type FeedEvent = PaperEventMsg & { _id: string };
 const MAX_FEED_ROWS = 200;
 const MAX_CURVE_POINTS = 20_000;
 const STALE_MS = 8000;
+const PANEL_STORAGE_KEY = "paper-trade-dashboard-panels-v1";
 
 // ── formatting helpers ────────────────────────────────────────────────────────
 
@@ -106,6 +114,21 @@ function shortInstrument(iid: string): string {
   const base = dot > 0 ? iid.slice(0, dot) : iid;
   if (base.length > 14) return `${base.slice(0, 6)}…${base.slice(-4)}`;
   return base;
+}
+
+function marketTitle(row: PaperMarketFields & { instrument_id: string }): string {
+  if (row.market_label && row.market_label !== "—") return row.market_label;
+  return shortInstrument(row.instrument_id);
+}
+
+function marketTooltip(row: PaperMarketFields & { instrument_id: string }): string {
+  const parts: string[] = [];
+  if (row.market_question) parts.push(row.market_question);
+  else if (row.market_window) parts.push(row.market_window);
+  if (row.market_slug) parts.push(`slug: ${row.market_slug}`);
+  if (row.underlying) parts.push(`underlying: ${row.underlying}`);
+  parts.push(row.instrument_id);
+  return parts.join("\n");
 }
 
 export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: Props) {
@@ -309,8 +332,14 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
   const expectancy = statByPrefix(stats, "Expectancy");
 
   const positions = snapshot?.positions ?? [];
-  const orders = snapshot?.orders ?? [];
+  const closedPositions = snapshot?.closed_positions ?? [];
   const counts = snapshot?.counts;
+  const layoutStorage = typeof window !== "undefined" ? window.localStorage : undefined;
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: PANEL_STORAGE_KEY,
+    panelIds: ["paper-top", "paper-open", "paper-closed", "paper-activity"],
+    storage: layoutStorage,
+  });
 
   return (
     <div className={styles.root}>
@@ -335,178 +364,224 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
         </div>
       </div>
 
-      {/* KPI row */}
-      <div className={styles.kpis}>
-        <Kpi label="Equity" value={fmtMoney(account?.equity, ccy)} />
-        <Kpi
-          label="Total PnL"
-          value={fmtSignedMoney(snapshot?.pnl?.total, ccy)}
-          cls={pnlClass(snapshot?.pnl?.total)}
-        />
-        <Kpi
-          label="Unrealized"
-          value={fmtSignedMoney(snapshot?.pnl?.unrealized, ccy)}
-          cls={pnlClass(snapshot?.pnl?.unrealized)}
-        />
-        <Kpi
-          label="Realized"
-          value={fmtSignedMoney(snapshot?.pnl?.realized, ccy)}
-          cls={pnlClass(snapshot?.pnl?.realized)}
-        />
-        <Kpi label="Win Rate" value={fmtPct(winRate)} />
-        <Kpi label="Profit Factor" value={fmtNum(profitFactor, 2)} />
-        <Kpi label="Sharpe" value={fmtNum(sharpe, 2)} />
-        <Kpi
-          label="Max DD"
-          value={drawdown === null ? "—" : fmtPct(drawdown)}
-          cls={drawdown && drawdown < 0 ? styles.neg : ""}
-        />
-        <Kpi label="Expectancy" value={fmtNum(expectancy, 2)} />
-        <Kpi label="Sortino" value={fmtNum(sortino, 2)} />
-        <Kpi label="Exposure" value={fmtMoney(snapshot?.exposure?.net, ccy)} />
-        <Kpi
-          label="Trades"
-          value={counts ? String(counts.closed_trades) : "—"}
-          sub={counts ? `${counts.fills ?? 0} fills` : undefined}
-        />
-      </div>
+      <div className={styles.panelsRoot}>
+        <PanelGroup
+          id={PANEL_STORAGE_KEY}
+          orientation="vertical"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+        >
+          <Panel id="paper-top" defaultSize={34} minSize={20} className={styles.panelWithMin}>
+            <div className={styles.topPanelContent}>
+              {/* KPI row */}
+              <div className={styles.kpis}>
+                <Kpi label="Equity" value={fmtMoney(account?.equity, ccy)} />
+                <Kpi
+                  label="Total PnL"
+                  value={fmtSignedMoney(snapshot?.pnl?.total, ccy)}
+                  cls={pnlClass(snapshot?.pnl?.total)}
+                />
+                <Kpi
+                  label="Unrealized"
+                  value={fmtSignedMoney(snapshot?.pnl?.unrealized, ccy)}
+                  cls={pnlClass(snapshot?.pnl?.unrealized)}
+                />
+                <Kpi
+                  label="Realized"
+                  value={fmtSignedMoney(snapshot?.pnl?.realized, ccy)}
+                  cls={pnlClass(snapshot?.pnl?.realized)}
+                />
+                <Kpi label="Win Rate" value={fmtPct(winRate)} />
+                <Kpi label="Profit Factor" value={fmtNum(profitFactor, 2)} />
+                <Kpi label="Sharpe" value={fmtNum(sharpe, 2)} />
+                <Kpi
+                  label="Max DD"
+                  value={drawdown === null ? "—" : fmtPct(drawdown)}
+                  cls={drawdown && drawdown < 0 ? styles.neg : ""}
+                />
+                <Kpi label="Expectancy" value={fmtNum(expectancy, 2)} />
+                <Kpi label="Sortino" value={fmtNum(sortino, 2)} />
+                <Kpi label="Exposure" value={fmtMoney(snapshot?.exposure?.net, ccy)} />
+                <Kpi
+                  label="Trades"
+                  value={counts ? String(counts.closed_trades) : "—"}
+                  sub={counts ? `${counts.fills ?? 0} fills` : undefined}
+                />
+              </div>
 
-      {/* Equity curve */}
-      <div className={styles.chartSection}>
-        <div className={`${styles.sectionBar} ${styles.curveToolbar} chartToolbar`}>
-          <span className={styles.sectionTitle}>
-            {curveMetric === "total_pnl" ? "PnL Curve" : "Equity Curve"}
-          </span>
-          <div className={styles.toggle}>
-            {(["equity", "total_pnl"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`${styles.toggleBtn} ${curveMetric === m ? styles.toggleActive : ""}`}
-                onClick={() => onConfigChange({ curveMetric: m })}
-              >
-                {m === "equity" ? "Equity" : "PnL"}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div ref={containerRef} className={styles.chart} />
-      </div>
-
-      {/* Positions + Orders */}
-      <div className={styles.tablesRow}>
-        <div className={styles.tableCol}>
-          <div className={styles.sectionBar}>
-            <span className={styles.sectionTitle}>Open Positions</span>
-            <span className={styles.count}>{positions.length}</span>
-          </div>
-          <div className={styles.tableScroll}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Instrument</th>
-                  <th>Side</th>
-                  <th className={styles.right}>Qty</th>
-                  <th className={styles.right}>Avg</th>
-                  <th className={styles.right}>uPnL</th>
-                  <th className={styles.right}>Age</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.length === 0 && (
-                  <tr>
-                    <td className={styles.emptyCell} colSpan={6}>
-                      No open positions
-                    </td>
-                  </tr>
-                )}
-                {positions.map((p) => (
-                  <tr key={p.instrument_id}>
-                    <td title={p.instrument_id}>{shortInstrument(p.instrument_id)}</td>
-                    <td>
-                      <span className={p.side === "LONG" ? styles.pos : styles.neg}>
-                        {p.side}
-                      </span>
-                    </td>
-                    <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
-                    <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
-                    <td className={`${styles.right} ${pnlClass(p.unrealized_pnl)}`}>
-                      {fmtSignedMoney(p.unrealized_pnl)}
-                    </td>
-                    <td className={styles.right}>{fmtDuration(p.duration_s)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className={styles.tableCol}>
-          <div className={styles.sectionBar}>
-            <span className={styles.sectionTitle}>Open Orders</span>
-            <span className={styles.count}>{orders.length}</span>
-          </div>
-          <div className={styles.tableScroll}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Instrument</th>
-                  <th>Side</th>
-                  <th>Type</th>
-                  <th className={styles.right}>Qty</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.length === 0 && (
-                  <tr>
-                    <td className={styles.emptyCell} colSpan={5}>
-                      No open orders
-                    </td>
-                  </tr>
-                )}
-                {orders.map((o) => (
-                  <tr key={o.client_order_id}>
-                    <td title={o.instrument_id}>{shortInstrument(o.instrument_id)}</td>
-                    <td>
-                      <span className={o.side === "BUY" ? styles.pos : styles.neg}>
-                        {o.side}
-                      </span>
-                    </td>
-                    <td>{o.order_type}</td>
-                    <td className={styles.right}>{fmtNum(o.quantity, 2)}</td>
-                    <td className={styles.dim}>{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {/* Activity feed */}
-      <div className={styles.feedSection}>
-        <div className={styles.sectionBar}>
-          <span className={styles.sectionTitle}>Activity</span>
-          <span className={styles.count}>{events.length}</span>
-        </div>
-        <div className={styles.feedScroll}>
-          {events.length === 0 && (
-            <div className={styles.emptyCell}>No activity yet</div>
-          )}
-          {events.map((e) => (
-            <div key={e._id} className={styles.feedRow} title={e.entry_signal_tooltip || e.reason}>
-              <span className={styles.feedTime}>{fmtClock(e.ts)}</span>
-              <span className={`${styles.feedKind} ${feedKindClass(e.kind)}`}>
-                {KIND_LABEL[e.kind] ?? e.kind}
-              </span>
-              <span className={styles.feedInstr} title={e.instrument_id}>
-                {shortInstrument(e.instrument_id)}
-              </span>
-              <span className={styles.feedDetail}>{feedDetail(e)}</span>
+              {/* Equity curve */}
+              <div className={styles.chartSection}>
+                <div className={`${styles.sectionBar} ${styles.curveToolbar} chartToolbar`}>
+                  <span className={styles.sectionTitle}>
+                    {curveMetric === "total_pnl" ? "PnL Curve" : "Equity Curve"}
+                  </span>
+                  <div className={styles.toggle}>
+                    {(["equity", "total_pnl"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={`${styles.toggleBtn} ${curveMetric === m ? styles.toggleActive : ""}`}
+                        onClick={() => onConfigChange({ curveMetric: m })}
+                      >
+                        {m === "equity" ? "Equity" : "PnL"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div ref={containerRef} className={styles.chart} />
+              </div>
             </div>
-          ))}
-        </div>
+          </Panel>
+          <PanelResizeHandle className={styles.resizeHandle} />
+          <Panel id="paper-open" defaultSize={22} minSize={12} className={styles.panelWithMin}>
+            <div className={styles.tablePanel}>
+              <div className={styles.sectionBar}>
+                <span className={styles.sectionTitle}>Open Positions</span>
+                <span className={styles.count}>{positions.length}</span>
+              </div>
+              <div className={styles.tableScroll}>
+                <table className={styles.table}>
+                  <colgroup>
+                    <col className={styles.colMarketOpen} />
+                    <col className={styles.colSideOpen} />
+                    <col className={styles.colQtyOpen} />
+                    <col className={styles.colAvgOpen} />
+                    <col className={styles.colUpnlOpen} />
+                    <col className={styles.colAgeOpen} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Market</th>
+                      <th>Side</th>
+                      <th className={styles.right}>Qty</th>
+                      <th className={styles.right}>Avg</th>
+                      <th className={styles.right}>uPnL</th>
+                      <th className={styles.right}>Age</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.length === 0 && (
+                      <tr>
+                        <td className={styles.emptyCell} colSpan={6}>
+                          No open positions
+                        </td>
+                      </tr>
+                    )}
+                    {positions.map((p) => (
+                      <tr key={p.instrument_id}>
+                        <td className={styles.marketCell} title={marketTooltip(p)}>
+                          {marketTitle(p)}
+                        </td>
+                        <td>
+                          <span className={p.side === "LONG" ? styles.pos : styles.neg}>
+                            {p.side}
+                          </span>
+                        </td>
+                        <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
+                        <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
+                        <td className={`${styles.right} ${pnlClass(p.unrealized_pnl)}`}>
+                          {fmtSignedMoney(p.unrealized_pnl)}
+                        </td>
+                        <td className={styles.right}>{fmtDuration(p.duration_s)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Panel>
+          <PanelResizeHandle className={styles.resizeHandle} />
+          <Panel id="paper-closed" defaultSize={22} minSize={12} className={styles.panelWithMin}>
+            <div className={styles.tablePanel}>
+              <div className={styles.sectionBar}>
+                <span className={styles.sectionTitle}>Closed Positions</span>
+                <span className={styles.count}>{closedPositions.length}</span>
+              </div>
+              <div className={styles.tableScroll}>
+                <table className={styles.table}>
+                  <colgroup>
+                    <col className={styles.colMarketClosed} />
+                    <col className={styles.colSideClosed} />
+                    <col className={styles.colQtyClosed} />
+                    <col className={styles.colOpenClosed} />
+                    <col className={styles.colCloseClosed} />
+                    <col className={styles.colRpnlClosed} />
+                    <col className={styles.colAgeClosed} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Market</th>
+                      <th>Side</th>
+                      <th className={styles.right}>Qty</th>
+                      <th className={styles.right}>Open</th>
+                      <th className={styles.right}>Close</th>
+                      <th className={styles.right}>rPnL</th>
+                      <th className={styles.right}>Age</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {closedPositions.length === 0 && (
+                      <tr>
+                        <td className={styles.emptyCell} colSpan={7}>
+                          No closed positions yet
+                        </td>
+                      </tr>
+                    )}
+                    {closedPositions.map((p, idx) => (
+                      <tr key={`${p.instrument_id}-${p.closed_ts ?? p.opened_ts}-${idx}`}>
+                        <td className={styles.marketCell} title={marketTooltip(p)}>
+                          {marketTitle(p)}
+                        </td>
+                        <td>
+                          <span className={p.side === "LONG" ? styles.pos : styles.neg}>
+                            {p.side}
+                          </span>
+                        </td>
+                        <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
+                        <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
+                        <td className={styles.right}>{fmtNum(p.avg_px_close, 4)}</td>
+                        <td className={`${styles.right} ${pnlClass(p.realized_pnl)}`}>
+                          {fmtSignedMoney(p.realized_pnl)}
+                        </td>
+                        <td className={styles.right}>{fmtDuration(p.duration_s)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Panel>
+          <PanelResizeHandle className={styles.resizeHandle} />
+          <Panel id="paper-activity" defaultSize={22} minSize={12} className={styles.panelWithMin}>
+            <div className={styles.tablePanel}>
+              <div className={styles.sectionBar}>
+                <span className={styles.sectionTitle}>Activity</span>
+                <span className={styles.count}>{events.length}</span>
+              </div>
+              <div className={styles.feedScroll}>
+                {events.length === 0 && (
+                  <div className={styles.emptyCell}>No activity yet</div>
+                )}
+                {events.map((e) => (
+                  <div
+                    key={e._id}
+                    className={styles.feedRow}
+                    title={e.entry_signal_tooltip || e.reason || marketTooltip(e)}
+                  >
+                    <span className={styles.feedTime}>{fmtClock(e.ts)}</span>
+                    <span className={`${styles.feedKind} ${feedKindClass(e.kind)}`}>
+                      {KIND_LABEL[e.kind] ?? e.kind}
+                    </span>
+                    <span className={styles.feedInstr} title={marketTooltip(e)}>
+                      {marketTitle(e)}
+                    </span>
+                    <span className={styles.feedDetail}>{feedDetail(e)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Panel>
+        </PanelGroup>
       </div>
     </div>
   );
@@ -527,7 +602,10 @@ function feedDetail(e: FeedEvent): string {
     return `${e.side ?? ""} ${fmtNum(e.quantity, 2)} @ ${fmtNum(e.price, 4)}`;
   }
   if (e.kind === "position_close") {
-    return `pnl ${fmtSignedMoney(e.realized_pnl)}`;
+    const duration = e.duration_s !== null && e.duration_s !== undefined
+      ? ` in ${fmtDuration(e.duration_s)}`
+      : "";
+    return `pnl ${fmtSignedMoney(e.realized_pnl)}${duration}`;
   }
   if (e.kind === "order_rejected" || e.kind === "order_denied") {
     return e.reason ?? "";

@@ -88,12 +88,15 @@ class PolymarketQuoteBridgeActor(Actor):
         all_iids = self._slug_to_iids.get(slug, [])
         no_iid = all_iids[1] if len(all_iids) > 1 else yes_iid
         ts = self.clock.timestamp_ns()
+        meta = self._meta_by_iid.get(str(yes_iid), {})
         self.publish_data(
             DataType(ActivePolymarketMarket),
             ActivePolymarketMarket(
                 instrument_id=yes_iid,
                 no_instrument_id=no_iid,
                 series=series,
+                slug=slug,
+                question=str(meta.get("question") or slug),
                 ts_event=ts,
                 ts_init=ts,
             ),

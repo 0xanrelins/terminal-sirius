@@ -30,9 +30,12 @@ from nautilus_trader.model.events import (
     PositionClosed,
     PositionOpened,
 )
-from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.data import DataType
+from nautilus_trader.model.identifiers import InstrumentId, Venue
 
-from strategy_signal_tags import entry_signal_from_order_tags
+from adapters.polymarket.messages import ActivePolymarketMarket
+from adapters.polymarket.rolling import WINDOW_SEC
+from strategy_signal_tags import entry_signal_from_order_tags, parse_entry_signal_tag
 
 if TYPE_CHECKING:
     import multiprocessing
@@ -82,6 +85,44 @@ def _json_safe(obj: Any) -> Any:
     return str(obj)
 
 
+def _extract_question_window(question: str) -> str:
+    """``Solana Up or Down - June 4, 11:45PM-12:00AM ET`` → date/time suffix."""
+    if not question:
+        return ""
+    sep = " - "
+    if sep in question:
+        return question.split(sep, 1)[1].strip()
+    return ""
+
+
+def _fmt_polymarket_time(dt) -> str:
+    hour = dt.hour % 12 or 12
+    minute = dt.minute
+    ampm = "AM" if dt.hour < 12 else "PM"
+    if minute == 0:
+        return f"{hour}{ampm}"
+    return f"{hour}:{minute:02d}{ampm}"
+
+
+def _window_from_rolling_slug(slug: str) -> str:
+    """Fallback when Gamma question is unavailable — derive ET window from slug epoch."""
+    if not slug:
+        return ""
+    tail = slug.rsplit("-", 1)[-1]
+    if not tail.isdigit() or len(tail) < 10:
+        return ""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    start = int(tail)
+    end = start + WINDOW_SEC
+    et = ZoneInfo("America/New_York")
+    s = datetime.fromtimestamp(start, tz=et)
+    e = datetime.fromtimestamp(end, tz=et)
+    date_part = f"{s.strftime('%B')} {s.day}"
+    return f"{date_part}, {_fmt_polymarket_time(s)}-{_fmt_polymarket_time(e)} ET"
+
+
 def _money_dict(d: dict | None) -> dict[str, float]:
     """Convert a ``dict[Currency, Money]`` to ``{currency_code: amount}``."""
     if not d:
@@ -109,6 +150,8 @@ class PaperTradeMonitorActor(Actor):
         self._paper_trade = bool(config.paper_trade)
         self._started_ns: int = 0
         self._fills_count: int = 0
+        # instrument_id str → market metadata (from ActivePolymarketMarket bus)
+        self._iid_meta: dict[str, dict[str, str]] = {}
 
     def _enqueue(self, msg: dict) -> None:
         try:
@@ -120,6 +163,7 @@ class PaperTradeMonitorActor(Actor):
 
     def on_start(self) -> None:
         self._started_ns = self.clock.timestamp_ns()
+        self.subscribe_data(DataType(ActivePolymarketMarket))
         self.msgbus.subscribe(topic="events.order.*", handler=self._on_order_event)
         self.msgbus.subscribe(topic="events.position.*", handler=self._on_position_event)
         self.clock.set_timer(
@@ -137,6 +181,71 @@ class PaperTradeMonitorActor(Actor):
             self.clock.cancel_timer("paper_snapshot")
         except Exception:  # noqa: BLE001 — best-effort on shutdown
             pass
+
+    def on_data(self, data) -> None:
+        if isinstance(data, ActivePolymarketMarket):
+            self._on_active_polymarket_market(data)
+
+    def _on_active_polymarket_market(self, data: ActivePolymarketMarket) -> None:
+        slug = str(data.slug or "")
+        question = str(data.question or "")
+        series = str(data.series or "")
+        base = {
+            "market_slug": slug,
+            "market_series": series,
+            "market_question": question,
+        }
+        yes_iid = str(data.instrument_id)
+        no_iid = str(data.no_instrument_id)
+        self._iid_meta[yes_iid] = {**base, "market_outcome": "YES"}
+        self._iid_meta[no_iid] = {**base, "market_outcome": "NO"}
+
+    def _resolve_market_window(self, meta: dict[str, str]) -> str:
+        window = meta.get("market_window") or ""
+        if window:
+            return window
+        question = meta.get("market_question") or ""
+        window = _extract_question_window(question)
+        if not window:
+            window = _window_from_rolling_slug(meta.get("market_slug") or "")
+        return window
+
+    def _format_market_label(self, meta: dict[str, str]) -> str:
+        series = meta.get("market_series") or ""
+        outcome = meta.get("market_outcome") or ""
+        window = self._resolve_market_window(meta)
+        if series:
+            label = series.replace("-", " ").upper()
+        else:
+            q = meta.get("market_question") or meta.get("market_slug") or ""
+            if " - " in q:
+                label = q.split(" - ", 1)[0].strip()
+            else:
+                label = (q[:48] + "…") if len(q) > 48 else q
+        parts = [p for p in (label, outcome, window) if p]
+        return " · ".join(parts) if parts else "—"
+
+    def _market_context(
+        self,
+        instrument_id: InstrumentId | str,
+        *,
+        order_tags: Any = None,
+    ) -> dict[str, str]:
+        iid = str(instrument_id)
+        meta = dict(self._iid_meta.get(iid, {}))
+        inst = self.cache.instrument(InstrumentId.from_str(iid) if isinstance(instrument_id, str) else instrument_id)
+        if inst is not None:
+            desc = getattr(inst, "description", None)
+            if desc and not meta.get("market_question"):
+                meta["market_question"] = str(desc)
+        parsed = parse_entry_signal_tag(order_tags)
+        if parsed and parsed.get("sym"):
+            meta["underlying"] = parsed["sym"]
+        window = self._resolve_market_window(meta)
+        if window:
+            meta["market_window"] = window
+        meta["market_label"] = self._format_market_label(meta)
+        return meta
 
     # -- SNAPSHOT -----------------------------------------------------------
 
@@ -167,6 +276,7 @@ class PaperTradeMonitorActor(Actor):
             snapshot["pnl"] = {}
             snapshot["exposure"] = {}
             snapshot["positions"] = []
+            snapshot["closed_positions"] = []
             snapshot["orders"] = []
             snapshot["stats"] = {}
             snapshot["counts"] = {"open_positions": 0, "open_orders": 0, "closed_trades": 0}
@@ -203,11 +313,12 @@ class PaperTradeMonitorActor(Actor):
             "net": net_exposure.get(currency) if currency else None,
             "net_all": net_exposure,
         }
+        closed = list(self.cache.positions_closed(venue=self._venue))
         snapshot["positions"] = self._open_positions(now_ns)
+        snapshot["closed_positions"] = self._closed_positions(closed)
         snapshot["orders"] = self._open_orders()
         snapshot["stats"] = self._analyzer_stats(account, currency, unrealized)
 
-        closed = self.cache.positions_closed(venue=self._venue)
         snapshot["counts"] = {
             "open_positions": len(snapshot["positions"]),
             "open_orders": len(snapshot["orders"]),
@@ -225,17 +336,54 @@ class PaperTradeMonitorActor(Actor):
     def _open_positions(self, now_ns: int) -> list[dict]:
         out: list[dict] = []
         for pos in self.cache.positions_open(venue=self._venue):
+            # Keep this list strictly "open" even if cache emits transitional entries.
+            ts_closed = getattr(pos, "ts_closed", None)
+            side_name = getattr(getattr(pos, "side", None), "name", "")
+            qty = _num(getattr(pos, "quantity", None))
+            if ts_closed not in (None, 0):
+                continue
+            if side_name == "FLAT":
+                continue
+            if qty is None or qty <= 0:
+                continue
+            ts_opened = int(getattr(pos, "ts_opened", 0) or 0)
             unrealized = self.portfolio.unrealized_pnl(pos.instrument_id)
             out.append(
                 {
                     "instrument_id": str(pos.instrument_id),
                     "side": pos.side.name,
-                    "quantity": _num(pos.quantity),
+                    "quantity": qty,
                     "avg_px_open": _num(pos.avg_px_open),
                     "unrealized_pnl": _num(unrealized),
                     "realized_pnl": _num(pos.realized_pnl),
-                    "opened_ts": int(pos.ts_opened),
-                    "duration_s": max(0.0, (now_ns - int(pos.ts_opened)) / 1e9),
+                    "opened_ts": ts_opened,
+                    "duration_s": max(0.0, (now_ns - ts_opened) / 1e9),
+                    **self._market_context(pos.instrument_id),
+                }
+            )
+        return out
+
+    def _closed_positions(self, closed: list | None = None) -> list[dict]:
+        out: list[dict] = []
+        positions = closed if closed is not None else list(self.cache.positions_closed(venue=self._venue))
+        positions_sorted = sorted(positions, key=lambda p: int(getattr(p, "ts_closed", 0) or 0), reverse=True)
+        for pos in positions_sorted[:200]:
+            ts_closed = int(getattr(pos, "ts_closed", 0) or 0)
+            ts_opened = int(getattr(pos, "ts_opened", 0) or 0)
+            duration_ns = int(getattr(pos, "duration_ns", 0) or 0)
+            out.append(
+                {
+                    "instrument_id": str(pos.instrument_id),
+                    "side": getattr(getattr(pos, "side", None), "name", ""),
+                    "quantity": _num(pos.peak_qty) or _num(pos.quantity),
+                    "avg_px_open": _num(pos.avg_px_open),
+                    "avg_px_close": _num(pos.avg_px_close),
+                    "unrealized_pnl": 0.0,
+                    "realized_pnl": _num(pos.realized_pnl),
+                    "opened_ts": ts_opened,
+                    "closed_ts": ts_closed,
+                    "duration_s": max(0.0, duration_ns / 1e9),
+                    **self._market_context(pos.instrument_id),
                 }
             )
         return out
@@ -256,6 +404,7 @@ class PaperTradeMonitorActor(Actor):
                     "ts": int(order.ts_init),
                     "entry_signal": display,
                     "entry_signal_tooltip": tooltip,
+                    **self._market_context(order.instrument_id, order_tags=order.tags),
                 }
             )
         return out
@@ -310,6 +459,8 @@ class PaperTradeMonitorActor(Actor):
         if isinstance(event, OrderFilled):
             self._fills_count += 1
             display, tooltip = self._entry_signal_for_order(event.client_order_id)
+            order = self.cache.order(event.client_order_id)
+            tags = order.tags if order is not None else None
             return {
                 "type": "paper_event",
                 "kind": "fill",
@@ -322,8 +473,10 @@ class PaperTradeMonitorActor(Actor):
                 "client_order_id": str(event.client_order_id),
                 "entry_signal": display,
                 "entry_signal_tooltip": tooltip,
+                **self._market_context(event.instrument_id, order_tags=tags),
             }
         if isinstance(event, OrderRejected):
+            order = self.cache.order(event.client_order_id)
             return {
                 "type": "paper_event",
                 "kind": "order_rejected",
@@ -331,8 +484,13 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "client_order_id": str(event.client_order_id),
                 "reason": str(event.reason),
+                **self._market_context(
+                    event.instrument_id,
+                    order_tags=order.tags if order is not None else None,
+                ),
             }
         if isinstance(event, OrderDenied):
+            order = self.cache.order(event.client_order_id)
             return {
                 "type": "paper_event",
                 "kind": "order_denied",
@@ -340,6 +498,10 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "client_order_id": str(event.client_order_id),
                 "reason": str(event.reason),
+                **self._market_context(
+                    event.instrument_id,
+                    order_tags=order.tags if order is not None else None,
+                ),
             }
         return None
 
@@ -353,8 +515,10 @@ class PaperTradeMonitorActor(Actor):
                 "side": event.side.name,
                 "quantity": _num(event.quantity),
                 "price": _num(event.avg_px_open),
+                **self._market_context(event.instrument_id),
             }
         if isinstance(event, PositionClosed):
+            duration_ns = int(getattr(event, "duration_ns", 0) or 0)
             return {
                 "type": "paper_event",
                 "kind": "position_close",
@@ -363,6 +527,10 @@ class PaperTradeMonitorActor(Actor):
                 "quantity": _num(event.peak_qty),
                 "price": _num(event.avg_px_close),
                 "realized_pnl": _num(event.realized_pnl),
+                "duration_s": max(0.0, duration_ns / 1e9),
+                "opened_ts": int(getattr(event, "ts_opened", 0) or 0),
+                "closed_ts": int(getattr(event, "ts_closed", 0) or 0),
+                **self._market_context(event.instrument_id),
             }
         if isinstance(event, PositionChanged):
             return {
@@ -372,6 +540,7 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "quantity": _num(event.quantity),
                 "realized_pnl": _num(event.realized_pnl),
+                **self._market_context(event.instrument_id),
             }
         return None
 

@@ -11,6 +11,15 @@
   overflow: hidden;
 }
 
+.panelsRoot {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.panelWithMin {
+  min-height: 0;
+}
+
 /* ── header ── */
 .header {
   display: flex;
@@ -81,7 +90,7 @@
 /* ── KPI row ── */
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 1px;
   background: #2a2a35;
   border-bottom: 1px solid #2a2a35;
@@ -154,9 +163,8 @@
 .chartSection {
   display: flex;
   flex-direction: column;
-  flex: 1 1 38%;
-  min-height: 120px;
-  border-bottom: 1px solid #2a2a35;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .curveToolbar {
@@ -195,22 +203,48 @@
   min-height: 0;
 }
 
-/* ── tables ── */
-.tablesRow {
-  display: flex;
-  flex: 1 1 30%;
-  min-height: 90px;
-  border-bottom: 1px solid #2a2a35;
-}
-
-.tableCol {
+.topPanelContent {
   display: flex;
   flex-direction: column;
-  flex: 1 1 50%;
-  min-width: 0;
-  border-right: 1px solid #23232c;
+  height: 100%;
+  min-height: 0;
 }
-.tableCol:last-child { border-right: none; }
+
+/* ── tables + activity (stacked full-width panels) ── */
+.panelsStack {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tablePanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.resizeHandle {
+  height: 8px;
+  background: #15151b;
+  border-top: 1px solid #23232c;
+  border-bottom: 1px solid #23232c;
+  position: relative;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 2px;
+  background: #505867;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+}
 
 .tableScroll {
   flex: 1 1 auto;
@@ -221,8 +255,24 @@
 .table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: 15px;
 }
+
+.colMarketOpen { width: 36%; }
+.colSideOpen { width: 10%; }
+.colQtyOpen { width: 12%; }
+.colAvgOpen { width: 14%; }
+.colUpnlOpen { width: 16%; }
+.colAgeOpen { width: 12%; }
+
+.colMarketClosed { width: 32%; }
+.colSideClosed { width: 10%; }
+.colQtyClosed { width: 10%; }
+.colOpenClosed { width: 13%; }
+.colCloseClosed { width: 13%; }
+.colRpnlClosed { width: 13%; }
+.colAgeClosed { width: 9%; }
 
 .table thead th {
   position: sticky;
@@ -239,18 +289,29 @@
   z-index: 1;
 }
 
+.table thead th.right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .table tbody td {
   padding: 3px 8px;
   border-bottom: 1px solid #1b1b22;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+}
+
+.marketCell {
+  max-width: min(560px, 55vw);
 }
 
 .table tbody tr:hover { background: #1a1a21; }
 
-.right { text-align: right; }
+.right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 
 .emptyCell {
   text-align: center;
@@ -259,14 +320,7 @@
   font-size: 15px;
 }
 
-/* ── activity feed ── */
-.feedSection {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 24%;
-  min-height: 70px;
-}
-
+/* ── activity feed rows ── */
 .feedScroll {
   flex: 1 1 auto;
   overflow: auto;
@@ -275,7 +329,7 @@
 
 .feedRow {
   display: grid;
-  grid-template-columns: 80px 64px 120px 1fr;
+  grid-template-columns: 80px 64px minmax(200px, 1.4fr) 1fr;
   gap: 8px;
   align-items: center;
   padding: 2px 10px;
