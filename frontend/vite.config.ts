@@ -12,6 +12,7 @@ export default defineConfig({
       "/liquidation-events": { target: "http://localhost:8000" },
       "/liq-post-event": { target: "http://localhost:8000" },
       "/polymarket": { target: "http://localhost:8000" },
+      "/paper": { target: "http://localhost:8000" },
       "/simulation": { target: "http://localhost:8000" },
       "/live": { target: "http://localhost:8000" },
     },

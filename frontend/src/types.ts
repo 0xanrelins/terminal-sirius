@@ -73,13 +73,116 @@ export type LiquidationMsg = {
   bars?: LiquidationBarSnapshot[];
 };
 
+// ── Paper-trade monitoring (account-level; no `symbol`) ──────────────────────
+
+export type PaperPosition = {
+  instrument_id: string;
+  side: string;
+  quantity: number | null;
+  avg_px_open: number | null;
+  unrealized_pnl: number | null;
+  realized_pnl: number | null;
+  opened_ts: number;
+  duration_s: number;
+};
+
+export type PaperOrder = {
+  client_order_id: string;
+  instrument_id: string;
+  side: string;
+  order_type: string;
+  quantity: number | null;
+  filled_qty: number | null;
+  status: string;
+  ts: number;
+  entry_signal: string;
+  entry_signal_tooltip: string;
+};
+
+export type PaperSnapshotMsg = {
+  type: "paper_snapshot";
+  ts: number;
+  run: {
+    strategy_on: boolean;
+    paper: boolean;
+    trader_id: string;
+    venue: string;
+    started_ts: number;
+    uptime_s: number;
+  };
+  account: {
+    currency: string | null;
+    balance: number | null;
+    balances: Record<string, number>;
+    locked: Record<string, number>;
+    equity: number | null;
+    equity_all: Record<string, number>;
+  } | null;
+  pnl: {
+    currency?: string | null;
+    realized?: number | null;
+    unrealized?: number | null;
+    total?: number | null;
+  };
+  exposure: { net?: number | null; net_all?: Record<string, number> };
+  positions: PaperPosition[];
+  orders: PaperOrder[];
+  stats: Record<string, number | string>;
+  counts: {
+    open_positions: number;
+    open_orders: number;
+    closed_trades: number;
+    fills?: number;
+  };
+};
+
+export type PaperEventKind =
+  | "fill"
+  | "position_open"
+  | "position_close"
+  | "position_change"
+  | "order_rejected"
+  | "order_denied";
+
+export type PaperEventMsg = {
+  type: "paper_event";
+  kind: PaperEventKind;
+  ts: number;
+  instrument_id: string;
+  side?: string;
+  quantity?: number | null;
+  price?: number | null;
+  commission?: number | null;
+  realized_pnl?: number | null;
+  client_order_id?: string;
+  reason?: string;
+  entry_signal?: string;
+  entry_signal_tooltip?: string;
+};
+
+/** REST `/paper/equity` point (mirrors backend db row). */
+export type PaperEquityPoint = {
+  ts: number;
+  currency: string | null;
+  equity: number | null;
+  balance: number | null;
+  realized_pnl: number | null;
+  unrealized_pnl: number | null;
+  total_pnl: number | null;
+  net_exposure: number | null;
+  open_positions: number;
+  open_orders: number;
+};
+
 export type FeedMsg =
   | TradeMsg
   | QuoteMsg
   | BarMsg
   | IndicatorMsg
   | PolymarketMsg
-  | LiquidationMsg;
+  | LiquidationMsg
+  | PaperSnapshotMsg
+  | PaperEventMsg;
 
 export type Kline = {
   time: number;
@@ -107,7 +210,8 @@ export type WidgetType =
   | "polymarket_ticker"
   | "liquidation_signals"
   | "market_times"
-  | "bar_countdown";
+  | "bar_countdown"
+  | "paper_trade_dashboard";
 
 export type PriceTickerConfig = {
   id: string;
@@ -217,6 +321,13 @@ export type BarCountdownConfig = {
   type: "bar_countdown";
 };
 
+export type PaperTradeDashboardConfig = {
+  id: string;
+  type: "paper_trade_dashboard";
+  /** Equity-curve metric to plot. Default "equity". */
+  curveMetric?: "equity" | "total_pnl";
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
@@ -226,7 +337,8 @@ export type WidgetConfig =
   | PolymarketTickerConfig
   | LiquidationSignalsConfig
   | MarketTimesConfig
-  | BarCountdownConfig;
+  | BarCountdownConfig
+  | PaperTradeDashboardConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

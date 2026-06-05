@@ -10,6 +10,8 @@ def test_allowed_types_match_feed_msg_union() -> None:
         "indicator",
         "polymarket",
         "liquidation",
+        "paper_snapshot",
+        "paper_event",
     }
     assert ALLOWED_WS_TYPES == expected
 
@@ -48,6 +50,21 @@ def test_validate_sample_market_messages() -> None:
             "indicator": "ema",
             "period": 20,
             "value": "50000.5",
+        }
+    )
+    validate_ws_payload(
+        {
+            "type": "paper_snapshot",
+            "ts": 1,
+            "run": {"strategy_on": True, "paper": True},
+        }
+    )
+    validate_ws_payload(
+        {
+            "type": "paper_event",
+            "kind": "fill",
+            "ts": 1,
+            "instrument_id": "0x123.POLYMARKET",
         }
     )
 

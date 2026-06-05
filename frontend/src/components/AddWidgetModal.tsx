@@ -106,6 +106,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "market_times" });
       } else if (binanceType === "bar_countdown") {
         onAdd({ id, type: "bar_countdown" });
+      } else if (binanceType === "paper_trade_dashboard") {
+        onAdd({ id, type: "paper_trade_dashboard", curveMetric: "equity" });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -143,6 +145,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
       ? binanceType === "liquidation_signals" ||
         binanceType === "market_times" ||
         binanceType === "bar_countdown" ||
+        binanceType === "paper_trade_dashboard" ||
         binanceType === "comparison_chart" ||
         binanceType === "liq_post_event_chart" ||
         binanceType === "candlestick_chart" ||
@@ -188,6 +191,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "liquidation_signals",
                       "market_times",
                       "bar_countdown",
+                      "paper_trade_dashboard",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -208,7 +212,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                                   ? "Market Times"
                                   : t === "bar_countdown"
                                     ? "15m Countdown"
-                                    : "Liq Signals"}
+                                    : t === "paper_trade_dashboard"
+                                      ? "Paper Trade"
+                                      : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -289,6 +295,13 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "bar_countdown" && (
                 <p className={styles.hint}>
                   UTC 15m bar close — aligned to :00, :15, :30, :45 (charts, liq bars, Polymarket windows).
+                </p>
+              )}
+
+              {binanceType === "paper_trade_dashboard" && (
+                <p className={styles.hint}>
+                  Live sandbox paper-trade monitor — equity curve, PnL, open positions/orders,
+                  win rate, Sharpe and fill activity. Requires STRATEGY_ENABLED on the backend.
                 </p>
               )}
             </>

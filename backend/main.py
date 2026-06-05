@@ -187,6 +187,29 @@ async def liq_post_event_sessions_endpoint(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+# ── Paper-trade monitoring ────────────────────────────────────────────────────
+
+@app.get("/paper/equity")
+async def paper_equity_endpoint(
+    since: Optional[int] = None,
+    limit: int = 5000,
+):
+    """Equity/PnL curve points (ascending) for the paper-trade dashboard."""
+    try:
+        return await db.get_paper_equity(since, min(limit, 20_000))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/paper/events")
+async def paper_events_endpoint(limit: int = 200):
+    """Recent paper-trade order/position events (newest first)."""
+    try:
+        return await db.get_paper_events(min(limit, 1000))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ── Polymarket ───────────────────────────────────────────────────────────────
 
 @app.get("/polymarket/markets")
@@ -303,6 +326,10 @@ async def _broadcast_loop() -> None:
             asyncio.create_task(_persist_bar(msg))
         elif msg.get("type") == "liquidation":
             asyncio.create_task(_persist_liquidation(msg))
+        elif msg.get("type") == "paper_snapshot":
+            _maybe_persist_paper_snapshot(msg)
+        elif msg.get("type") == "paper_event":
+            asyncio.create_task(_persist_paper_event(msg))
 
         if not _clients:
             continue
@@ -355,6 +382,39 @@ async def _liquidation_events_retention_loop() -> None:
             await db.prune_liquidation_events()
         except Exception as e:
             print(f"[warn] liquidation_events retention failed: {e}")
+
+
+# Downsample equity-curve persistence (snapshots stream every ~2s; keep the DB
+# curve coarser). WS broadcast is unaffected — clients still see every snapshot.
+_PAPER_EQUITY_PERSIST_INTERVAL_NS = int(
+    float(os.environ.get("PAPER_EQUITY_PERSIST_INTERVAL_SEC", "10")) * 1e9
+)
+_last_paper_equity_persist_ns = 0
+
+
+def _maybe_persist_paper_snapshot(msg: dict) -> None:
+    global _last_paper_equity_persist_ns
+    if msg.get("account") is None:
+        return  # account not ready — nothing to chart yet
+    ts = int(msg.get("ts") or 0)
+    if ts - _last_paper_equity_persist_ns < _PAPER_EQUITY_PERSIST_INTERVAL_NS:
+        return
+    _last_paper_equity_persist_ns = ts
+    asyncio.create_task(_persist_paper_snapshot(msg))
+
+
+async def _persist_paper_snapshot(msg: dict) -> None:
+    try:
+        await db.insert_paper_snapshot(msg)
+    except Exception as e:
+        print(f"[warn] paper_snapshot persist failed: {e}")
+
+
+async def _persist_paper_event(msg: dict) -> None:
+    try:
+        await db.insert_paper_event(msg)
+    except Exception as e:
+        print(f"[warn] paper_event persist failed: {e}")
 
 
 async def _persist_bar(msg: dict) -> None:

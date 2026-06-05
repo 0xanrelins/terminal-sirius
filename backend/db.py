@@ -6,6 +6,8 @@ Schema:
   - `liquidation_bars` — long/short liquidation notional per bar (symbol, interval, time)
   - `liquidation_events` — raw Binance forceOrder JSON per event
   - `liquidation_watchlist_events` — denormalized major-coin liqs (trigger from liquidation_events)
+  - `paper_equity_snapshots` — paper-trade equity/PnL curve points (PaperTradeMonitorActor)
+  - `paper_events` — paper-trade order/position lifecycle events (activity feed)
 """
 import json
 import os
@@ -15,6 +17,8 @@ import asyncpg
 
 LIQUIDATION_EVENTS_MAX_ROWS = 50_000
 LIQUIDATION_EVENTS_RETENTION_HOURS = 48
+PAPER_EQUITY_MAX_ROWS = 100_000
+PAPER_EVENTS_MAX_ROWS = 20_000
 _pool: Optional[asyncpg.Pool] = None
 
 
@@ -173,6 +177,43 @@ async def _migrate(p: asyncpg.Pool) -> None:
         await conn.execute("DROP TABLE IF EXISTS simulation_cycles CASCADE")
         await conn.execute("DROP TABLE IF EXISTS live_bets CASCADE")
         await conn.execute("DROP TABLE IF EXISTS live_cycles CASCADE")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_equity_snapshots (
+                id             BIGSERIAL PRIMARY KEY,
+                ts             BIGINT NOT NULL,            -- nanoseconds (ts_event)
+                currency       TEXT,
+                equity         DOUBLE PRECISION,
+                balance        DOUBLE PRECISION,
+                realized_pnl   DOUBLE PRECISION,
+                unrealized_pnl DOUBLE PRECISION,
+                total_pnl      DOUBLE PRECISION,
+                net_exposure   DOUBLE PRECISION,
+                open_positions INTEGER,
+                open_orders    INTEGER
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS paper_equity_snapshots_ts
+            ON paper_equity_snapshots (ts)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_events (
+                id            BIGSERIAL PRIMARY KEY,
+                ts            BIGINT NOT NULL,
+                kind          TEXT NOT NULL,
+                instrument_id TEXT,
+                side          TEXT,
+                quantity      DOUBLE PRECISION,
+                price         DOUBLE PRECISION,
+                commission    DOUBLE PRECISION,
+                realized_pnl  DOUBLE PRECISION,
+                payload       JSONB NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS paper_events_ts
+            ON paper_events (ts DESC)
+        """)
 
 
 # ── Queries ──────────────────────────────────────────────────────────────────
@@ -419,3 +460,165 @@ async def prune_liquidation_events() -> None:
         """,
         LIQUIDATION_EVENTS_MAX_ROWS,
     )
+
+
+# ── Paper-trade monitoring ────────────────────────────────────────────────────
+
+
+def _opt_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_paper_equity_counter = 0
+_paper_events_counter = 0
+
+
+async def insert_paper_snapshot(msg: dict) -> None:
+    """Persist one equity-curve point from a ``paper_snapshot`` WS message."""
+    global _paper_equity_counter
+    account = msg.get("account") or {}
+    pnl = msg.get("pnl") or {}
+    exposure = msg.get("exposure") or {}
+    counts = msg.get("counts") or {}
+    await pool().execute(
+        """
+        INSERT INTO paper_equity_snapshots (
+            ts, currency, equity, balance, realized_pnl, unrealized_pnl,
+            total_pnl, net_exposure, open_positions, open_orders
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        int(msg.get("ts") or 0),
+        account.get("currency"),
+        _opt_float(account.get("equity")),
+        _opt_float(account.get("balance")),
+        _opt_float(pnl.get("realized")),
+        _opt_float(pnl.get("unrealized")),
+        _opt_float(pnl.get("total")),
+        _opt_float(exposure.get("net")),
+        int(counts.get("open_positions") or 0),
+        int(counts.get("open_orders") or 0),
+    )
+    _paper_equity_counter += 1
+    if _paper_equity_counter % 500 == 0:
+        await _prune_paper_equity()
+
+
+async def _prune_paper_equity() -> None:
+    await pool().execute(
+        """
+        DELETE FROM paper_equity_snapshots
+        WHERE id NOT IN (
+            SELECT id FROM paper_equity_snapshots
+            ORDER BY id DESC
+            LIMIT $1
+        )
+        """,
+        PAPER_EQUITY_MAX_ROWS,
+    )
+
+
+async def get_paper_equity(since: int | None, limit: int) -> list[dict]:
+    """Equity-curve points ascending (oldest first)."""
+    if since is not None:
+        rows = await pool().fetch(
+            """
+            SELECT ts, currency, equity, balance, realized_pnl, unrealized_pnl,
+                   total_pnl, net_exposure, open_positions, open_orders
+            FROM paper_equity_snapshots
+            WHERE ts >= $1
+            ORDER BY ts DESC
+            LIMIT $2
+            """,
+            since,
+            limit,
+        )
+    else:
+        rows = await pool().fetch(
+            """
+            SELECT ts, currency, equity, balance, realized_pnl, unrealized_pnl,
+                   total_pnl, net_exposure, open_positions, open_orders
+            FROM paper_equity_snapshots
+            ORDER BY ts DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+    return [
+        {
+            "ts": int(r["ts"]),
+            "currency": r["currency"],
+            "equity": _opt_float(r["equity"]),
+            "balance": _opt_float(r["balance"]),
+            "realized_pnl": _opt_float(r["realized_pnl"]),
+            "unrealized_pnl": _opt_float(r["unrealized_pnl"]),
+            "total_pnl": _opt_float(r["total_pnl"]),
+            "net_exposure": _opt_float(r["net_exposure"]),
+            "open_positions": int(r["open_positions"] or 0),
+            "open_orders": int(r["open_orders"] or 0),
+        }
+        for r in reversed(rows)
+    ]
+
+
+async def insert_paper_event(msg: dict) -> None:
+    """Persist a ``paper_event`` WS message for the activity feed/history."""
+    global _paper_events_counter
+    await pool().execute(
+        """
+        INSERT INTO paper_events (
+            ts, kind, instrument_id, side, quantity, price,
+            commission, realized_pnl, payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+        """,
+        int(msg.get("ts") or 0),
+        str(msg.get("kind") or "unknown"),
+        msg.get("instrument_id"),
+        msg.get("side"),
+        _opt_float(msg.get("quantity")),
+        _opt_float(msg.get("price")),
+        _opt_float(msg.get("commission")),
+        _opt_float(msg.get("realized_pnl")),
+        json.dumps(msg),
+    )
+    _paper_events_counter += 1
+    if _paper_events_counter % 200 == 0:
+        await _prune_paper_events()
+
+
+async def _prune_paper_events() -> None:
+    await pool().execute(
+        """
+        DELETE FROM paper_events
+        WHERE id NOT IN (
+            SELECT id FROM paper_events
+            ORDER BY id DESC
+            LIMIT $1
+        )
+        """,
+        PAPER_EVENTS_MAX_ROWS,
+    )
+
+
+async def get_paper_events(limit: int) -> list[dict]:
+    """Recent paper-trade events, newest first."""
+    rows = await pool().fetch(
+        """
+        SELECT payload
+        FROM paper_events
+        ORDER BY id DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+    out: list[dict] = []
+    for r in rows:
+        p = r["payload"]
+        out.append(json.loads(p) if isinstance(p, str) else dict(p))
+    return out

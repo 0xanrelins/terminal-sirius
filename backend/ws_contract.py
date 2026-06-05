@@ -10,8 +10,12 @@ from __future__ import annotations
 # Market data (Nautilus actors → data_queue)
 MARKET_DATA_TYPES = frozenset({"trade", "quote", "bar", "indicator", "polymarket", "liquidation"})
 
+# Account-level paper-trade monitoring (PaperTradeMonitorActor → data_queue).
+# These are not market data and carry no `symbol` (broadcast to all WS clients).
+PAPER_TRADE_TYPES = frozenset({"paper_snapshot", "paper_event"})
+
 # Mirrors FeedMsg in frontend/src/types.ts
-FEED_MSG_TYPES = MARKET_DATA_TYPES
+FEED_MSG_TYPES = MARKET_DATA_TYPES | PAPER_TRADE_TYPES
 
 ALLOWED_WS_TYPES = FEED_MSG_TYPES
 
@@ -23,6 +27,8 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "indicator": frozenset({"type", "symbol", "interval", "time", "indicator", "period"}),
     "polymarket": frozenset({"type", "symbol", "slug", "question", "yes_price", "ts"}),
     "liquidation": frozenset({"type", "symbol", "side", "notional", "time"}),
+    "paper_snapshot": frozenset({"type", "ts", "run"}),
+    "paper_event": frozenset({"type", "kind", "ts", "instrument_id"}),
 }
 
 

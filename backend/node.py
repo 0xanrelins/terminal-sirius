@@ -64,6 +64,10 @@ from liquidation_ui_bridge_actor import (
     LiquidationUiBridgeActor,
     LiquidationUiBridgeActorConfig,
 )
+from paper_trade_monitor_actor import (
+    PaperTradeMonitorActor,
+    PaperTradeMonitorActorConfig,
+)
 from polymarket_realtime_bucket_actor import (
     PolymarketRealtimeBucketActor,
     PolymarketRealtimeBucketActorConfig,
@@ -440,9 +444,23 @@ def build_node(
                 ),
             ),
         )
+        node.trader.add_actor(
+            PaperTradeMonitorActor(
+                config=PaperTradeMonitorActorConfig(
+                    component_id="PaperTradeMonitor-001",
+                    venue="POLYMARKET",
+                    snapshot_interval_sec=float(
+                        os.environ.get("PAPER_SNAPSHOT_INTERVAL_SEC", "2.0")
+                    ),
+                    paper_trade=paper_trade,
+                ),
+                data_queue=data_queue,
+            ),
+        )
         log_strategy_env_summary()
         mode = "paper (Sandbox)" if paper_trade else "live exec"
         print(f"[nautilus] TerminalSiriusStrategy + signal actors enabled — {mode}")
+        print("[nautilus] PaperTradeMonitorActor enabled (paper_snapshot/paper_event → WS queue)")
 
     node.build()
     _log_cache_startup(node)

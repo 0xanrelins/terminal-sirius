@@ -17,6 +17,17 @@ JSON messages; one object per frame. Optional `?symbols=` filters by `symbol`.
 | `quote` | `BridgeActor` | Optional; Binance BBO |
 | `liquidation` | `LiquidationUiBridgeActor` | Optional `bars[]` snapshot |
 
+### Paper-trade monitoring
+
+Account-level; **no `symbol`** (broadcast to all clients). Emitted only when
+`STRATEGY_ENABLED=true` by `PaperTradeMonitorActor` (native `Portfolio` + `Cache`
++ `PortfolioAnalyzer`).
+
+| `type` | Producer | Notes |
+|--------|----------|--------|
+| `paper_snapshot` | `PaperTradeMonitorActor` | Periodic (default 2s, `PAPER_SNAPSHOT_INTERVAL_SEC`): `run`, `account`, `pnl`, `exposure`, `positions[]`, `orders[]`, `stats`, `counts` |
+| `paper_event` | `PaperTradeMonitorActor` | `kind` ∈ `fill`/`position_open`/`position_close`/`position_change`/`order_rejected`/`order_denied` |
+
 TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 
 ## REST (BFF)
@@ -30,6 +41,8 @@ TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 | GET | `/polymarket/markets` | Gamma search |
 | GET | `/polymarket/presets` | Rolling 15m presets |
 | POST | `/polymarket/subscribe` | `{ slug }` or `{ series }` |
+| GET | `/paper/equity` | Equity/PnL curve points (`?since=` ns) |
+| GET | `/paper/events` | Recent paper-trade events (`?limit=`) |
 
 ### `GET /liq-post-event/sessions`
 
