@@ -83,6 +83,8 @@ class LiquidationFeedActor(Actor):
             return
         batch = self._buffer
         self._buffer = []
+        # Nautilus ParquetDataCatalog expects non-decreasing ts_init.
+        batch.sort(key=lambda tick: tick.ts_init)
         try:
             self._catalog.write_data(batch)
         except Exception as e:  # noqa: BLE001 — re-queue batch on transient catalog errors
