@@ -21,6 +21,7 @@ const REMOVED_WIDGET_TYPES = new Set([
   "simulation_panel",
   "live_trade_panel",
   "strategy_monitor",
+  "strategy_paper_report",
 ]);
 
 const DEFAULT_CANVAS: CanvasState = {

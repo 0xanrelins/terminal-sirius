@@ -133,6 +133,18 @@ def _nautilus_logging_config() -> LoggingConfig:
     )
 
 
+def cache_uses_postgres() -> bool:
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if not dsn:
+        return False
+    try:
+        from nautilus_trader.cache.postgres.config import PostgresCacheConfig  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def _cache_config() -> CacheConfig:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -143,6 +155,26 @@ def _cache_config() -> CacheConfig:
         return PostgresCacheConfig(database=dsn)
     except ImportError:
         return CacheConfig()
+
+
+def _log_cache_startup(node: TradingNode) -> None:
+    """Log whether Nautilus restored orders/positions from Cache (Postgres or memory)."""
+    kind = "PostgresCache" if cache_uses_postgres() else "in-memory Cache"
+    try:
+        cache = node.trader.cache
+        if cache is None:
+            print(f"[nautilus] {kind}: trader cache not ready yet")
+            return
+        orders_n = len(cache.orders())
+        positions_n = len(cache.positions())
+        snapshots_n = len(cache.position_snapshots())
+        print(
+            f"[nautilus] {kind} at node startup: {orders_n} orders, "
+            f"{positions_n} positions, {snapshots_n} position snapshots "
+            "(restarted node should reload these when Postgres cache is enabled)"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[nautilus] {kind} startup stats unavailable: {e!r}")
 
 
 def _polymarket_slugs() -> tuple[str, ...]:
@@ -208,7 +240,6 @@ def _polymarket_data_config(
 
 def build_node(
     data_queue: queue.Queue | multiprocessing.queues.Queue,
-    command_queue: queue.Queue | multiprocessing.queues.Queue | None = None,
     instruments: tuple[str, ...] = DEFAULT_INSTRUMENTS,
 ) -> TradingNode:
     global _polymarket_quote_bridge, _trading_node
@@ -413,41 +444,18 @@ def build_node(
         mode = "paper (Sandbox)" if paper_trade else "live exec"
         print(f"[nautilus] TerminalSiriusStrategy + signal actors enabled — {mode}")
 
-        if command_queue is not None:
-            from strategy_report_actor import (
-                StrategyReportActor,
-                StrategyReportActorConfig,
-            )
-
-            poll_sec = float(os.environ.get("STRATEGY_REPORT_POLL_SEC", "0.25"))
-            node.trader.add_actor(
-                StrategyReportActor(
-                    config=StrategyReportActorConfig(
-                        component_id="StrategyReport-001",
-                        poll_interval_sec=poll_sec,
-                    ),
-                    command_queue=command_queue,
-                    data_queue=data_queue,
-                    paper_trade=paper_trade,
-                ),
-            )
-            print(
-                "[nautilus] StrategyReportActor enabled "
-                "(on-demand reports via GET /strategy/report)"
-            )
-
     node.build()
+    _log_cache_startup(node)
     _trading_node = node
     return node
 
 
 def _node_process_main(
     data_queue: queue.Queue | multiprocessing.queues.Queue,
-    command_queue: queue.Queue | multiprocessing.queues.Queue | None = None,
 ) -> None:
     """Child process entry — main thread owns signal handlers (no monkey-patch)."""
     global _polymarket_quote_bridge, _trading_node
-    node = build_node(data_queue, command_queue=command_queue)
+    node = build_node(data_queue)
     try:
         node.run()
     finally:
@@ -465,19 +473,13 @@ def create_data_queue() -> multiprocessing.queues.Queue:
     return _mp_ctx.Queue(maxsize=10_000)
 
 
-def create_command_queue() -> multiprocessing.queues.Queue:
-    """Process-safe queue for FastAPI parent → Nautilus child (on-demand commands)."""
-    return _mp_ctx.Queue(maxsize=64)
-
-
 def run_node_in_process(
     data_queue: queue.Queue | multiprocessing.queues.Queue,
-    command_queue: queue.Queue | multiprocessing.queues.Queue | None = None,
 ) -> multiprocessing.Process:
     """Start TradingNode in a child process (Nautilus-native signal handling)."""
     proc = _mp_ctx.Process(
         target=_node_process_main,
-        args=(data_queue, command_queue),
+        args=(data_queue,),
         name="nautilus-node",
         daemon=True,
     )

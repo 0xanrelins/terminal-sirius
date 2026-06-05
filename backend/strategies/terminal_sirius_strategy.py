@@ -28,6 +28,7 @@ from strategies.mapping import BINANCE_TO_POLY_SERIES
 from strategies.messages import LiquidationTrigger
 from strategies.messages import VwapZoneSnapshot
 from strategies.subscriptions import subscribe_custom_data
+from strategy_signal_tags import build_entry_signal_tags
 
 
 class Decision(str, Enum):
@@ -67,7 +68,6 @@ class TerminalSiriusStrategy(Strategy):
             for sym in config.binance_instruments
             if sym in BINANCE_TO_POLY_SERIES
         }
-
     def on_start(self) -> None:
         bt = self.config.backtest_mode
         subscribe_custom_data(self, VwapZoneSnapshot, backtest=bt)
@@ -190,23 +190,30 @@ class TerminalSiriusStrategy(Strategy):
             return "SHORT"
         return None
 
-    def _exit_decision(self, symbol: str, st: _LayerState, held_iid: InstrumentId) -> Decision:
+    def _exit_decision(
+        self,
+        symbol: str,
+        _st: _LayerState,
+        held_iid: InstrumentId,
+    ) -> Decision:
+        """
+        Hold until Polymarket resolution — no discretionary exit.
+
+        Nautilus ``BinaryOption`` matching enters pending resolution at
+        ``instrument.expiration_ns`` and settles open positions when an
+        ``InstrumentClose`` (or sandbox settlement price) is applied.
+        The strategy does not call ``close_all_positions`` mid-window.
+        """
         instrument = self.cache.instrument(held_iid)
-        if instrument is None or st.vwap is None:
+        if instrument is None:
             return Decision.HOLD
-        time_left = instrument.expiration_ns - self.clock.timestamp_ns()
-        if time_left <= 0:
-            return Decision.CLOSE
-        qt = self.cache.quote_tick(held_iid)
-        if qt is not None:
-            bid = qt.bid_price.as_double()
-            ask = qt.ask_price.as_double()
-            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else max(bid, ask)
-            # Near 50/50 → exit (held-token mid as session-VWAP-progress proxy)
-            if mid and abs(mid - 0.5) < 0.02:
-                return Decision.CLOSE
-        if time_left < 60 * 1_000_000_000 and not st.liq_long_trigger and not st.liq_short_trigger:
-            return Decision.CLOSE
+        time_left_ns = instrument.expiration_ns - self.clock.timestamp_ns()
+        if time_left_ns <= 0 and self.cache.positions_open(instrument_id=held_iid):
+            self.log.info(
+                f"{symbol} past expiry — waiting for venue resolution on {held_iid} "
+                f"(no strategy-initiated close)",
+                color=LogColor.MAGENTA,
+            )
         return Decision.HOLD
 
     def _maybe_execute(self, symbol: str, decision: Decision) -> None:
@@ -228,11 +235,23 @@ class TerminalSiriusStrategy(Strategy):
             # Quantity must carry the instrument's size precision (Polymarket=6); a bare
             # Quantity.from_str("10") has precision 0 and the exec engine rejects it.
             qty = instrument.make_qty(self.config.trade_size)
+            signal_tags = build_entry_signal_tags(
+                symbol=symbol,
+                direction=direction,
+                vwap=st.vwap,
+                slope=st.slope,
+                low_zone=st.low_zone,
+                high_zone=st.high_zone,
+                last_price=st.last_price,
+                liq_long=st.liq_long_trigger,
+                liq_short=st.liq_short_trigger,
+            )
             order = self.order_factory.market(
                 instrument_id=target_iid,
                 order_side=OrderSide.BUY,
                 quantity=qty,
                 time_in_force=TimeInForce.IOC,
+                tags=signal_tags,
             )
             self.log.info(
                 f"PAPER submit {direction} (BUY {target_iid}) qty={qty}",

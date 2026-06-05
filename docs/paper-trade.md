@@ -73,7 +73,7 @@ tail -f backend/logs/uvicorn.log | grep -E 'strategy|PAPER|TerminalSirius|Sandbo
 - Likidasyon: native `BinanceFuturesLiquidation` (Binance DataClient `!forceOrder@arr`)
 - Exit: hard stop loss yok; VWAP + expiry heuristic (WIP)
 - `pos_multiplier_*` henüz pozisyon boyutuna bağlı değil — sabit `STRATEGY_TRADE_SIZE`
-- UI’da paper PnL paneli yok — şimdilik log takibi
+- Paper PnL takibi log üzerinden (`NAUTILUS_LOG_LEVEL=INFO`)
 
 ## Durdur
 

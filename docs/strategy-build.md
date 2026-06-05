@@ -165,15 +165,15 @@ Tüm indikatörler `initialized = True` olana kadar sinyal üretilmez.
 ### 7.1 Entry
 3 katman hizalandığında → `OPEN` → market order
 
-### 7.2 Exit (Dinamik)
-Hard stop loss yok. Her saniye yeniden değerlendirilir:
+### 7.2 Exit (Resolution — hold)
+Hard stop loss yok. **Strateji pozisyonu erken kapatmaz** (mid≈0.5 / son 60s kuralları kaldırıldı).
 ```
-Pozisyon açık → her saniye:
-  - Session VWAP seviyesi    → hedefe ulaştım mı?
-  - Kalan mesafe             → ne kadar kaldı?
-  - Expiry'ye kalan zaman    → yetişebilir miyim?
-  → HOLD veya CLOSE
+Pozisyon açık → recalc timer sadece HOLD (exit yok)
+Pencere sonu   → Nautilus BinaryOption: pending resolution → InstrumentClose / settlement
+Kazanç         → Polymarket resolution (Chainlink); kazanan share ≈ $1, kaybeden $0
 ```
+Paper: Sandbox matching engine aynı expiry/settlement yolunu kullanır; UI PnL
+`ReportProvider` + kapanmış pozisyonlardan gelir.
 
 ### 7.3 Karar Metodları
 - **Threshold** — 3 katman sağlanmalı (entry)

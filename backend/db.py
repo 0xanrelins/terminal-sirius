@@ -15,7 +15,6 @@ import asyncpg
 
 LIQUIDATION_EVENTS_MAX_ROWS = 50_000
 LIQUIDATION_EVENTS_RETENTION_HOURS = 48
-
 _pool: Optional[asyncpg.Pool] = None
 
 

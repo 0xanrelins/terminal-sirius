@@ -11,7 +11,6 @@ Endpoints:
   GET  /klines                        — historical OHLCV (DB-first)
   GET  /polymarket/markets?q=…        — search Polymarket markets
   POST /polymarket/subscribe          — add a slug to live stream at runtime
-  GET  /strategy/report               — on-demand Nautilus execution reports (STRATEGY_ENABLED)
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
 Liquidation: native ``BinanceFuturesLiquidation`` on the Nautilus node →
@@ -23,8 +22,7 @@ import multiprocessing
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Any, Optional
-from uuid import uuid4
+from typing import Optional
 
 from pathlib import Path
 
@@ -53,17 +51,13 @@ from liquidations import (
     fetch_liquidation_events,
 )
 from node import (
-    create_command_queue,
     create_data_queue,
     run_node_in_process,
-    strategy_enabled,
 )
 
 data_queue = create_data_queue()
-command_queue = create_command_queue()
 _node_process: multiprocessing.Process | None = None
 _clients: list[tuple[WebSocket, Optional[set[str]]]] = []
-_pending_strategy_reports: dict[str, asyncio.Future] = {}
 
 
 @asynccontextmanager
@@ -72,8 +66,7 @@ async def lifespan(app: FastAPI):
     await db.init()
 
     try:
-        cmd_q = command_queue if strategy_enabled() else None
-        _node_process = run_node_in_process(data_queue, command_queue=cmd_q)
+        _node_process = run_node_in_process(data_queue)
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
         _node_process = None
@@ -147,44 +140,6 @@ async def liquidations_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
-
-
-def _strategy_enabled_env() -> bool:
-    return strategy_enabled()
-
-
-@app.get("/strategy/report")
-async def strategy_report_endpoint():
-    """
-    On-demand snapshot of orders, positions, fills, and account from the Nautilus Cache.
-
-    Requires STRATEGY_ENABLED and a running nautilus-node child process.
-    """
-    if not _strategy_enabled_env():
-        raise HTTPException(
-            status_code=404,
-            detail="STRATEGY_ENABLED is off — enable strategy + restart backend",
-        )
-    if _node_process is None or not _node_process.is_alive():
-        raise HTTPException(status_code=503, detail="Nautilus node is not running")
-
-    request_id = str(uuid4())
-    loop = asyncio.get_running_loop()
-    fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-    _pending_strategy_reports[request_id] = fut
-    try:
-        command_queue.put_nowait({"cmd": "strategy_report", "request_id": request_id})
-    except Exception:
-        _pending_strategy_reports.pop(request_id, None)
-        raise HTTPException(status_code=503, detail="Command queue full") from None
-
-    timeout = float(os.environ.get("STRATEGY_REPORT_TIMEOUT_SEC", "10"))
-    try:
-        return await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Strategy report timed out") from None
-    finally:
-        _pending_strategy_reports.pop(request_id, None)
 
 
 @app.get("/liquidation-events")
@@ -344,10 +299,6 @@ async def _broadcast_loop() -> None:
         except Exception:
             continue
 
-        if msg.get("type") == "strategy_report":
-            _complete_strategy_report(msg)
-            continue
-
         if msg.get("type") == "bar":
             asyncio.create_task(_persist_bar(msg))
         elif msg.get("type") == "liquidation":
@@ -426,20 +377,6 @@ async def _persist_bar(msg: dict) -> None:
         )
     except Exception as e:
         print(f"[warn] bar persist failed: {e}")
-
-
-def _complete_strategy_report(msg: dict) -> None:
-    request_id = msg.get("request_id")
-    if not request_id:
-        return
-    fut = _pending_strategy_reports.get(request_id)
-    if fut is None or fut.done():
-        return
-    payload = msg.get("payload")
-    if payload is None:
-        fut.set_exception(RuntimeError("strategy_report missing payload"))
-    else:
-        fut.set_result(payload)
 
 
 def _blocking_get() -> dict:
