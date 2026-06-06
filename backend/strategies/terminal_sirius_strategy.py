@@ -13,7 +13,6 @@ from decimal import Decimal
 from enum import Enum
 
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.model.data import DataType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
@@ -27,6 +26,8 @@ from strategies.config import TerminalSiriusStrategyConfig
 from strategies.mapping import BINANCE_TO_POLY_SERIES
 from strategies.messages import LiquidationTrigger
 from strategies.messages import VwapZoneSnapshot
+from strategies.signal_state import SignalInputs
+from strategies.signal_state import entry_direction
 from strategies.subscriptions import subscribe_custom_data
 from strategy_signal_tags import build_entry_signal_tags
 
@@ -68,6 +69,7 @@ class TerminalSiriusStrategy(Strategy):
             for sym in config.binance_instruments
             if sym in BINANCE_TO_POLY_SERIES
         }
+
     def on_start(self) -> None:
         bt = self.config.backtest_mode
         subscribe_custom_data(self, VwapZoneSnapshot, backtest=bt)
@@ -175,20 +177,21 @@ class TerminalSiriusStrategy(Strategy):
             return Decision.HOLD
         return Decision.OPEN
 
-    def _entry_direction(self, st: _LayerState) -> str | None:
-        slope = st.slope
-        price = st.last_price
-        if slope is None or price is None or st.low_zone is None or st.high_zone is None:
-            return None
-        in_range = abs(slope) <= self._slope_eps
-        long_zone = price < st.low_zone
-        short_zone = price > st.high_zone
+    def _signal_inputs(self, st: _LayerState) -> SignalInputs:
+        return SignalInputs(
+            vwap=st.vwap,
+            slope=st.slope,
+            low_zone=st.low_zone,
+            high_zone=st.high_zone,
+            last_price=st.last_price,
+            liq_long_trigger=st.liq_long_trigger,
+            liq_short_trigger=st.liq_short_trigger,
+            slope_eps=self._slope_eps,
+            vwap_ready=st.vwap_ready,
+        )
 
-        if (slope > self._slope_eps or in_range) and long_zone and st.liq_long_trigger:
-            return "LONG"
-        if (slope < -self._slope_eps or in_range) and short_zone and st.liq_short_trigger:
-            return "SHORT"
-        return None
+    def _entry_direction(self, st: _LayerState) -> str | None:
+        return entry_direction(self._signal_inputs(st))
 
     def _exit_decision(
         self,

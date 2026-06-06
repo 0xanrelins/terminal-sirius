@@ -87,6 +87,8 @@ export type PaperMarketFields = {
   underlying?: string;
 };
 
+export type PaperSettlementOutcome = "won" | "lost" | "push";
+
 export type PaperPosition = {
   instrument_id: string;
   side: string;
@@ -95,6 +97,8 @@ export type PaperPosition = {
   avg_px_close?: number | null;
   unrealized_pnl: number | null;
   realized_pnl: number | null;
+  /** Set when a 15m market expires (binary 0/1 settlement). */
+  settlement_outcome?: PaperSettlementOutcome | null;
   opened_ts: number;
   closed_ts?: number;
   duration_s: number;
@@ -169,6 +173,7 @@ export type PaperEventMsg = {
   price?: number | null;
   commission?: number | null;
   realized_pnl?: number | null;
+  settlement_outcome?: PaperSettlementOutcome | null;
   duration_s?: number | null;
   opened_ts?: number;
   closed_ts?: number;
@@ -192,6 +197,32 @@ export type PaperEquityPoint = {
   open_orders: number;
 };
 
+export type StrategySignalSymbolState = {
+  vwap: number | null;
+  slope: number | null;
+  low_zone: number | null;
+  high_zone: number | null;
+  close: number | null;
+  vwap_ready: boolean;
+  long_volume: number;
+  short_volume: number;
+  liq_threshold: number | null;
+  liq_long_hit: boolean;
+  liq_short_hit: boolean;
+  liq_long_trigger: boolean;
+  liq_short_trigger: boolean;
+  in_range: boolean;
+  long_zone: boolean;
+  short_zone: boolean;
+  decision: "LONG" | "SHORT" | "HOLD";
+};
+
+export type StrategySignalSnapshotMsg = {
+  type: "strategy_signal_snapshot";
+  ts: number;
+  symbols: Record<string, StrategySignalSymbolState>;
+};
+
 export type FeedMsg =
   | TradeMsg
   | QuoteMsg
@@ -200,7 +231,8 @@ export type FeedMsg =
   | PolymarketMsg
   | LiquidationMsg
   | PaperSnapshotMsg
-  | PaperEventMsg;
+  | PaperEventMsg
+  | StrategySignalSnapshotMsg;
 
 export type Kline = {
   time: number;
@@ -229,7 +261,8 @@ export type WidgetType =
   | "liquidation_signals"
   | "market_times"
   | "bar_countdown"
-  | "paper_trade_dashboard";
+  | "paper_trade_dashboard"
+  | "strategy_signals";
 
 export type PriceTickerConfig = {
   id: string;
@@ -346,6 +379,13 @@ export type PaperTradeDashboardConfig = {
   curveMetric?: "equity" | "total_pnl";
 };
 
+export type StrategySignalsConfig = {
+  id: string;
+  type: "strategy_signals";
+  /** Binance perp ids to show; omit = all strategy symbols. */
+  symbols?: string[];
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
@@ -356,7 +396,8 @@ export type WidgetConfig =
   | LiquidationSignalsConfig
   | MarketTimesConfig
   | BarCountdownConfig
-  | PaperTradeDashboardConfig;
+  | PaperTradeDashboardConfig
+  | StrategySignalsConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

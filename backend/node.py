@@ -39,6 +39,7 @@ from nautilus_trader.adapters.polymarket.factories import (
     PolymarketLiveDataClientFactory,
     PolymarketLiveExecClientFactory,
 )
+from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
 from nautilus_trader.cache.config import CacheConfig
 from nautilus_trader.config import (
     LiveDataEngineConfig,
@@ -279,7 +280,7 @@ def build_node(
             account_type="CASH",
             oms_type="NETTING",
         )
-        print("[nautilus] Polymarket Sandbox execution (paper trade)")
+        print("[nautilus] Polymarket Sandbox execution (paper trade, binary settlement)")
     elif strategy_on and exec_cfg is None:
         print(
             "[warn] STRATEGY_ENABLED but no execution client — set STRATEGY_PAPER_TRADE=true "
@@ -339,8 +340,6 @@ def build_node(
         node.add_data_client_factory("POLYMARKET", PolymarketLiveDataClientFactory)
     if exec_cfg is not None:
         if strategy_on and paper_trade:
-            from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
-
             node.add_exec_client_factory("POLYMARKET", SandboxLiveExecClientFactory)
         else:
             node.add_exec_client_factory("POLYMARKET", PolymarketLiveExecClientFactory)
@@ -412,10 +411,12 @@ def build_node(
             )
         from strategies.env_config import (
             build_liquidation_signal_config,
+            build_strategy_signal_bridge_config,
             build_terminal_sirius_config,
             build_vwap_signal_config,
             log_strategy_env_summary,
         )
+        from strategy_signal_bridge_actor import StrategySignalBridgeActor
         from strategies.liquidation_signal_actor import LiquidationSignalActor
         from strategies.mapping import BINANCE_TO_POLY_SERIES, STRATEGY_BINANCE_INSTRUMENTS
         from strategies.terminal_sirius_strategy import TerminalSiriusStrategy
@@ -467,10 +468,37 @@ def build_node(
                 data_queue=data_queue,
             ),
         )
+        if paper_trade:
+            from polymarket_settlement_actor import PolymarketSettlementActor
+            from polymarket_settlement_actor import PolymarketSettlementActorConfig
+
+            node.trader.add_actor(
+                PolymarketSettlementActor(
+                    config=PolymarketSettlementActorConfig(
+                        component_id="PolySettlement-001",
+                        binance_instruments=strategy_symbols,
+                        venue="POLYMARKET",
+                    ),
+                ),
+            )
+            print(
+                "[nautilus] PolymarketSettlementActor enabled "
+                "(Binance 15m → InstrumentClose settlement)"
+            )
+        node.trader.add_actor(
+            StrategySignalBridgeActor(
+                config=build_strategy_signal_bridge_config(
+                    component_id="StrategySignalBridge-001",
+                    instrument_ids=strategy_symbols,
+                ),
+                data_queue=data_queue,
+            ),
+        )
         log_strategy_env_summary()
         mode = "paper (Sandbox)" if paper_trade else "live exec"
         print(f"[nautilus] TerminalSiriusStrategy + signal actors enabled — {mode}")
         print("[nautilus] PaperTradeMonitorActor enabled (paper_snapshot/paper_event → WS queue)")
+        print("[nautilus] StrategySignalBridgeActor enabled (strategy_signal_snapshot → WS queue)")
 
     node.build()
     _log_cache_startup(node)

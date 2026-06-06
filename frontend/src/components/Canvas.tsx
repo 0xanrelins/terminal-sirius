@@ -31,6 +31,10 @@ import { PolymarketSecondsChart } from "./widgets/PolymarketSecondsChart";
 import { BarCountdown } from "./widgets/BarCountdown";
 import { PaperTradeDashboard } from "./widgets/PaperTradeDashboard";
 import { PriceTicker } from "./widgets/PriceTicker";
+import {
+  STRATEGY_BINANCE_SYMBOLS,
+  StrategySignalsWidget,
+} from "./widgets/StrategySignalsWidget";
 import styles from "./Canvas.module.css";
 
 const COLS = 24;
@@ -50,9 +54,12 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isLiq = type === "liquidation_signals";
   const isMarketTimes = type === "market_times";
   const isPaper = type === "paper_trade_dashboard";
-  const w = isPaper ? 16 : isChart ? 14 : isLiq ? 8 : isMarketTimes ? 6 : 5;
+  const isStrategySignals = type === "strategy_signals";
+  const w = isPaper ? 16 : isStrategySignals ? 6 : isChart ? 14 : isLiq ? 8 : isMarketTimes ? 6 : 5;
   const h = isPaper
     ? 16
+    : isStrategySignals
+      ? 10
     : isChart
       ? 9
       : isLiq
@@ -70,6 +77,7 @@ function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "market_times") return "Market Times";
   if (cfg.type === "bar_countdown") return "15m Countdown";
   if (cfg.type === "paper_trade_dashboard") return "Paper Trade";
+  if (cfg.type === "strategy_signals") return "Strategy Signals";
   if (
     cfg.type === "candlestick_chart" ||
     cfg.type === "comparison_chart" ||
@@ -166,6 +174,13 @@ function renderWidget(
       return (
         <PaperTradeDashboard
           curveMetric={cfg.curveMetric ?? "equity"}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    case "strategy_signals":
+      return (
+        <StrategySignalsWidget
+          symbols={cfg.symbols ?? [...STRATEGY_BINANCE_SYMBOLS]}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );

@@ -16,6 +16,7 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.instrument_expiry import align_binary_option_expiration
 from adapters.polymarket.messages import ActivePolymarketMarket
 from adapters.polymarket.quote_registry import register_slug_instruments, update_slug_quote
 from adapters.polymarket.rolling import (
@@ -281,7 +282,9 @@ class PolymarketQuoteBridgeActor(Actor):
                     )
                     return
                 break
-            iid = self._register_instrument(loader.instrument)
+            iid = self._register_instrument(
+                align_binary_option_expiration(loader.instrument, slug),
+            )
             loaded.append(iid)
             if token_index == 0:
                 quote_iid = iid

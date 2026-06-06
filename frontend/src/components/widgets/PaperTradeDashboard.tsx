@@ -99,6 +99,19 @@ function pnlClass(v: number | null | undefined): string {
   return v > 0 ? styles.pos : styles.neg;
 }
 
+function settlementLabel(outcome: string | null | undefined): string {
+  if (outcome === "won") return "WON";
+  if (outcome === "lost") return "LOST";
+  if (outcome === "push") return "PUSH";
+  return "—";
+}
+
+function settlementClass(outcome: string | null | undefined): string {
+  if (outcome === "won") return styles.pos;
+  if (outcome === "lost") return styles.neg;
+  return "";
+}
+
 const KIND_LABEL: Record<string, string> = {
   fill: "FILL",
   position_open: "OPEN",
@@ -505,6 +518,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                     <col className={styles.colQtyClosed} />
                     <col className={styles.colOpenClosed} />
                     <col className={styles.colCloseClosed} />
+                    <col className={styles.colOutcomeClosed} />
                     <col className={styles.colRpnlClosed} />
                     <col className={styles.colAgeClosed} />
                   </colgroup>
@@ -515,6 +529,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                       <th className={styles.right}>Qty</th>
                       <th className={styles.right}>Open</th>
                       <th className={styles.right}>Close</th>
+                      <th className={styles.center}>W/L</th>
                       <th className={styles.right}>rPnL</th>
                       <th className={styles.right}>Age</th>
                     </tr>
@@ -522,7 +537,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                   <tbody>
                     {closedPositions.length === 0 && (
                       <tr>
-                        <td className={styles.emptyCell} colSpan={7}>
+                        <td className={styles.emptyCell} colSpan={8}>
                           No closed positions yet
                         </td>
                       </tr>
@@ -540,6 +555,11 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                         <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
                         <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
                         <td className={styles.right}>{fmtNum(p.avg_px_close, 4)}</td>
+                        <td
+                          className={`${styles.center} ${settlementClass(p.settlement_outcome)}`}
+                        >
+                          {settlementLabel(p.settlement_outcome)}
+                        </td>
                         <td className={`${styles.right} ${pnlClass(p.realized_pnl)}`}>
                           {fmtSignedMoney(p.realized_pnl)}
                         </td>
@@ -605,7 +625,8 @@ function feedDetail(e: FeedEvent): string {
     const duration = e.duration_s !== null && e.duration_s !== undefined
       ? ` in ${fmtDuration(e.duration_s)}`
       : "";
-    return `pnl ${fmtSignedMoney(e.realized_pnl)}${duration}`;
+    const wl = e.settlement_outcome ? ` ${settlementLabel(e.settlement_outcome)}` : "";
+    return `pnl ${fmtSignedMoney(e.realized_pnl)}${wl}${duration}`;
   }
   if (e.kind === "order_rejected" || e.kind === "order_denied") {
     return e.reason ?? "";

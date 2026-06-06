@@ -76,6 +76,15 @@ def get_slug_instruments(slug: str) -> tuple[str, str | None] | None:
         return _slug_iids.get(slug)
 
 
+def slug_for_instrument(iid: str) -> str | None:
+    """Reverse lookup: instrument id → market slug (if bridge registered it)."""
+    with _lock:
+        for slug, (yes_iid, no_iid) in _slug_iids.items():
+            if iid == yes_iid or (no_iid is not None and iid == no_iid):
+                return slug
+    return None
+
+
 def clear_quotes() -> None:
     with _lock:
         _books.clear()

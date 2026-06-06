@@ -18,9 +18,10 @@ from strategies.config import LiquidationSignalActorConfig
 from strategies.subscriptions import subscribe_custom_data
 from strategies.indicators.rolling_liquidation_volume import RollingLiquidationVolume
 from strategies.messages import LiquidationTrigger
+from strategies.messages import LiquidationVolumeSnapshot
 
 
-def _threshold_for_symbol(config: LiquidationSignalActorConfig, symbol: str) -> float:
+def threshold_for_symbol(config: LiquidationSignalActorConfig, symbol: str) -> float:
     if "BTC" in symbol:
         return float(config.liq_threshold_btc)
     if "ETH" in symbol:
@@ -41,7 +42,7 @@ class LiquidationSignalActor(Actor):
         self._indicators: dict[str, RollingLiquidationVolume] = {
             sym: RollingLiquidationVolume(int(config.window_sec)) for sym in self._symbols
         }
-        self._thresholds = {sym: _threshold_for_symbol(config, sym) for sym in self._symbols}
+        self._thresholds = {sym: threshold_for_symbol(config, sym) for sym in self._symbols}
         self._last_long_trigger: dict[str, bool] = {sym: False for sym in self._symbols}
         self._last_short_trigger: dict[str, bool] = {sym: False for sym in self._symbols}
 
@@ -81,6 +82,18 @@ class LiquidationSignalActor(Actor):
         threshold = self._thresholds[symbol]
         long_hit = ind.long_volume >= threshold
         short_hit = ind.short_volume >= threshold
+        self.publish_data(
+            DataType(LiquidationVolumeSnapshot),
+            LiquidationVolumeSnapshot(
+                instrument_id=InstrumentId.from_str(symbol),
+                long_volume=ind.long_volume,
+                short_volume=ind.short_volume,
+                long_hit=long_hit,
+                short_hit=short_hit,
+                ts_event=ts_event,
+                ts_init=ts_event,
+            ),
+        )
         long_edge = long_hit and not self._last_long_trigger[symbol]
         short_edge = short_hit and not self._last_short_trigger[symbol]
         if long_edge or short_edge:

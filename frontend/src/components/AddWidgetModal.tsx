@@ -108,6 +108,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "bar_countdown" });
       } else if (binanceType === "paper_trade_dashboard") {
         onAdd({ id, type: "paper_trade_dashboard", curveMetric: "equity" });
+      } else if (binanceType === "strategy_signals") {
+        onAdd({ id, type: "strategy_signals" });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -146,6 +148,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         binanceType === "market_times" ||
         binanceType === "bar_countdown" ||
         binanceType === "paper_trade_dashboard" ||
+        binanceType === "strategy_signals" ||
         binanceType === "comparison_chart" ||
         binanceType === "liq_post_event_chart" ||
         binanceType === "candlestick_chart" ||
@@ -192,6 +195,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "market_times",
                       "bar_countdown",
                       "paper_trade_dashboard",
+                      "strategy_signals",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -214,7 +218,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                                     ? "15m Countdown"
                                     : t === "paper_trade_dashboard"
                                       ? "Paper Trade"
-                                      : "Liq Signals"}
+                                      : t === "strategy_signals"
+                                        ? "Strategy Signals"
+                                        : "Liq Signals"}
                     </button>
                   ))}
                 </div>

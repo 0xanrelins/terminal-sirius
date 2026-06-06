@@ -28,6 +28,16 @@ Account-level; **no `symbol`** (broadcast to all clients). Emitted only when
 | `paper_snapshot` | `PaperTradeMonitorActor` | Periodic (default 2s, `PAPER_SNAPSHOT_INTERVAL_SEC`): `run`, `account`, `pnl`, `exposure`, `positions[]`, `orders[]`, `stats`, `counts` |
 | `paper_event` | `PaperTradeMonitorActor` | `kind` ∈ `fill`/`position_open`/`position_close`/`position_change`/`order_rejected`/`order_denied` |
 
+### Strategy signal monitoring
+
+Account-level; **no `symbol`** (broadcast to all clients). Emitted only when
+`STRATEGY_ENABLED=true` by `StrategySignalBridgeActor` (msgbus custom data +
+`events.order.*`).
+
+| `type` | Producer | Notes |
+|--------|----------|--------|
+| `strategy_signal_snapshot` | `StrategySignalBridgeActor` | Periodic (default 2s, `STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC`): `symbols` map keyed by Binance perp id |
+
 TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 
 ## REST (BFF)

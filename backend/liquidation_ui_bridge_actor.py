@@ -38,7 +38,11 @@ class LiquidationUiBridgeActor(Actor):
             pass
 
     def on_start(self) -> None:
-        self.subscribe_data(DataType(LiquidationTick))
+        # Live custom data from LiquidationFeedActor arrives on msgbus topic `data.<DataType.topic>`.
+        self.msgbus.subscribe(
+            topic=f"data.{DataType(LiquidationTick).topic}",
+            handler=self.handle_data,
+        )
         print("[liquidations] LiquidationUiBridge → LiquidationTick → WS queue")
 
     def on_data(self, data: Data) -> None:

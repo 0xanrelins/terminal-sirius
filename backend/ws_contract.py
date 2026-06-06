@@ -13,9 +13,10 @@ MARKET_DATA_TYPES = frozenset({"trade", "quote", "bar", "indicator", "polymarket
 # Account-level paper-trade monitoring (PaperTradeMonitorActor → data_queue).
 # These are not market data and carry no `symbol` (broadcast to all WS clients).
 PAPER_TRADE_TYPES = frozenset({"paper_snapshot", "paper_event"})
+STRATEGY_SIGNAL_TYPES = frozenset({"strategy_signal_snapshot"})
 
 # Mirrors FeedMsg in frontend/src/types.ts
-FEED_MSG_TYPES = MARKET_DATA_TYPES | PAPER_TRADE_TYPES
+FEED_MSG_TYPES = MARKET_DATA_TYPES | PAPER_TRADE_TYPES | STRATEGY_SIGNAL_TYPES
 
 ALLOWED_WS_TYPES = FEED_MSG_TYPES
 
@@ -29,6 +30,7 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "liquidation": frozenset({"type", "symbol", "side", "notional", "time"}),
     "paper_snapshot": frozenset({"type", "ts", "run"}),
     "paper_event": frozenset({"type", "kind", "ts", "instrument_id"}),
+    "strategy_signal_snapshot": frozenset({"type", "ts", "symbols"}),
 }
 
 

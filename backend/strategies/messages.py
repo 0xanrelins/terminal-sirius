@@ -37,3 +37,14 @@ class LiquidationTrigger(Data):
     instrument_id: InstrumentId
     long_triggered: bool = False
     short_triggered: bool = False
+
+
+@customdataclass_pyo3()
+class LiquidationVolumeSnapshot(Data):
+    """Rolling liquidation notional (USD) per side after each volume recompute."""
+
+    instrument_id: InstrumentId
+    long_volume: float = 0.0
+    short_volume: float = 0.0
+    long_hit: bool = False
+    short_hit: bool = False

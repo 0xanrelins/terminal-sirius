@@ -57,3 +57,13 @@ def parse_series_from_slug(slug: str) -> str | None:
         if slug == prefix or slug.startswith(f"{prefix}-"):
             return prefix
     return None
+
+
+def parse_window_epoch_from_slug(slug: str) -> int | None:
+    """15m window open (UTC epoch sec) from slug suffix, e.g. btc-updown-15m-1778931900."""
+    if not slug:
+        return None
+    tail = slug.rsplit("-", 1)[-1]
+    if tail.isdigit():
+        return int(tail)
+    return None

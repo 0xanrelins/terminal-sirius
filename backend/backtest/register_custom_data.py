@@ -14,12 +14,13 @@ def register_terminal_sirius_custom_data() -> None:
 
     from adapters.polymarket.messages import ActivePolymarketMarket
     from recorders.data_types import LiquidationTick
-    from strategies.messages import LiquidationTrigger, VwapZoneSnapshot
+    from strategies.messages import LiquidationTrigger, LiquidationVolumeSnapshot, VwapZoneSnapshot
 
     for cls in (
         LiquidationTick,
         VwapZoneSnapshot,
         LiquidationTrigger,
+        LiquidationVolumeSnapshot,
         ActivePolymarketMarket,
     ):
         register_custom_data_class(cls)

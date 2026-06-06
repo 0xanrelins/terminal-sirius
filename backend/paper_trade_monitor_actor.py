@@ -123,6 +123,17 @@ def _window_from_rolling_slug(slug: str) -> str:
     return f"{date_part}, {_fmt_polymarket_time(s)}-{_fmt_polymarket_time(e)} ET"
 
 
+def _settlement_outcome(realized_pnl: float | None) -> str | None:
+    """Won/lost label for binary-option expiry settlement (0/1 close)."""
+    if realized_pnl is None:
+        return None
+    if realized_pnl > 0:
+        return "won"
+    if realized_pnl < 0:
+        return "lost"
+    return "push"
+
+
 def _money_dict(d: dict | None) -> dict[str, float]:
     """Convert a ``dict[Currency, Money]`` to ``{currency_code: amount}``."""
     if not d:
@@ -163,7 +174,10 @@ class PaperTradeMonitorActor(Actor):
 
     def on_start(self) -> None:
         self._started_ns = self.clock.timestamp_ns()
-        self.subscribe_data(DataType(ActivePolymarketMarket))
+        self.msgbus.subscribe(
+            topic=f"data.{DataType(ActivePolymarketMarket).topic}",
+            handler=self.handle_data,
+        )
         self.msgbus.subscribe(topic="events.order.*", handler=self._on_order_event)
         self.msgbus.subscribe(topic="events.position.*", handler=self._on_position_event)
         self.clock.set_timer(
@@ -371,6 +385,7 @@ class PaperTradeMonitorActor(Actor):
             ts_closed = int(getattr(pos, "ts_closed", 0) or 0)
             ts_opened = int(getattr(pos, "ts_opened", 0) or 0)
             duration_ns = int(getattr(pos, "duration_ns", 0) or 0)
+            rpnl = _num(pos.realized_pnl)
             out.append(
                 {
                     "instrument_id": str(pos.instrument_id),
@@ -379,7 +394,8 @@ class PaperTradeMonitorActor(Actor):
                     "avg_px_open": _num(pos.avg_px_open),
                     "avg_px_close": _num(pos.avg_px_close),
                     "unrealized_pnl": 0.0,
-                    "realized_pnl": _num(pos.realized_pnl),
+                    "realized_pnl": rpnl,
+                    "settlement_outcome": _settlement_outcome(rpnl),
                     "opened_ts": ts_opened,
                     "closed_ts": ts_closed,
                     "duration_s": max(0.0, duration_ns / 1e9),
@@ -519,6 +535,7 @@ class PaperTradeMonitorActor(Actor):
             }
         if isinstance(event, PositionClosed):
             duration_ns = int(getattr(event, "duration_ns", 0) or 0)
+            rpnl = _num(event.realized_pnl)
             return {
                 "type": "paper_event",
                 "kind": "position_close",
@@ -526,7 +543,8 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "quantity": _num(event.peak_qty),
                 "price": _num(event.avg_px_close),
-                "realized_pnl": _num(event.realized_pnl),
+                "realized_pnl": rpnl,
+                "settlement_outcome": _settlement_outcome(rpnl),
                 "duration_s": max(0.0, duration_ns / 1e9),
                 "opened_ts": int(getattr(event, "ts_opened", 0) or 0),
                 "closed_ts": int(getattr(event, "ts_closed", 0) or 0),

@@ -266,13 +266,14 @@
 .colUpnlOpen { width: 16%; }
 .colAgeOpen { width: 12%; }
 
-.colMarketClosed { width: 32%; }
-.colSideClosed { width: 10%; }
-.colQtyClosed { width: 10%; }
-.colOpenClosed { width: 13%; }
-.colCloseClosed { width: 13%; }
-.colRpnlClosed { width: 13%; }
-.colAgeClosed { width: 9%; }
+.colMarketClosed { width: 28%; }
+.colSideClosed { width: 9%; }
+.colQtyClosed { width: 9%; }
+.colOpenClosed { width: 11%; }
+.colCloseClosed { width: 11%; }
+.colOutcomeClosed { width: 8%; }
+.colRpnlClosed { width: 12%; }
+.colAgeClosed { width: 8%; }
 
 .table thead th {
   position: sticky;
@@ -294,6 +295,10 @@
   font-variant-numeric: tabular-nums;
 }
 
+.table thead th.center {
+  text-align: center;
+}
+
 .table tbody td {
   padding: 3px 8px;
   border-bottom: 1px solid #1b1b22;
@@ -310,6 +315,11 @@
 
 .right {
   text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.center {
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 

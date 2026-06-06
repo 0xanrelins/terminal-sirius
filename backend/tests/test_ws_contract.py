@@ -12,6 +12,7 @@ def test_allowed_types_match_feed_msg_union() -> None:
         "liquidation",
         "paper_snapshot",
         "paper_event",
+        "strategy_signal_snapshot",
     }
     assert ALLOWED_WS_TYPES == expected
 
@@ -65,6 +66,19 @@ def test_validate_sample_market_messages() -> None:
             "kind": "fill",
             "ts": 1,
             "instrument_id": "0x123.POLYMARKET",
+        }
+    )
+    validate_ws_payload(
+        {
+            "type": "strategy_signal_snapshot",
+            "ts": 1,
+            "symbols": {
+                "SOLUSDT-PERP.BINANCE": {
+                    "vwap": 142.5,
+                    "decision": "HOLD",
+                    "vwap_ready": True,
+                }
+            },
         }
     )
 

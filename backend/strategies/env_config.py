@@ -87,6 +87,29 @@ def build_terminal_sirius_config(
     )
 
 
+def build_strategy_signal_bridge_config(
+    *,
+    component_id: str,
+    instrument_ids: tuple[str, ...],
+) -> "StrategySignalBridgeActorConfig":
+    from strategy_signal_bridge_actor import StrategySignalBridgeActorConfig
+
+    return StrategySignalBridgeActorConfig(
+        component_id=component_id,
+        instrument_ids=instrument_ids,
+        slope_range_threshold=_env_float("STRATEGY_SLOPE_RANGE_THRESHOLD", 0.05),
+        snapshot_interval_sec=_env_float(
+            "STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC",
+            _env_float("PAPER_SNAPSHOT_INTERVAL_SEC", 2.0),
+        ),
+        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 500_000.0),
+        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 200_000.0),
+        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 100_000.0),
+        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 50_000.0),
+        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 25_000.0),
+    )
+
+
 def log_strategy_env_summary() -> None:
     """Print active thresholds at startup (no secrets)."""
     print(
