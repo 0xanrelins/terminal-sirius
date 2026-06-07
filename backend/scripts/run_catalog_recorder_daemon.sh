@@ -8,7 +8,7 @@
 #   ./scripts/run_catalog_recorder_daemon.sh cleanup-logs  # remove junk + rotate if huge
 #
 # Logs (see backend/logs/README.md):
-#   uvicorn.log         — app + Nautilus (NAUTILUS_LOG_LEVEL=WARN by default)
+#   uvicorn.log         — app + Nautilus (NAUTILUS_LOG_LEVEL=ERROR by default)
 #   recorder-daemon.log — supervisor start/stop/restart only
 #
 # Önemli: RELOAD=0 (varsayılan). RELOAD=1 parquet flush'ı keser.
@@ -18,14 +18,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=_log_helpers.sh
+source "$(dirname "$0")/_log_helpers.sh"
+
 LOG_DIR="$ROOT/logs"
 RUN_DIR="$LOG_DIR/run"
 DAEMON_LOG="$LOG_DIR/recorder-daemon.log"
 PID_FILE="$RUN_DIR/catalog-recorder.pid"
 SUPERVISOR_PID="$RUN_DIR/catalog-recorder-supervisor.pid"
 UVICORN_LOG="$LOG_DIR/uvicorn.log"
-# Auto-rotate uvicorn.log when larger than this many MB (0 = disabled)
-LOG_MAX_MB="${LOG_MAX_MB:-80}"
 
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
@@ -39,40 +40,13 @@ fi
 export CATALOG_STREAMING_ENABLED="${CATALOG_STREAMING_ENABLED:-true}"
 export RELOAD=0
 export POLYMARKET_DATA_ENABLED="${POLYMARKET_DATA_ENABLED:-true}"
-export NAUTILUS_LOG_LEVEL="${NAUTILUS_LOG_LEVEL:-WARNING}"
+export NAUTILUS_LOG_LEVEL="${NAUTILUS_LOG_LEVEL:-ERROR}"
 
 VENV_PY="$ROOT/.venv/bin/python"
 if [[ ! -x "$VENV_PY" ]]; then
   echo "Missing $ROOT/.venv" >&2
   exit 1
 fi
-
-_log_mb() {
-  local path="$1"
-  if [[ ! -f "$path" ]]; then
-    echo 0
-    return
-  fi
-  local bytes
-  bytes=$(stat -f%z "$path" 2>/dev/null || echo 0)
-  echo $((bytes / 1024 / 1024))
-}
-
-_prune_junk_logs() {
-  rm -f "$LOG_DIR"/*.bak "$LOG_DIR"/uvicorn.log.*.bak 2>/dev/null || true
-  rm -f "$LOG_DIR"/market_recorder_*.log "$LOG_DIR"/*_smoke.log 2>/dev/null || true
-}
-
-_maybe_rotate_uvicorn() {
-  [[ "${LOG_MAX_MB}" -gt 0 ]] || return 0
-  local mb
-  mb=$(_log_mb "$UVICORN_LOG")
-  if [[ "$mb" -lt "${LOG_MAX_MB}" ]]; then
-    return 0
-  fi
-  : >"$UVICORN_LOG"
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] rotated uvicorn.log (was ${mb}MB, limit ${LOG_MAX_MB}MB)" >>"$DAEMON_LOG"
-}
 
 _stop_supervisor() {
   if [[ -f "$SUPERVISOR_PID" ]]; then
@@ -112,10 +86,11 @@ _supervisor_running() {
 }
 
 _start_once() {
-  _maybe_rotate_uvicorn
+  _maybe_rotate_log "$UVICORN_LOG" "$DAEMON_LOG"
   export PYTHONPATH="$ROOT"
   PORT="${PORT:-8000}"
   nohup "$VENV_PY" -m uvicorn main:app --host 127.0.0.1 --port "$PORT" \
+    "${UVICORN_LOG_ARGS[@]}" \
     >>"$UVICORN_LOG" 2>&1 &
   echo $! >"$PID_FILE"
 }
@@ -133,7 +108,7 @@ case "${1:-start}" in
       echo "Already running (supervisor pid=$(cat "$SUPERVISOR_PID")). Use: $0 stop"
       exit 0
     fi
-    _prune_junk_logs
+    _prune_junk_logs "$LOG_DIR"
     _stop_supervisor
     _stop_uvicorn
     _ensure_instruments
@@ -144,7 +119,7 @@ case "${1:-start}" in
         _start_once
         pid="$(cat "$PID_FILE")"
         echo "Started uvicorn pid=$pid (CATALOG_STREAMING_ENABLED=$CATALOG_STREAMING_ENABLED)"
-        echo "Logs: tail -f $UVICORN_LOG  (Nautilus level=$NAUTILUS_LOG_LEVEL)"
+        echo "Logs: tail -f $UVICORN_LOG  (Nautilus level=$NAUTILUS_LOG_LEVEL, max ${LOG_MAX_MB}MB)"
         wait "$pid" 2>/dev/null || true
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] backend exited, restart in 5s" >>"$DAEMON_LOG"
         sleep 5
@@ -182,14 +157,14 @@ case "${1:-start}" in
     _stop_uvicorn
     : >"$UVICORN_LOG"
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] uvicorn.log truncated" >>"$DAEMON_LOG"
-    _prune_junk_logs
-    echo "Truncated $UVICORN_LOG and removed .bak / smoke logs"
+    _prune_junk_logs "$LOG_DIR"
+    echo "Truncated $UVICORN_LOG and removed junk logs"
     ;;
   cleanup-logs)
     _stop_supervisor
     _stop_uvicorn
-    _prune_junk_logs
-    _maybe_rotate_uvicorn
+    _prune_junk_logs "$LOG_DIR"
+    _maybe_rotate_log "$UVICORN_LOG" "$DAEMON_LOG"
     if [[ -f "$DAEMON_LOG" ]]; then
       tail -2000 "$DAEMON_LOG" >"$DAEMON_LOG.tmp" && mv "$DAEMON_LOG.tmp" "$DAEMON_LOG"
     fi

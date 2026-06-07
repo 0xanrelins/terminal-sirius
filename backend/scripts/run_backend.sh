@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=_log_helpers.sh
+source "$(dirname "$0")/_log_helpers.sh"
+
 LOG_DIR="$ROOT/logs"
 LOG_FILE="$LOG_DIR/uvicorn.log"
 mkdir -p "$LOG_DIR"
@@ -23,16 +26,20 @@ if [[ ! -x "$VENV_PY" ]]; then
 fi
 
 export PYTHONPATH="$ROOT"
+export NAUTILUS_LOG_LEVEL="${NAUTILUS_LOG_LEVEL:-WARNING}"
 PORT="${PORT:-8000}"
 # RELOAD=1 restarts uvicorn on .py changes and kills the Nautilus node mid-flush.
 RELOAD="${RELOAD:-0}"
 
-echo "Backend log: $LOG_FILE"
+_prune_junk_logs "$LOG_DIR"
+_maybe_rotate_log "$LOG_FILE"
+
+echo "Backend log: $LOG_FILE (max ${LOG_MAX_MB}MB, Nautilus level=$NAUTILUS_LOG_LEVEL)"
 echo "Follow: tail -f $LOG_FILE"
 echo "Stop: Ctrl+C"
 echo "---"
 
-ARGS=(-m uvicorn main:app --host 127.0.0.1 --port "$PORT")
+ARGS=(-m uvicorn main:app --host 127.0.0.1 --port "$PORT" "${UVICORN_LOG_ARGS[@]}")
 if [[ "$RELOAD" == "1" ]]; then
   ARGS+=(--reload)
 fi
