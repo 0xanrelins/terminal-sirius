@@ -26,9 +26,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-bottom: 1px solid #2a2a35;
   flex: 0 0 auto;
+  font-size: 10px;
 }
 
 .titleWrap {
@@ -38,6 +39,7 @@
 }
 
 .title {
+  font-size: 1em;
   font-weight: 700;
   letter-spacing: 0.08em;
   color: #cfd3dc;
@@ -47,18 +49,18 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 14px;
+  font-size: 0.9em;
   letter-spacing: 0.06em;
   color: #9aa0ac;
   background: #1b1b22;
   border: 1px solid #2a2a35;
   border-radius: 999px;
-  padding: 1px 7px;
+  padding: 1px 4px;
 }
 
 .dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   display: inline-block;
 }
@@ -70,7 +72,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
+  font-size: 0.9em;
   color: #8b909c;
   overflow: hidden;
   white-space: nowrap;
@@ -90,7 +92,7 @@
 /* ── KPI row ── */
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 1px;
   background: #2a2a35;
   border-bottom: 1px solid #2a2a35;
@@ -99,23 +101,24 @@
 
 .kpi {
   background: #15151b;
-  padding: 5px 8px;
+  padding: 3px 8px;
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  line-height: 1.25;
 }
 
 .kpiLabel {
-  font-size: 12px;
-  letter-spacing: 0.05em;
+  font-size: 10px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #7c818d;
   white-space: nowrap;
 }
 
 .kpiValue {
-  font-size: 20px;
+  font-size: 13px;
   font-weight: 600;
   color: #e8eaee;
   white-space: nowrap;
@@ -124,7 +127,7 @@
 }
 
 .kpiSub {
-  font-size: 12px;
+  font-size: 9px;
   color: #6b7079;
 }
 
@@ -137,14 +140,15 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 3px 10px;
+  padding: 2px 10px;
+  font-size: 10px;
   background: #16161c;
   border-bottom: 1px solid #23232c;
   flex: 0 0 auto;
 }
 
 .sectionTitle {
-  font-size: 14px;
+  font-size: 1em;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: #8b909c;
@@ -152,7 +156,7 @@
 }
 
 .count {
-  font-size: 14px;
+  font-size: 0.9em;
   color: #6b7079;
   background: #1d1d24;
   border-radius: 999px;
@@ -181,7 +185,7 @@
 }
 
 .toggleBtn {
-  font-size: 14px;
+  font-size: 0.9em;
   color: #9aa0ac;
   background: transparent;
   border: none;
