@@ -1,10 +1,14 @@
 """Polymarket paper settlement helpers."""
 
 from unittest.mock import MagicMock
+from unittest.mock import PropertyMock
+from unittest.mock import patch
 
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.rolling import parse_window_epoch_from_slug
+from polymarket_settlement_actor import PolymarketSettlementActor
+from polymarket_settlement_actor import PolymarketSettlementActorConfig
 from polymarket_settlement_actor import instrument_close_topic
 from polymarket_settlement_actor import position_won
 from polymarket_settlement_actor import settlement_price_str
@@ -55,6 +59,21 @@ def test_instrument_close_topic_matches_sandbox_subscription():
     # Python SandboxExecutionClient subscribes to data.*.{venue}.*
     assert topic.startswith("data.")
     assert ".POLYMARKET." in f"{topic}."
+
+
+def test_settlement_suppressed_when_flat_but_not_when_reopened():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    iid = InstrumentId.from_str("0xabc-YES.POLYMARKET")
+    iid_s = str(iid)
+    actor._settled.add(iid_s)
+    cache = MagicMock()
+    with patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache):
+        cache.positions_open.return_value = False
+        assert actor._settlement_suppressed(iid_s, iid) is True
+        cache.positions_open.return_value = True
+        assert actor._settlement_suppressed(iid_s, iid) is False
 
 
 def test_bar_open_sec_not_double_scaled():

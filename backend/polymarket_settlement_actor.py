@@ -296,6 +296,12 @@ class PolymarketSettlementActor(Actor):
                 return up_outcome_from_bar(cached)
         return None
 
+    def _settlement_suppressed(self, iid_s: str, instrument_id: InstrumentId) -> bool:
+        """Skip only when a prior ``InstrumentClose`` closed the position."""
+        if iid_s not in self._settled:
+            return False
+        return not self.cache.positions_open(instrument_id=instrument_id)
+
     def _settle_all_expired(self) -> tuple[int, int]:
         now_sec = int(self.clock.timestamp_ns() // 1_000_000_000)
         settled = 0
@@ -303,7 +309,7 @@ class PolymarketSettlementActor(Actor):
         for pos in list(self.cache.positions_open(venue=self._venue)):
             iid = pos.instrument_id
             iid_s = str(iid)
-            if iid_s in self._settled:
+            if self._settlement_suppressed(iid_s, iid):
                 continue
             inst = self.cache.instrument(iid)
             window = self._window_for_position(iid_s, inst)
@@ -334,7 +340,7 @@ class PolymarketSettlementActor(Actor):
         for pos in list(self.cache.positions_open(venue=self._venue)):
             iid = pos.instrument_id
             iid_s = str(iid)
-            if iid_s in self._settled:
+            if self._settlement_suppressed(iid_s, iid):
                 continue
             inst = self.cache.instrument(iid)
             window = self._window_for_position(iid_s, inst)

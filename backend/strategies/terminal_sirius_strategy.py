@@ -22,6 +22,8 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
 from adapters.polymarket.messages import ActivePolymarketMarket
+from adapters.polymarket.rolling import WINDOW_SEC
+from adapters.polymarket.rolling import parse_window_epoch_from_slug
 from strategies.config import TerminalSiriusStrategyConfig
 from strategies.mapping import BINANCE_TO_POLY_SERIES
 from strategies.messages import LiquidationTrigger
@@ -219,6 +221,26 @@ class TerminalSiriusStrategy(Strategy):
             )
         return Decision.HOLD
 
+    def _instrument_slug(self, instrument) -> str:
+        info = getattr(instrument, "info", {}) or {}
+        if isinstance(info, dict):
+            for key in ("market_slug", "slug"):
+                raw = info.get(key)
+                if raw:
+                    return str(raw)
+        return ""
+
+    def _entry_allowed(self, instrument) -> bool:
+        """Block entries on expired 15m windows (before sandbox grace / bridge rotation)."""
+        now_ns = self.clock.timestamp_ns()
+        if now_ns >= instrument.expiration_ns:
+            return False
+        window_start = parse_window_epoch_from_slug(self._instrument_slug(instrument))
+        if window_start is None:
+            return True
+        now_sec = int(now_ns // 1_000_000_000)
+        return now_sec < window_start + WINDOW_SEC
+
     def _maybe_execute(self, symbol: str, decision: Decision) -> None:
         if decision == Decision.OPEN:
             st = self._states[symbol]
@@ -234,6 +256,12 @@ class TerminalSiriusStrategy(Strategy):
             )
             instrument = self.cache.instrument(target_iid) if target_iid is not None else None
             if instrument is None:
+                return
+            if not self._entry_allowed(instrument):
+                self.log.info(
+                    f"skip OPEN {symbol}: Polymarket window ended or expired for {target_iid}",
+                    color=LogColor.YELLOW,
+                )
                 return
             # Quantity must carry the instrument's size precision (Polymarket=6); a bare
             # Quantity.from_str("10") has precision 0 and the exec engine rejects it.
