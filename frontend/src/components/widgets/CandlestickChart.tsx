@@ -1349,12 +1349,6 @@ export function CandlestickChart({
   useEffect(() => {
     if (!polyPaneActive || !polySeries) return;
 
-    fetch("/polymarket/subscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ series: polySeries }),
-    }).catch(() => {});
-
     const pmSymbol = polySeriesToFeedSymbol(polySeries);
     const unsub = subscribe(pmSymbol, (msg) => {
       if (msg.type === "bar" && msg.interval === interval) {

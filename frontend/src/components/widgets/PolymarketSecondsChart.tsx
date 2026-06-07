@@ -78,14 +78,6 @@ export function PolymarketSecondsChart({
   }, []);
 
   useEffect(() => {
-    fetch("/polymarket/subscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ series }),
-    }).catch(() => {});
-  }, [series]);
-
-  useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
 

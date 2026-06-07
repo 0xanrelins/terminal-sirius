@@ -92,10 +92,6 @@ _trading_node: TradingNode | None = None
 _mp_ctx: BaseContext = multiprocessing.get_context("spawn")
 
 
-def get_polymarket_quote_bridge() -> PolymarketQuoteBridgeActor | None:
-    return _polymarket_quote_bridge
-
-
 def get_trading_node() -> TradingNode | None:
     return _trading_node
 

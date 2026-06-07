@@ -10,7 +10,6 @@ Startup sequence:
 Endpoints:
   GET  /klines                        — historical OHLCV (DB-first)
   GET  /polymarket/markets?q=…        — search Polymarket markets
-  POST /polymarket/subscribe          — add a slug to live stream at runtime
   WS   /ws?symbols=…                  — live feed (trade / quote / bar / polymarket)
 
 Liquidation: native ``BinanceFuturesLiquidation`` on the Nautilus node →
@@ -29,7 +28,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 load_dotenv(override=True)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
@@ -220,11 +218,6 @@ async def polymarket_markets(q: str, limit: int = 20):
         raise HTTPException(status_code=502, detail=f"Gamma API error: {e}")
 
 
-class SubscribeBody(BaseModel):
-    slug: str | None = None
-    series: str | None = None
-
-
 @app.get("/polymarket/presets")
 async def polymarket_presets():
     """Configured rolling 15m markets (stable series id + current window slug)."""
@@ -245,34 +238,6 @@ async def polymarket_presets():
             "question": info["question"] if info else None,
         })
     return out
-
-
-@app.post("/polymarket/subscribe")
-async def polymarket_subscribe(body: SubscribeBody):
-    try:
-        from node import get_polymarket_quote_bridge
-
-        bridge = get_polymarket_quote_bridge()
-        if bridge is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Polymarket quote bridge not running (enable POLYMARKET_DATA_ENABLED)",
-            )
-        if body.series:
-            bridge.subscribe_series(body.series)
-            slug = slug_for_series(body.series)
-            return {
-                "status": "queued",
-                "series": body.series,
-                "symbol": series_symbol(body.series),
-                "slug": slug,
-            }
-        if body.slug:
-            bridge.subscribe_slug(body.slug)
-            return {"status": "queued", "slug": body.slug}
-        raise HTTPException(status_code=400, detail="Provide slug or series")
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Nautilus not available")
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

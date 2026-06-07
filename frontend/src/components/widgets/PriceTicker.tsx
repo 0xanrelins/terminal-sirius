@@ -26,12 +26,6 @@ export function PriceTicker({ symbol, source, label }: Props) {
 
   useEffect(() => {
     if (!isPolymarket) return;
-    const series = symbol.replace(".POLYMARKET", "");
-    fetch("/polymarket/subscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ series }),
-    }).catch(() => {});
 
     fetch("/polymarket/presets")
       .then((r) => r.json())

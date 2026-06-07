@@ -50,7 +50,6 @@ TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 | GET | `/liq-post-event/sessions` | Post-liq 30m % sessions from ParquetDataCatalog |
 | GET | `/polymarket/markets` | Gamma search |
 | GET | `/polymarket/presets` | Rolling 15m presets |
-| POST | `/polymarket/subscribe` | `{ slug }` or `{ series }` |
 | GET | `/paper/equity` | Equity/PnL curve points (`?since=` ns) |
 | GET | `/paper/events` | Recent paper-trade events (`?limit=`) |
 

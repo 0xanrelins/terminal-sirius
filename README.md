@@ -21,7 +21,7 @@ Nautilus TradingNode (Python)
 FastAPI (Python)
   ├── GET  /klines          → tarihsel OHLCV (PostgreSQL-first, Binance fallback)
   ├── GET  /polymarket/markets?q=  → Gamma API market arama
-  ├── POST /polymarket/subscribe   → runtime slug ekleme
+  ├── GET  /polymarket/presets     → rolling 15m preset listesi
   ├── GET  /liquidations    → 15m liq bar totals
   ├── GET  /liquidation-events → major-coin liq list (backend persist)
   ├── GET  /liq-post-event/sessions → catalog research
@@ -113,7 +113,7 @@ Sağ alttaki `+` butonuna tıkla.
 
 **Binance:** Sembol gir (örn. `BTCUSDT-PERP.BINANCE`), türü ve interval'i seç.
 
-**Polymarket:** Arama kutusuna konu yaz (örn. "Trump", "Fed rate"), çıkan listeden seç. Seçimle birlikte backend `POST /polymarket/subscribe` çağrılır ve canlı stream başlar.
+**Polymarket:** Preset listesinden 15m seri seç; canlı stream `POLYMARKET_15M_SERIES` ile node boot'ta abone olur.
 
 ### Widget işlemleri
 

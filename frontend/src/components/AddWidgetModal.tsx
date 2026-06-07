@@ -115,11 +115,6 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
       }
     } else {
       if (!pmSelected) return;
-      fetch("/polymarket/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ series: pmSelected.series }),
-      }).catch(() => {});
       if (pmWidgetType === "polymarket_seconds_chart") {
         onAdd({
           id,
