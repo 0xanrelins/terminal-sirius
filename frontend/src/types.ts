@@ -261,6 +261,7 @@ export type WidgetType =
   | "liquidation_signals"
   | "market_times"
   | "bar_countdown"
+  | "new_york_time"
   | "paper_trade_dashboard"
   | "strategy_signals";
 
@@ -372,6 +373,11 @@ export type BarCountdownConfig = {
   type: "bar_countdown";
 };
 
+export type NewYorkTimeConfig = {
+  id: string;
+  type: "new_york_time";
+};
+
 export type PaperTradeDashboardConfig = {
   id: string;
   type: "paper_trade_dashboard";
@@ -396,6 +402,7 @@ export type WidgetConfig =
   | LiquidationSignalsConfig
   | MarketTimesConfig
   | BarCountdownConfig
+  | NewYorkTimeConfig
   | PaperTradeDashboardConfig
   | StrategySignalsConfig;
 

@@ -29,6 +29,7 @@ import { MarketTimes } from "./widgets/MarketTimes";
 import { PolymarketTicker } from "./widgets/PolymarketTicker";
 import { PolymarketSecondsChart } from "./widgets/PolymarketSecondsChart";
 import { BarCountdown } from "./widgets/BarCountdown";
+import { NewYorkTime } from "./widgets/NewYorkTime";
 import { PaperTradeDashboard } from "./widgets/PaperTradeDashboard";
 import { PriceTicker } from "./widgets/PriceTicker";
 import {
@@ -76,6 +77,7 @@ function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "liquidation_signals") return "Liq Signals";
   if (cfg.type === "market_times") return "Market Times";
   if (cfg.type === "bar_countdown") return "15m Countdown";
+  if (cfg.type === "new_york_time") return "New York";
   if (cfg.type === "paper_trade_dashboard") return "Paper Trade";
   if (cfg.type === "strategy_signals") return "Strategy Signals";
   if (
@@ -170,6 +172,8 @@ function renderWidget(
       return <MarketTimes />;
     case "bar_countdown":
       return <BarCountdown />;
+    case "new_york_time":
+      return <NewYorkTime />;
     case "paper_trade_dashboard":
       return (
         <PaperTradeDashboard

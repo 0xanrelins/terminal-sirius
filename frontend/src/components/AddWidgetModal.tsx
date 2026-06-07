@@ -106,6 +106,8 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "market_times" });
       } else if (binanceType === "bar_countdown") {
         onAdd({ id, type: "bar_countdown" });
+      } else if (binanceType === "new_york_time") {
+        onAdd({ id, type: "new_york_time" });
       } else if (binanceType === "paper_trade_dashboard") {
         onAdd({ id, type: "paper_trade_dashboard", curveMetric: "equity" });
       } else if (binanceType === "strategy_signals") {
@@ -142,6 +144,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
       ? binanceType === "liquidation_signals" ||
         binanceType === "market_times" ||
         binanceType === "bar_countdown" ||
+        binanceType === "new_york_time" ||
         binanceType === "paper_trade_dashboard" ||
         binanceType === "strategy_signals" ||
         binanceType === "comparison_chart" ||
@@ -189,6 +192,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "liquidation_signals",
                       "market_times",
                       "bar_countdown",
+                      "new_york_time",
                       "paper_trade_dashboard",
                       "strategy_signals",
                     ] as WidgetType[]
@@ -211,7 +215,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                                   ? "Market Times"
                                   : t === "bar_countdown"
                                     ? "15m Countdown"
-                                    : t === "paper_trade_dashboard"
+                                    : t === "new_york_time"
+                                      ? "New York Time"
+                                      : t === "paper_trade_dashboard"
                                       ? "Paper Trade"
                                       : t === "strategy_signals"
                                         ? "Strategy Signals"
@@ -296,6 +302,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "bar_countdown" && (
                 <p className={styles.hint}>
                   UTC 15m bar close — aligned to :00, :15, :30, :45 (charts, liq bars, Polymarket windows).
+                </p>
+              )}
+
+              {binanceType === "new_york_time" && (
+                <p className={styles.hint}>
+                  Live clock in America/New_York (ET) — same compact style as the 15m countdown.
                 </p>
               )}
 
