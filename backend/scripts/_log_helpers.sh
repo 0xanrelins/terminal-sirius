@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 
 LOG_MAX_MB="${LOG_MAX_MB:-80}"
+LOG_ROTATE_INTERVAL_SEC="${LOG_ROTATE_INTERVAL_SEC:-300}"
 
 _log_mb() {
   local path="$1"
@@ -35,6 +36,20 @@ _maybe_rotate_log() {
   if [[ -n "$note_path" ]]; then
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] rotated $(basename "$log_path") (was ${mb}MB, limit ${LOG_MAX_MB}MB)" >>"$note_path"
   fi
+}
+
+# Background watcher: truncate log_path when it exceeds LOG_MAX_MB while a long-running backend stays up.
+# Caller must capture $! immediately after — never use $(_start_log_rotator ...) (subshell waits forever).
+_start_log_rotator() {
+  local log_path="$1"
+  local note_path="${2:-}"
+  [[ "${LOG_MAX_MB}" -gt 0 ]] || return 1
+  (
+    while true; do
+      sleep "${LOG_ROTATE_INTERVAL_SEC}"
+      _maybe_rotate_log "$log_path" "$note_path"
+    done
+  ) &
 }
 
 UVICORN_LOG_ARGS=(--no-access-log --log-level warning)

@@ -16,6 +16,8 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.slug_load_guard import SLUG_LOAD_SEM
+from adapters.polymarket.slug_load_guard import SlugLoadGuard
 from adapters.polymarket.instrument_expiry import align_binary_option_expiration
 from adapters.polymarket.messages import ActivePolymarketMarket
 from adapters.polymarket.quote_registry import register_slug_instruments, update_slug_quote
@@ -74,6 +76,7 @@ class PolymarketQuoteBridgeActor(Actor):
         self._meta_by_iid: dict[str, dict] = {}
 
         self._rotation_task: Optional[asyncio.Task] = None
+        self._slug_load_guard = SlugLoadGuard()
 
     def _enqueue(self, msg: dict) -> None:
         try:
@@ -220,6 +223,7 @@ class PolymarketQuoteBridgeActor(Actor):
     async def _check_series_rotation(self) -> None:
         for series in list(self._series_slugs):
             await self._sync_series_slugs(series)
+            await asyncio.sleep(0.25)
 
     async def _drop_slug(self, slug: str) -> None:
         self._slug_quote_iid.pop(slug, None)
@@ -259,39 +263,58 @@ class PolymarketQuoteBridgeActor(Actor):
                         meta["symbol"] = correct_sym
                         meta["series"] = series
             return
+
+        now_ns = self.clock.timestamp_ns()
+        if self._slug_load_guard.should_skip(slug, now_ns):
+            return
+
+        async with SLUG_LOAD_SEM:
+            if slug in self._slug_quote_iid:
+                return
+            await self._load_slug_locked(slug, series=series)
+
+    async def _load_slug_locked(self, slug: str, *, series: str | None) -> None:
         from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
 
+        now_ns = self.clock.timestamp_ns()
         try:
             info = await get_token_ids(slug)
+            if not info:
+                raise LookupError(f"gamma returned no market for {slug!r}")
         except Exception as e:
-            self.log.error(f"Polymarket bridge: gamma error for {slug!r}: {e}")
+            delay = self._slug_load_guard.record_failure(slug, now_ns, e)
+            self.log.error(
+                f"Polymarket bridge: gamma error for {slug!r}: {e} "
+                f"(retry in {delay:.0f}s)",
+            )
             return
-        question = (info or {}).get("question") or slug
 
+        question = info.get("question") or slug
         loaded: list[InstrumentId] = []
         quote_iid: InstrumentId | None = None
-        for token_index in (0, 1):
-            try:
+        try:
+            for token_index in (0, 1):
                 loader = await PolymarketDataLoader.from_market_slug(
                     slug, token_index=token_index
                 )
-            except Exception as e:
+                iid = self._register_instrument(
+                    align_binary_option_expiration(loader.instrument, slug),
+                )
+                loaded.append(iid)
                 if token_index == 0:
-                    self.log.error(
-                        f"Polymarket bridge: instrument load failed for {slug!r}: {e}"
-                    )
-                    return
-                break
-            iid = self._register_instrument(
-                align_binary_option_expiration(loader.instrument, slug),
+                    quote_iid = iid
+        except Exception as e:
+            delay = self._slug_load_guard.record_failure(slug, now_ns, e)
+            self.log.error(
+                f"Polymarket bridge: instrument load failed for {slug!r}: {e} "
+                f"(retry in {delay:.0f}s)",
             )
-            loaded.append(iid)
-            if token_index == 0:
-                quote_iid = iid
+            return
 
         if quote_iid is None:
             return
 
+        self._slug_load_guard.record_success(slug)
         self._slug_to_iids[slug] = loaded
         self._slug_quote_iid[slug] = quote_iid
         sym = series_symbol(series) if series else _slug_to_symbol(slug)

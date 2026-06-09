@@ -1,23 +1,46 @@
-"""Entry guard: no OPEN on expired Polymarket 15m windows."""
+"""Entry guard: Polymarket window, instrument readiness, and quote checks."""
 
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
 from unittest.mock import patch
 
+from nautilus_trader.model.identifiers import InstrumentId
+
+from adapters.polymarket.messages import ActivePolymarketMarket
+from strategies.terminal_sirius_strategy import Decision
 from strategies.terminal_sirius_strategy import TerminalSiriusStrategy
 from strategies.terminal_sirius_strategy import TerminalSiriusStrategyConfig
 
+YES = InstrumentId.from_str("0xyes.POLYMARKET")
+NO = InstrumentId.from_str("0xno.POLYMARKET")
+SYMBOL = "BTCUSDT-PERP.BINANCE"
 
-def _strategy(clock: MagicMock) -> TerminalSiriusStrategy:
+
+def _px(precision: int):
+    return MagicMock(precision=precision)
+
+
+def _quote(*, bid_prec: int | None = 3, ask_prec: int | None = 3):
+    bid = _px(bid_prec) if bid_prec is not None else None
+    ask = _px(ask_prec) if ask_prec is not None else None
+    return MagicMock(bid_price=bid, ask_price=ask)
+
+
+def _strategy(clock: MagicMock, *, backtest_mode: bool = True) -> TerminalSiriusStrategy:
     cfg = TerminalSiriusStrategyConfig(
         binance_instruments=("BTCUSDT-PERP.BINANCE",),
         polymarket_series=("btc-updown-15m",),
-        backtest_mode=True,
+        backtest_mode=backtest_mode,
     )
     s = TerminalSiriusStrategy(cfg)
-    patcher = patch.object(type(s), "clock", new_callable=PropertyMock, return_value=clock)
-    patcher.start()
-    s._clock_patcher = patcher  # keep reference for test lifetime
+    clock_patcher = patch.object(type(s), "clock", new_callable=PropertyMock, return_value=clock)
+    clock_patcher.start()
+    cache = MagicMock()
+    cache_patcher = patch.object(type(s), "cache", new_callable=PropertyMock, return_value=cache)
+    cache_patcher.start()
+    s._clock_patcher = clock_patcher
+    s._cache_patcher = cache_patcher
+    s._cache_mock = cache
     return s
 
 
@@ -53,3 +76,197 @@ def test_entry_blocked_at_expiration_ns():
     inst.expiration_ns = exp_ns
     inst.info = {}
     assert s._entry_allowed(inst) is False
+
+
+def _prime_open_state(s: TerminalSiriusStrategy, clock: MagicMock) -> None:
+    window_start = 1_780_814_700
+    clock.timestamp_ns.return_value = (window_start + 60) * 1_000_000_000
+    s._cache_mock.positions_open.return_value = False
+    st = s._states[SYMBOL]
+    st.vwap_ready = True
+    st.slope = 0.0
+    st.low_zone = 90_000.0
+    st.high_zone = 91_000.0
+    st.last_price = 89_500.0
+    st.liq_long_trigger = True
+    s._poly_iid[SYMBOL] = YES
+    s._poly_no_iid[SYMBOL] = NO
+
+
+def test_maybe_execute_skips_without_on_instrument():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    inst = MagicMock()
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    inst.price_precision = 3
+    inst.make_qty.return_value = MagicMock()
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_not_called()
+
+
+def test_maybe_execute_submits_when_ready():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    inst = MagicMock()
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    inst.price_precision = 3
+    inst.make_qty.return_value = MagicMock()
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    s._exec_ready_iids.add(YES)
+    order_factory = MagicMock()
+    order_factory.market.return_value = MagicMock()
+    patch.object(
+        type(s), "order_factory", new_callable=PropertyMock, return_value=order_factory
+    ).start()
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_called_once()
+
+
+def test_maybe_execute_skips_without_usable_quote():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    inst = MagicMock()
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.price_precision = 3
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote(bid_prec=None, ask_prec=None)
+    s._exec_ready_iids.add(YES)
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_not_called()
+
+
+def test_on_active_market_clears_readiness_on_rotate_live():
+    clock = MagicMock()
+    s = _strategy(clock, backtest_mode=False)
+    s._cache_mock.instrument.return_value = None
+    old_yes = InstrumentId.from_str("0xold-yes.POLYMARKET")
+    old_no = InstrumentId.from_str("0xold-no.POLYMARKET")
+    s._poly_iid[SYMBOL] = old_yes
+    s._poly_no_iid[SYMBOL] = old_no
+    s._exec_ready_iids.update({old_yes, old_no})
+    s.subscribe_quote_ticks = MagicMock()
+    s.unsubscribe_quote_ticks = MagicMock()
+    s.request_instrument = MagicMock()
+
+    data = ActivePolymarketMarket(
+        instrument_id=YES,
+        no_instrument_id=NO,
+        series="btc-updown-15m",
+        slug="btc-updown-15m-1780814700",
+        question="btc",
+        ts_event=1,
+        ts_init=1,
+    )
+    s._on_active_market(data)
+
+    assert old_yes not in s._exec_ready_iids
+    assert old_no not in s._exec_ready_iids
+    assert YES not in s._exec_ready_iids
+    assert NO not in s._exec_ready_iids
+    assert s.request_instrument.call_count == 2
+
+
+def test_maybe_execute_skips_on_stale_quote_precision():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    inst = MagicMock()
+    inst.price_precision = 3
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote(bid_prec=2, ask_prec=2)
+    s._exec_ready_iids.add(YES)
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_not_called()
+
+
+def test_on_active_market_primes_readiness_in_backtest():
+    clock = MagicMock()
+    s = _strategy(clock, backtest_mode=True)
+    inst = MagicMock()
+    inst.price_precision = 3
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    s.subscribe_quote_ticks = MagicMock()
+
+    data = ActivePolymarketMarket(
+        instrument_id=YES,
+        no_instrument_id=NO,
+        series="btc-updown-15m",
+        slug="btc-updown-15m-1780814700",
+        question="btc",
+        ts_event=1,
+        ts_init=1,
+    )
+    s._on_active_market(data)
+
+    assert YES in s._exec_ready_iids
+    assert NO in s._exec_ready_iids
+
+
+def test_on_instrument_marks_ready_and_retries_open():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    s._poly_iid[SYMBOL] = YES
+    inst = MagicMock()
+    inst.id = YES
+    inst.price_precision = 3
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    inst.make_qty.return_value = MagicMock()
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    order_factory = MagicMock()
+    order_factory.market.return_value = MagicMock()
+    patch.object(
+        type(s), "order_factory", new_callable=PropertyMock, return_value=order_factory
+    ).start()
+    s.submit_order = MagicMock()
+
+    s.on_instrument(inst)
+
+    assert YES in s._exec_ready_iids
+    s.submit_order.assert_called_once()
+
+
+def test_on_instrument_skips_submit_until_quote_precision_matches():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    s._poly_iid[SYMBOL] = YES
+    inst = MagicMock()
+    inst.id = YES
+    inst.price_precision = 3
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote(bid_prec=2, ask_prec=2)
+    s.submit_order = MagicMock()
+
+    s.on_instrument(inst)
+
+    assert YES not in s._exec_ready_iids
+    s.submit_order.assert_not_called()

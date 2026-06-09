@@ -60,6 +60,8 @@ import {
   binancePerpToPolySeries,
   polySeriesToFeedSymbol,
 } from "../../lib/binancePolySeries";
+import { paperFillMatchesSymbol, tradeMarkerForFill } from "../../lib/tradeSignalMarkers";
+import { TradeSignalMarkersPrimitive } from "../../lib/tradeSignalMarkersPrimitive";
 import {
   liqApiInterval,
   liqHistogramPoint,
@@ -80,6 +82,7 @@ import type {
   Kline,
   LiquidationBar,
   LiquidationMsg,
+  PaperEventMsg,
   PolymarketMsg,
   TradeMsg,
 } from "../../types";
@@ -370,6 +373,7 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   let polymarketUp: ChartIndicator | null = null;
   let sessionBreaks: ChartIndicator | null = null;
   let sessionHlines: ChartIndicator | null = null;
+  let tradeSignals: ChartIndicator | null = null;
 
   for (const ind of raw) {
     const t = (ind as { type: string }).type;
@@ -407,6 +411,10 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
         type: "session_hlines",
         periodMinutes: Math.max(1, Math.floor(periodMinutes)),
       };
+      continue;
+    }
+    if (t === "trade_signals") {
+      tradeSignals = { id: "trade_signals", type: "trade_signals" };
       continue;
     }
     if (t === "vwap") {
@@ -459,6 +467,7 @@ function normalizeIndicators(raw: ChartIndicator[]): ChartIndicator[] {
   if (polymarketUp) out.push(polymarketUp);
   if (sessionBreaks) out.push(sessionBreaks);
   if (sessionHlines) out.push(sessionHlines);
+  if (tradeSignals) out.push(tradeSignals);
   return out;
 }
 
@@ -512,6 +521,7 @@ export function CandlestickChart({
   const rollingVwapPeriod = getRollingVwapPeriod(indicators);
   const hasSessionBreaks = indicators.some((i) => i.type === "session_breaks");
   const hasSessionHlines = indicators.some((i) => i.type === "session_hlines");
+  const hasTradeSignals = indicators.some((i) => i.type === "trade_signals");
   const sessionBreakMinutes = getSessionBreakMinutes(indicators);
   const sessionHlineMinutes = getSessionHLineMinutes(indicators);
 
@@ -551,6 +561,39 @@ export function CandlestickChart({
   const sessionBreakAttachedRef = useRef(false);
   const sessionHlinesRef = useRef<SessionHorizontalLinesPrimitive | null>(null);
   const sessionHlinesAttachedRef = useRef(false);
+  const tradeSignalsPrimitiveRef = useRef<TradeSignalMarkersPrimitive | null>(null);
+  const tradeSignalsAttachedRef = useRef(false);
+
+  const syncTradeSignalsPrimitive = useCallback(() => {
+    const series = candleSeriesRef.current ?? lineSeriesRef.current;
+    const primitive = tradeSignalsPrimitiveRef.current;
+    if (!series || !primitive) return;
+
+    const enabled = indicatorsRef.current.some((i) => i.type === "trade_signals");
+    if (enabled) {
+      if (!tradeSignalsAttachedRef.current) {
+        series.attachPrimitive(primitive);
+        tradeSignalsAttachedRef.current = true;
+      }
+      primitive.refresh();
+    } else if (tradeSignalsAttachedRef.current) {
+      series.detachPrimitive(primitive);
+      tradeSignalsAttachedRef.current = false;
+      primitive.clearMarkers();
+    }
+  }, []);
+
+  const applyPaperTradeFill = useCallback(
+    (ev: PaperEventMsg) => {
+      if (!indicatorsRef.current.some((i) => i.type === "trade_signals")) return;
+      if (!paperFillMatchesSymbol(ev, symbol)) return;
+      const marker = tradeMarkerForFill(ev, interval);
+      if (!marker) return;
+      tradeSignalsPrimitiveRef.current?.addMarker(marker);
+      syncTradeSignalsPrimitive();
+    },
+    [symbol, interval, syncTradeSignalsPrimitive]
+  );
 
   const pushLiqToSeries = useCallback(() => {
     const series = liqSeriesRef.current;
@@ -783,25 +826,6 @@ export function CandlestickChart({
       const prev = maSeriesRef.current;
       const activeKeys = new Set<string>();
 
-      if (isRealtimeOnlyInterval) {
-        next.forEach((ind) => {
-          if (ind.type === "ema" || ind.type === "rolling_vwap") {
-            activeKeys.add(ind.id);
-          }
-          if (isAnchoredVwapType(ind.type)) {
-            for (const key of prev.keys()) {
-              if (key.startsWith(`${ind.id}:`)) activeKeys.add(key);
-            }
-          }
-        });
-        for (const [key, line] of prev) {
-          if (activeKeys.has(key)) continue;
-          chart.removeSeries(line);
-          prev.delete(key);
-        }
-        return;
-      }
-
       const ohlcv = ohlcvBarsRef.current;
       const candles = toCandles(ohlcv);
 
@@ -823,15 +847,14 @@ export function CandlestickChart({
         prev.delete(key);
       }
     },
-    [applyMaIndicator, isRealtimeOnlyInterval]
+    [applyMaIndicator]
   );
 
   const refreshMaSeries = useCallback(() => {
-    if (isRealtimeOnlyInterval) return;
     const chart = chartRef.current;
     if (!chart) return;
     syncMaSeries(chart, indicatorsRef.current);
-  }, [syncMaSeries, isRealtimeOnlyInterval]);
+  }, [syncMaSeries]);
 
   const applyBackendIndicator = useCallback(
     (msg: IndicatorMsg) => {
@@ -848,6 +871,7 @@ export function CandlestickChart({
               )
             : indicatorsRef.current.find((i) => i.type === "rolling_vwap");
       if (!ind) return;
+      if (msg.period !== ind.period) return;
 
       const time = msg.time as UTCTimestamp;
       const point =
@@ -897,23 +921,25 @@ export function CandlestickChart({
   const setPriceSeriesData = useCallback((data: OhlcvBar[]) => {
     if (priceSeriesTypeRef.current === "line") {
       lineSeriesRef.current?.setData(toLineData(data));
-      return;
+    } else {
+      candleSeriesRef.current?.setData(toCandles(data));
     }
-    candleSeriesRef.current?.setData(toCandles(data));
+    tradeSignalsPrimitiveRef.current?.refresh();
   }, []);
 
   const updatePriceSeries = useCallback((bar: OhlcvBar) => {
     if (priceSeriesTypeRef.current === "line") {
       lineSeriesRef.current?.update({ time: bar.time, value: bar.close });
-      return;
+    } else {
+      candleSeriesRef.current?.update({
+        time: bar.time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      });
     }
-    candleSeriesRef.current?.update({
-      time: bar.time,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    });
+    tradeSignalsPrimitiveRef.current?.refresh();
   }, []);
 
   const getPriceSeries = useCallback(() => {
@@ -1147,6 +1173,10 @@ export function CandlestickChart({
     sessionHlinesRef.current = sessionHlines;
     sessionHlinesAttachedRef.current = false;
 
+    const tradeSignalsPrimitive = new TradeSignalMarkersPrimitive();
+    tradeSignalsPrimitiveRef.current = tradeSignalsPrimitive;
+    tradeSignalsAttachedRef.current = false;
+
     syncMaSeries(chart, indicatorsRef.current);
     const inds = indicatorsRef.current;
     const initPoly =
@@ -1166,6 +1196,7 @@ export function CandlestickChart({
     );
     syncSessionBreaks();
     syncSessionHlines();
+    syncTradeSignalsPrimitive();
 
     const fetchKlines = async (before?: number): Promise<Kline[]> => {
       const params = new URLSearchParams({
@@ -1204,6 +1235,7 @@ export function CandlestickChart({
     const onVisibleRangeChange = (range: LogicalRange | null) => {
       sessionBreaksRef.current?.refresh();
       sessionHlinesRef.current?.refresh();
+      tradeSignalsPrimitiveRef.current?.refresh();
       if (!historyScrollEnabled || !range || range.from >= LOAD_THRESHOLD) return;
       void loadOlder();
     };
@@ -1247,6 +1279,9 @@ export function CandlestickChart({
         sessionBreakAttachedRef.current = false;
         sessionHlinesRef.current = null;
         sessionHlinesAttachedRef.current = false;
+        tradeSignalsPrimitiveRef.current?.clearMarkers();
+        tradeSignalsPrimitiveRef.current = null;
+        tradeSignalsAttachedRef.current = false;
         ohlcvBarsRef.current = [];
         liveBarRef.current = null;
         historyReadyRef.current = false;
@@ -1302,6 +1337,9 @@ export function CandlestickChart({
       sessionBreakAttachedRef.current = false;
       sessionHlinesRef.current = null;
       sessionHlinesAttachedRef.current = false;
+      tradeSignalsPrimitiveRef.current?.clearMarkers();
+      tradeSignalsPrimitiveRef.current = null;
+      tradeSignalsAttachedRef.current = false;
       ohlcvBarsRef.current = [];
       liveBarRef.current = null;
       historyReadyRef.current = false;
@@ -1317,6 +1355,7 @@ export function CandlestickChart({
     syncPolySeries,
     syncSessionBreaks,
     syncSessionHlines,
+    syncTradeSignalsPrimitive,
     loadLiqForOhlcv,
   ]);
 
@@ -1330,16 +1369,27 @@ export function CandlestickChart({
     scheduleIndicatorPaneHeights(chart, polyPaneActive, hasLiquidations);
     syncSessionBreaks();
     syncSessionHlines();
+    syncTradeSignalsPrimitive();
   }, [
     indicators,
     hasLiquidations,
+    hasTradeSignals,
     polyPaneActive,
     syncMaSeries,
     syncLiqSeries,
     syncPolySeries,
     syncSessionBreaks,
     syncSessionHlines,
+    syncTradeSignalsPrimitive,
   ]);
+
+  useEffect(() => {
+    if (!hasTradeSignals) return;
+    return subscribe("*", (msg) => {
+      if (msg.type !== "paper_event") return;
+      applyPaperTradeFill(msg as PaperEventMsg);
+    });
+  }, [hasTradeSignals, subscribe, applyPaperTradeFill]);
 
   useEffect(() => {
     if (!polyPaneActive) return;
@@ -1430,7 +1480,7 @@ export function CandlestickChart({
       mergeBarIntoStore(bar);
       const windowTrimmed = isRealtimeOnlyInterval && enforceRealtimeWindow();
       if (!windowTrimmed) paintCandleSeries(bar);
-      if (!isRealtimeOnlyInterval) refreshMaSeries();
+      refreshMaSeries();
       if (indicatorsRef.current.some((i) => i.type === "session_breaks")) {
         updateSessionBreakBoundaries();
       }
@@ -1467,6 +1517,7 @@ export function CandlestickChart({
       }
 
       if (msg.type === "indicator" && msg.interval === interval) {
+        if (isRealtimeOnlyInterval) return;
         applyBackendIndicator(msg as IndicatorMsg);
         return;
       }
@@ -1543,6 +1594,8 @@ export function CandlestickChart({
         ? { id, type: "liquidations", threshold: DEFAULT_LIQ_THRESHOLD }
         : preset.type === "polymarket_up"
           ? { id, type: "polymarket_up" }
+          : preset.type === "trade_signals"
+            ? { id, type: "trade_signals" }
           : preset.type === "session_breaks"
             ? {
                 id,

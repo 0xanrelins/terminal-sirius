@@ -4,43 +4,64 @@ Polymarket Gamma API client.
 Gamma API is the REST layer for market metadata (questions, slugs, token IDs, volumes).
 CLOB API is the order-book / price-feed layer.
 """
+from __future__ import annotations
+
 import json
 
 import httpx
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
+_gamma_client: httpx.AsyncClient | None = None
+
+
+def _client() -> httpx.AsyncClient:
+    """Reuse one AsyncClient — rotate used to spawn a client per request (EMFILE risk)."""
+    global _gamma_client
+    if _gamma_client is None:
+        _gamma_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0),
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=3),
+        )
+    return _gamma_client
+
+
+async def aclose_gamma_client() -> None:
+    global _gamma_client
+    if _gamma_client is not None:
+        await _gamma_client.aclose()
+        _gamma_client = None
+
 
 async def get_market_by_slug(slug: str) -> dict | None:
     """Return market record for a slug (active first, then closed fallback)."""
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        resp = await client.get(f"{GAMMA_BASE}/markets", params={"slug": slug})
-        resp.raise_for_status()
-        data = resp.json()
-        if data:
-            return data[0]
+    client = _client()
+    resp = await client.get(f"{GAMMA_BASE}/markets", params={"slug": slug})
+    resp.raise_for_status()
+    data = resp.json()
+    if data:
+        return data[0]
 
-        # Resolved 15m markets often disappear from the default active query surface.
-        # Retry against the closed slice so post-expiry lookups still resolve metadata.
-        resp_closed = await client.get(
-            f"{GAMMA_BASE}/markets",
-            params={"slug": slug, "closed": "true"},
-        )
-        resp_closed.raise_for_status()
-        closed_data = resp_closed.json()
+    # Resolved 15m markets often disappear from the default active query surface.
+    # Retry against the closed slice so post-expiry lookups still resolve metadata.
+    resp_closed = await client.get(
+        f"{GAMMA_BASE}/markets",
+        params={"slug": slug, "closed": "true"},
+    )
+    resp_closed.raise_for_status()
+    closed_data = resp_closed.json()
     return closed_data[0] if closed_data else None
 
 
 async def search_markets(q: str, limit: int = 20) -> list[dict]:
     """Search active markets by keyword. Returns a simplified list."""
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        # Gamma supports ?search= for full-text on the question field
-        resp = await client.get(
-            f"{GAMMA_BASE}/markets",
-            params={"active": "true", "limit": str(limit * 3), "search": q},
-        )
-        resp.raise_for_status()
-        markets = resp.json()
+    client = _client()
+    resp = await client.get(
+        f"{GAMMA_BASE}/markets",
+        params={"active": "true", "limit": str(limit * 3), "search": q},
+    )
+    resp.raise_for_status()
+    markets = resp.json()
 
     # Gamma may ignore the param; filter client-side as fallback
     if not any(q.lower() in m.get("question", "").lower() for m in markets):

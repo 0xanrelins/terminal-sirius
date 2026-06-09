@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import websockets
 
@@ -31,6 +32,7 @@ from recorders.data_types import LiquidationTick
 
 WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 _CATALOG_FLUSH_TIMER = "liq_catalog_flush"
+_LIQ_STATE_FILE = ".liq_stream_state.json"
 
 
 class LiquidationFeedActorConfig(ActorConfig, frozen=True):
@@ -50,14 +52,18 @@ class LiquidationFeedActor(Actor):
         self._task: asyncio.Task | None = None
         self._buffer: list[LiquidationTick] = []
         self._catalog = None
+        self._last_written_ts_init: int = 0
+        self._state_file: Path | None = None
         if config.catalog_path:
             from catalog import get_catalog
 
             self._catalog = get_catalog(config.catalog_path)
+            self._state_file = Path(self._catalog.path) / _LIQ_STATE_FILE
 
     def on_start(self) -> None:
         self._task = asyncio.create_task(self._run_ws())
         if self._catalog is not None:
+            self._load_or_bootstrap_watermark()
             self.clock.set_timer(
                 _CATALOG_FLUSH_TIMER,
                 timedelta(seconds=float(self.config.catalog_flush_interval_sec)),
@@ -85,11 +91,71 @@ class LiquidationFeedActor(Actor):
         self._buffer = []
         # Nautilus ParquetDataCatalog expects non-decreasing ts_init.
         batch.sort(key=lambda tick: tick.ts_init)
+        if self._last_written_ts_init > 0:
+            original_len = len(batch)
+            batch = [tick for tick in batch if tick.ts_init > self._last_written_ts_init]
+            dropped = original_len - len(batch)
+            if dropped:
+                self.log.warning(
+                    f"Dropped {dropped} stale LiquidationTick(s) at/below watermark "
+                    f"{self._last_written_ts_init}",
+                )
+        if not batch:
+            return
         try:
             self._catalog.write_data(batch)
         except Exception as e:  # noqa: BLE001 — re-queue batch on transient catalog errors
             self.log.error(f"LiquidationTick catalog flush failed: {e!r}")
+            if "non-disjoint intervals" in str(e):
+                self._refresh_watermark_from_catalog()
+                if self._last_written_ts_init > 0:
+                    before = len(batch)
+                    batch = [tick for tick in batch if tick.ts_init > self._last_written_ts_init]
+                    removed = before - len(batch)
+                    if removed:
+                        self.log.warning(
+                            f"Removed {removed} overlapping LiquidationTick(s) after watermark refresh "
+                            f"{self._last_written_ts_init}",
+                        )
             self._buffer = batch + self._buffer
+            return
+        self._last_written_ts_init = batch[-1].ts_init
+        self._save_watermark()
+
+    def _load_or_bootstrap_watermark(self) -> None:
+        if self._state_file is not None and self._state_file.exists():
+            try:
+                doc = json.loads(self._state_file.read_text(encoding="utf-8"))
+                self._last_written_ts_init = int(doc.get("last_written_ts_init", 0))
+            except Exception:  # noqa: BLE001
+                self._last_written_ts_init = 0
+        if self._last_written_ts_init <= 0:
+            self._refresh_watermark_from_catalog()
+        self.log.info(f"LiquidationTick writer watermark: {self._last_written_ts_init}")
+
+    def _refresh_watermark_from_catalog(self) -> None:
+        if self._catalog is None:
+            return
+        try:
+            last = self._catalog.query_last_timestamp(LiquidationTick)
+        except Exception:  # noqa: BLE001
+            return
+        if last is None:
+            return
+        try:
+            self._last_written_ts_init = int(last.value)
+        except Exception:  # noqa: BLE001
+            try:
+                self._last_written_ts_init = int(last)
+            except Exception:  # noqa: BLE001
+                return
+        self._save_watermark()
+
+    def _save_watermark(self) -> None:
+        if self._state_file is None:
+            return
+        payload = {"last_written_ts_init": int(self._last_written_ts_init)}
+        self._state_file.write_text(json.dumps(payload), encoding="utf-8")
 
     async def _run_ws(self) -> None:
         while True:

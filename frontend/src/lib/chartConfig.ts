@@ -60,7 +60,8 @@ export type IndicatorPreset =
   | { label: string; type: "liquidations" }
   | { label: string; type: "polymarket_up" }
   | { label: string; type: "session_breaks"; periodMinutes: number }
-  | { label: string; type: "session_hlines"; periodMinutes: number };
+  | { label: string; type: "session_hlines"; periodMinutes: number }
+  | { label: string; type: "trade_signals" };
 
 export const DEFAULT_EMA_PERIOD = 180;
 export const DEFAULT_VWAP_PERIOD = 180;
@@ -87,6 +88,7 @@ export const INDICATOR_PRESETS: IndicatorPreset[] = [
     type: "session_hlines",
     periodMinutes: DEFAULT_SESSION_HLINE_MINUTES,
   },
+  { label: "Trade signals", type: "trade_signals" },
 ];
 
 const MA_COLORS = ["#2962FF", "#f59e0b", "#a78bfa", "#22d3ee", "#f472b6"];
@@ -110,6 +112,7 @@ export function presetId(preset: IndicatorPreset): string {
   if (preset.type === "polymarket_up") return "polymarket_up";
   if (preset.type === "session_breaks") return "session_breaks";
   if (preset.type === "session_hlines") return "session_hlines";
+  if (preset.type === "trade_signals") return "trade_signals";
   if (preset.type === "vwap") return "vwap";
   if (preset.type === "rolling_vwap") return "rolling_vwap";
   return "ema";
@@ -127,6 +130,7 @@ export function indicatorLabel(ind: ChartIndicator): string {
   if (ind.type === "polymarket_up") return "Polymarket UP";
   if (ind.type === "session_breaks") return `Session breaks (${ind.periodMinutes}m)`;
   if (ind.type === "session_hlines") return `Session lines (${ind.periodMinutes}m)`;
+  if (ind.type === "trade_signals") return "Trade signals";
   if (ind.type === "vwap") return `VWAP ${ind.period}`;
   if (ind.type === "rolling_vwap") return `Rolling VWAP ${ind.period}`;
   if (ind.type === "session_vwap") return `VWAP ${ind.period}`;

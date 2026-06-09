@@ -85,6 +85,8 @@ export type PaperMarketFields = {
   /** e.g. ``June 4, 11:45PM-12:00AM ET`` (from Gamma question or slug window). */
   market_window?: string;
   underlying?: string;
+  /** Binance signal direction from order tag (LONG / SHORT). */
+  underlying_direction?: "LONG" | "SHORT";
 };
 
 export type PaperSettlementOutcome = "won" | "lost" | "push";
@@ -284,7 +286,8 @@ export type ChartIndicator =
   | { id: string; type: "liquidations"; threshold?: number }
   | { id: string; type: "polymarket_up" }
   | { id: string; type: "session_breaks"; periodMinutes: number }
-  | { id: string; type: "session_hlines"; periodMinutes: number };
+  | { id: string; type: "session_hlines"; periodMinutes: number }
+  | { id: string; type: "trade_signals" };
 
 export type ChartStyle = "candlestick" | "line";
 

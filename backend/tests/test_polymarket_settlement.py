@@ -5,12 +5,14 @@ from unittest.mock import PropertyMock
 from unittest.mock import patch
 
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Price
 
 from adapters.polymarket.rolling import parse_window_epoch_from_slug
 from polymarket_settlement_actor import PolymarketSettlementActor
 from polymarket_settlement_actor import PolymarketSettlementActorConfig
 from polymarket_settlement_actor import instrument_close_topic
 from polymarket_settlement_actor import position_won
+from polymarket_settlement_actor import quote_precision_ok
 from polymarket_settlement_actor import settlement_price_str
 from polymarket_settlement_actor import up_outcome_from_bar
 
@@ -81,3 +83,80 @@ def test_bar_open_sec_not_double_scaled():
 
     ts_ns = 1_749_123_450_000_000_000  # ~2025-06
     assert bar_open_time(ts_ns // 1_000_000_000, "15m") > 1_000_000
+
+
+def _px(precision: int):
+    px = MagicMock()
+    px.precision = precision
+    return px
+
+
+def test_quote_precision_ok_matches_instrument():
+    inst = MagicMock()
+    inst.price_precision = 3
+    tick = MagicMock()
+    tick.bid_price = _px(3)
+    tick.ask_price = _px(3)
+    assert quote_precision_ok(inst, tick) is True
+
+
+def test_quote_precision_ok_rejects_stale_quote():
+    inst = MagicMock()
+    inst.price_precision = 3
+    tick = MagicMock()
+    tick.bid_price = _px(2)
+    tick.ask_price = _px(3)
+    assert quote_precision_ok(inst, tick) is False
+
+
+def test_apply_settlement_defers_without_ready_precision():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    iid = InstrumentId.from_str("0xabc-YES.POLYMARKET")
+    inst = MagicMock()
+    inst.price_precision = 3
+    inst.description = "Up"
+    tick = MagicMock()
+    tick.bid_price = _px(2)
+    tick.ask_price = _px(2)
+    cache = MagicMock()
+    bus = MagicMock()
+    with (
+        patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache),
+        patch.object(type(actor), "msgbus", new_callable=PropertyMock, return_value=bus),
+    ):
+        cache.positions_open.return_value = True
+        cache.instrument.return_value = inst
+        cache.quote_tick.return_value = tick
+        assert actor._apply_settlement(iid, True, slug="btc-updown-15m-1") is False
+    bus.publish.assert_not_called()
+
+
+def test_apply_settlement_publishes_when_ready():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    iid = InstrumentId.from_str("0xabc-YES.POLYMARKET")
+    inst = MagicMock()
+    inst.price_precision = 3
+    inst.description = "Up"
+    inst.make_price.return_value = Price.from_str("1.000")
+    tick = MagicMock()
+    tick.bid_price = _px(3)
+    tick.ask_price = _px(3)
+    actor._settlement_ready_iids.add(iid)
+    cache = MagicMock()
+    clock = MagicMock()
+    clock.timestamp_ns.return_value = 1_000
+    bus = MagicMock()
+    with (
+        patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache),
+        patch.object(type(actor), "clock", new_callable=PropertyMock, return_value=clock),
+        patch.object(type(actor), "msgbus", new_callable=PropertyMock, return_value=bus),
+    ):
+        cache.positions_open.return_value = True
+        cache.instrument.return_value = inst
+        cache.quote_tick.return_value = tick
+        assert actor._apply_settlement(iid, True, slug="btc-updown-15m-1") is True
+    bus.publish.assert_called_once()

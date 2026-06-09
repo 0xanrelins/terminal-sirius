@@ -14,6 +14,8 @@ from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
 from adapters.polymarket.gamma import get_token_ids
+from adapters.polymarket.slug_load_guard import SLUG_LOAD_SEM
+from adapters.polymarket.slug_load_guard import SlugLoadGuard
 from adapters.polymarket.quote_bridge_actor import should_broadcast_quote
 from adapters.polymarket.rolling import active_rolling_slugs, series_symbol
 from bar_time import bar_open_time_ns
@@ -77,6 +79,7 @@ class PolymarketRealtimeBucketActor(Actor):
         self._last_mid: dict[str, float] = {}
         self._rotation_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._slug_load_guard = SlugLoadGuard()
 
     def _enqueue(self, msg: dict) -> None:
         try:
@@ -140,6 +143,7 @@ class PolymarketRealtimeBucketActor(Actor):
             try:
                 for series in list(self._series_slugs):
                     await self._sync_series_slugs(series)
+                    await asyncio.sleep(0.25)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -186,13 +190,30 @@ class PolymarketRealtimeBucketActor(Actor):
     async def _ensure_slug(self, slug: str, *, series: str) -> None:
         if slug in self._slug_yes_iid:
             return
+
+        now_ns = self.clock.timestamp_ns()
+        if self._slug_load_guard.should_skip(slug, now_ns):
+            return
+
+        async with SLUG_LOAD_SEM:
+            if slug in self._slug_yes_iid:
+                return
+            await self._load_slug_locked(slug, series=series)
+
+    async def _load_slug_locked(self, slug: str, *, series: str) -> None:
         from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
 
+        now_ns = self.clock.timestamp_ns()
         try:
-            await get_token_ids(slug)
+            info = await get_token_ids(slug)
+            if not info:
+                raise LookupError(f"gamma returned no market for {slug!r}")
             loader = await PolymarketDataLoader.from_market_slug(slug, token_index=0)
         except Exception as e:
-            self.log.warning(f"PM bucket skip slug={slug!r}: {e!r}")
+            delay = self._slug_load_guard.record_failure(slug, now_ns, e)
+            self.log.warning(
+                f"PM bucket skip slug={slug!r}: {e!r} (retry in {delay:.0f}s)",
+            )
             return
 
         instrument = loader.instrument
@@ -206,6 +227,7 @@ class PolymarketRealtimeBucketActor(Actor):
         except Exception as e:
             self.log.warning(f"PM bucket request_instrument {iid}: {e!r}")
 
+        self._slug_load_guard.record_success(slug)
         self.subscribe_quote_ticks(iid)
         self._slug_yes_iid[slug] = iid
         self._yes_iid_to_series[iid_str] = series

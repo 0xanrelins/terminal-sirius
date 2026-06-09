@@ -255,6 +255,8 @@ class PaperTradeMonitorActor(Actor):
         parsed = parse_entry_signal_tag(order_tags)
         if parsed and parsed.get("sym"):
             meta["underlying"] = parsed["sym"]
+        if parsed and parsed.get("dir") in ("LONG", "SHORT"):
+            meta["underlying_direction"] = parsed["dir"]
         window = self._resolve_market_window(meta)
         if window:
             meta["market_window"] = window

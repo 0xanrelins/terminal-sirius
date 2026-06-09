@@ -119,7 +119,11 @@ case "${1:-start}" in
         _start_once
         pid="$(cat "$PID_FILE")"
         echo "Started uvicorn pid=$pid (CATALOG_STREAMING_ENABLED=$CATALOG_STREAMING_ENABLED)"
-        echo "Logs: tail -f $UVICORN_LOG  (Nautilus level=$NAUTILUS_LOG_LEVEL, max ${LOG_MAX_MB}MB)"
+        echo "Logs: tail -f $UVICORN_LOG  (Nautilus level=$NAUTILUS_LOG_LEVEL, max ${LOG_MAX_MB}MB, rotate every ${LOG_ROTATE_INTERVAL_SEC}s)"
+        while kill -0 "$pid" 2>/dev/null; do
+          _maybe_rotate_log "$UVICORN_LOG" "$DAEMON_LOG"
+          sleep "${LOG_ROTATE_INTERVAL_SEC}"
+        done
         wait "$pid" 2>/dev/null || true
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] backend exited, restart in 5s" >>"$DAEMON_LOG"
         sleep 5

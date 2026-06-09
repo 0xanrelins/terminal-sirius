@@ -18,6 +18,8 @@ from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import InstrumentClose
+from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.enums import InstrumentCloseType
 from nautilus_trader.model.events import PositionOpened
@@ -71,6 +73,19 @@ def position_won(*, outcome: str, up_won: bool) -> bool:
     raise ValueError(f"unknown market outcome: {outcome!r}")
 
 
+def quote_precision_ok(instrument: Instrument, tick: QuoteTick) -> bool:
+    """Quote ``Price`` precision must match ``instrument.price_precision`` (Polymarket tick epochs)."""
+    expected = instrument.price_precision
+    has_price = False
+    for px in (tick.bid_price, tick.ask_price):
+        if px is None:
+            continue
+        has_price = True
+        if px.precision != expected:
+            return False
+    return has_price
+
+
 class PolymarketSettlementActor(Actor):
     def __init__(self, config: PolymarketSettlementActorConfig) -> None:
         super().__init__(config)
@@ -84,6 +99,8 @@ class PolymarketSettlementActor(Actor):
         # (binance_sym, window_open_sec) → bar
         self._bar_by_window: dict[tuple[str, int], Bar] = {}
         self._settled: set[str] = set()
+        # Instruments safe for InstrumentClose (on_instrument + quote precision aligned).
+        self._settlement_ready_iids: set[InstrumentId] = set()
         self._hist_bar_count: int = 0
         self._boundary_task: asyncio.Task | None = None
         self._catchup_task: asyncio.Task | None = None
@@ -117,7 +134,79 @@ class PolymarketSettlementActor(Actor):
 
     def _on_position_event(self, event) -> None:
         if isinstance(event, PositionOpened):
-            self._lock_slug(str(event.instrument_id))
+            iid = event.instrument_id
+            self._lock_slug(str(iid))
+            self._prime_settlement_ready(iid)
+
+    def on_instrument(self, instrument: Instrument) -> None:
+        """Tick-size updates publish a new ``BinaryOption``; quotes may lag briefly."""
+        if not self.cache.positions_open(instrument_id=instrument.id):
+            return
+        self._sync_settlement_ready(instrument.id)
+        self._retry_settle_instrument(instrument.id)
+
+    def on_quote_tick(self, tick: QuoteTick) -> None:
+        if not self.cache.positions_open(instrument_id=tick.instrument_id):
+            return
+        self._sync_settlement_ready(tick.instrument_id)
+        self._retry_settle_instrument(tick.instrument_id)
+
+    def _request_instrument_safe(self, instrument_id: InstrumentId) -> None:
+        try:
+            self.request_instrument(instrument_id)
+        except Exception:  # noqa: BLE001 — Polymarket has no subscribe_instrument
+            pass
+
+    def _prime_settlement_ready(self, instrument_id: InstrumentId) -> None:
+        self._settlement_ready_iids.discard(instrument_id)
+        self._request_instrument_safe(instrument_id)
+        self.subscribe_quote_ticks(instrument_id)
+
+    def _sync_settlement_ready(self, instrument_id: InstrumentId) -> None:
+        instrument = self.cache.instrument(instrument_id)
+        tick = self.cache.quote_tick(instrument_id)
+        if (
+            instrument is None
+            or tick is None
+            or not quote_precision_ok(instrument, tick)
+        ):
+            self._settlement_ready_iids.discard(instrument_id)
+            return
+        self._settlement_ready_iids.add(instrument_id)
+
+    def _settlement_execution_ready(self, instrument_id: InstrumentId) -> tuple[bool, str]:
+        instrument = self.cache.instrument(instrument_id)
+        if instrument is None:
+            return False, "awaiting instrument"
+        tick = self.cache.quote_tick(instrument_id)
+        if tick is None:
+            return False, "no usable quote"
+        if not quote_precision_ok(instrument, tick):
+            return False, "quote precision stale (tick size change)"
+        if instrument_id not in self._settlement_ready_iids:
+            return False, "awaiting on_instrument"
+        return True, ""
+
+    def _retry_settle_instrument(self, instrument_id: InstrumentId) -> None:
+        iid_s = str(instrument_id)
+        if self._settlement_suppressed(iid_s, instrument_id):
+            return
+        inst = self.cache.instrument(instrument_id)
+        window = self._window_for_position(iid_s, inst)
+        if window is None:
+            return
+        window_start_sec, window_end_sec = window
+        now_sec = int(self.clock.timestamp_ns() // 1_000_000_000)
+        if now_sec < window_end_sec:
+            return
+        binance_sym = self._binance_for_iid(iid_s, inst)
+        if binance_sym is None:
+            return
+        up_won = self._up_outcome_for_window(binance_sym, window_start_sec)
+        if up_won is None:
+            return
+        slug = self._slug_for_iid(iid_s, inst)
+        self._apply_settlement(instrument_id, up_won, slug=slug)
 
     def on_historical_data(self, data) -> None:
         if isinstance(data, Bar) and self._is_15m_bar(data):
@@ -202,7 +291,9 @@ class PolymarketSettlementActor(Actor):
                 await asyncio.sleep(0.5)
 
             for pos in self.cache.positions_open(venue=self._venue):
-                self._lock_slug(str(pos.instrument_id))
+                iid = pos.instrument_id
+                self._lock_slug(str(iid))
+                self._prime_settlement_ready(iid)
 
             settled, skipped = self._settle_all_expired()
             self.log.info(
@@ -373,6 +464,10 @@ class PolymarketSettlementActor(Actor):
             return False
         instrument = self.cache.instrument(instrument_id)
         if instrument is None:
+            return False
+        ready, reason = self._settlement_execution_ready(instrument_id)
+        if not ready:
+            self.log.info(f"defer settle {iid_s}: {reason}")
             return False
         outcome = self._iid_meta.get(iid_s, {}).get("market_outcome")
         if not outcome:

@@ -92,7 +92,7 @@
 /* ── KPI row ── */
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
   gap: 1px;
   background: #2a2a35;
   border-bottom: 1px solid #2a2a35;
@@ -101,7 +101,7 @@
 
 .kpi {
   background: #15151b;
-  padding: 3px 8px;
+  padding: 4px 8px;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -110,7 +110,7 @@
 }
 
 .kpiLabel {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #7c818d;
@@ -118,7 +118,7 @@
 }
 
 .kpiValue {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: #e8eaee;
   white-space: nowrap;
@@ -127,7 +127,7 @@
 }
 
 .kpiSub {
-  font-size: 9px;
+  font-size: 10px;
   color: #6b7079;
 }
 
