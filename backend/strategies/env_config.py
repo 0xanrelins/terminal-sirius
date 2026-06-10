@@ -71,12 +71,11 @@ def build_liquidation_signal_config(
     return LiquidationSignalActorConfig(
         component_id=component_id,
         instrument_ids=instrument_ids,
-        window_sec=_env_int("STRATEGY_LIQ_WINDOW_SEC", 900),
-        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 500_000.0),
-        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 200_000.0),
-        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 100_000.0),
-        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 50_000.0),
-        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 25_000.0),
+        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 10_000.0),
+        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 10_000.0),
+        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 5_000.0),
+        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 5_000.0),
+        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 2_500.0),
     )
 
 
@@ -89,7 +88,7 @@ def build_vwap_signal_config(
         component_id=component_id,
         instrument_ids=instrument_ids,
         bar_period=_env_int("STRATEGY_BAR_PERIOD", 900),
-        atr_multiplier=_env_float("STRATEGY_ATR_MULTIPLIER", 1.5),
+        zone_pct=_env_float("STRATEGY_ZONE_PCT", 0.15),
         slope_range_threshold=_env_float("STRATEGY_SLOPE_RANGE_THRESHOLD", 0.05),
     )
 
@@ -103,17 +102,22 @@ def build_terminal_sirius_config(
         binance_instruments=binance_instruments,
         polymarket_series=polymarket_series,
         bar_period=_env_int("STRATEGY_BAR_PERIOD", 900),
-        atr_multiplier=_env_float("STRATEGY_ATR_MULTIPLIER", 1.5),
         slope_range_threshold=_env_float("STRATEGY_SLOPE_RANGE_THRESHOLD", 0.05),
-        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 500_000.0),
-        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 200_000.0),
-        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 100_000.0),
-        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 50_000.0),
-        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 25_000.0),
+        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 10_000.0),
+        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 10_000.0),
+        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 5_000.0),
+        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 5_000.0),
+        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 2_500.0),
         pos_multiplier_small=_env_float("STRATEGY_POS_MULT_SMALL", 1.5),
         pos_multiplier_large=_env_float("STRATEGY_POS_MULT_LARGE", 3.0),
         trade_size=_env_decimal("STRATEGY_TRADE_SIZE", "10"),
         recalc_interval_sec=_env_float("STRATEGY_RECALC_INTERVAL_SEC", 1.0),
+        recovery_exit_pct=_env_float("STRATEGY_RECOVERY_EXIT_PCT", 0.2),
+        max_entry_token_price=_env_float("STRATEGY_MAX_ENTRY_TOKEN_PRICE", 0.5),
+        min_seconds_to_expiry_for_entry=_env_int(
+            "STRATEGY_MIN_SECONDS_TO_EXPIRY_FOR_ENTRY",
+            250,
+        ),
         use_verdict_triggers=_env_bool("STRATEGY_USE_VERDICT_TRIGGERS", False),
         use_rolling_liq_triggers=_env_bool("STRATEGY_USE_ROLLING_LIQ_TRIGGERS", True),
         verdict_min_recovery_move_pct=_env_float("VERDICT_RECOVERY_MOVE_THRESHOLD_PCT", 0.2),
@@ -137,25 +141,29 @@ def build_strategy_signal_bridge_config(
             "STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC",
             _env_float("PAPER_SNAPSHOT_INTERVAL_SEC", 2.0),
         ),
-        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 500_000.0),
-        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 200_000.0),
-        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 100_000.0),
-        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 50_000.0),
-        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 25_000.0),
+        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 10_000.0),
+        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 10_000.0),
+        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 5_000.0),
+        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 5_000.0),
+        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 2_500.0),
     )
 
 
 def log_strategy_env_summary() -> None:
     """Print active thresholds at startup (no secrets)."""
     print(
-        "[strategy] liq thresholds ($, 900s): "
-        f"BTC={_env_float('LIQ_THRESHOLD_BTC', 500_000):,.0f} "
-        f"ETH={_env_float('LIQ_THRESHOLD_ETH', 200_000):,.0f} "
-        f"SOL={_env_float('LIQ_THRESHOLD_SOL', 100_000):,.0f} "
-        f"XRP={_env_float('LIQ_THRESHOLD_XRP', 50_000):,.0f} "
-        f"DOGE={_env_float('LIQ_THRESHOLD_DOGE', 25_000):,.0f}"
+        "[strategy] liq thresholds ($, single-event): "
+        f"BTC={_env_float('LIQ_THRESHOLD_BTC', 10_000):,.0f} "
+        f"ETH={_env_float('LIQ_THRESHOLD_ETH', 10_000):,.0f} "
+        f"SOL={_env_float('LIQ_THRESHOLD_SOL', 5_000):,.0f} "
+        f"XRP={_env_float('LIQ_THRESHOLD_XRP', 5_000):,.0f} "
+        f"DOGE={_env_float('LIQ_THRESHOLD_DOGE', 2_500):,.0f}"
     )
     print(
-        f"[strategy] trade_size={_env_decimal('STRATEGY_TRADE_SIZE', '10')} "
+        f"[strategy] zone_pct={_env_float('STRATEGY_ZONE_PCT', 0.15):.4f}% "
+        f"recovery_exit_pct={_env_float('STRATEGY_RECOVERY_EXIT_PCT', 0.2):.4f}% "
+        f"max_entry_token_price={_env_float('STRATEGY_MAX_ENTRY_TOKEN_PRICE', 0.5):.4f} "
+        f"min_tte_entry={_env_int('STRATEGY_MIN_SECONDS_TO_EXPIRY_FOR_ENTRY', 250)}s "
+        f"trade_size={_env_decimal('STRATEGY_TRADE_SIZE', '10')} "
         f"warm-up≈{_env_int('STRATEGY_BAR_PERIOD', 900)}s"
     )

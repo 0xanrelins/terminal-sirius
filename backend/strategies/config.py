@@ -13,12 +13,11 @@ from nautilus_trader.config import StrategyConfig
 class LiquidationSignalActorConfig(ActorConfig, frozen=True):
     instrument_ids: tuple[str, ...]
     backtest_mode: bool = False
-    window_sec: PositiveInt = 900
-    liq_threshold_btc: PositiveFloat = 500_000.0
-    liq_threshold_eth: PositiveFloat = 200_000.0
-    liq_threshold_sol: PositiveFloat = 100_000.0
-    liq_threshold_xrp: PositiveFloat = 50_000.0
-    liq_threshold_doge: PositiveFloat = 25_000.0
+    liq_threshold_btc: PositiveFloat = 10_000.0
+    liq_threshold_eth: PositiveFloat = 10_000.0
+    liq_threshold_sol: PositiveFloat = 5_000.0
+    liq_threshold_xrp: PositiveFloat = 5_000.0
+    liq_threshold_doge: PositiveFloat = 2_500.0
 
 
 class LiquidationVerdictActorConfig(ActorConfig, frozen=True):
@@ -38,7 +37,7 @@ class LiquidationVerdictActorConfig(ActorConfig, frozen=True):
 class VwapSignalActorConfig(ActorConfig, frozen=True):
     instrument_ids: tuple[str, ...]
     bar_period: PositiveInt = 900
-    atr_multiplier: PositiveFloat = 1.5
+    zone_pct: PositiveFloat = 0.15
     slope_range_threshold: PositiveFloat = 0.05
 
 
@@ -47,17 +46,19 @@ class TerminalSiriusStrategyConfig(StrategyConfig, frozen=True):
     polymarket_series: tuple[str, ...]
     backtest_mode: bool = False
     bar_period: PositiveInt = 900
-    atr_multiplier: PositiveFloat = 1.5
     slope_range_threshold: PositiveFloat = 0.05
-    liq_threshold_btc: PositiveFloat = 500_000.0
-    liq_threshold_eth: PositiveFloat = 200_000.0
-    liq_threshold_sol: PositiveFloat = 100_000.0
-    liq_threshold_xrp: PositiveFloat = 50_000.0
-    liq_threshold_doge: PositiveFloat = 25_000.0
+    liq_threshold_btc: PositiveFloat = 10_000.0
+    liq_threshold_eth: PositiveFloat = 10_000.0
+    liq_threshold_sol: PositiveFloat = 5_000.0
+    liq_threshold_xrp: PositiveFloat = 5_000.0
+    liq_threshold_doge: PositiveFloat = 2_500.0
     pos_multiplier_small: PositiveFloat = 1.5
     pos_multiplier_large: PositiveFloat = 3.0
     trade_size: Decimal = Decimal("10")
     recalc_interval_sec: PositiveFloat = 1.0
+    recovery_exit_pct: PositiveFloat = 0.2
+    max_entry_token_price: PositiveFloat = 0.5
+    min_seconds_to_expiry_for_entry: PositiveInt = 250
     use_verdict_triggers: bool = False
     use_rolling_liq_triggers: bool = True
     verdict_min_recovery_move_pct: PositiveFloat = 0.2

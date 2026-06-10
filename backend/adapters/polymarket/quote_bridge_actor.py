@@ -95,7 +95,13 @@ class PolymarketQuoteBridgeActor(Actor):
         if yes_iid is None:
             return
         all_iids = self._slug_to_iids.get(slug, [])
-        no_iid = all_iids[1] if len(all_iids) > 1 else yes_iid
+        if len(all_iids) < 2:
+            self.log.warning(
+                f"Polymarket bridge: skip active market publish for {slug!r} "
+                f"(expected YES+NO, got {len(all_iids)})",
+            )
+            return
+        no_iid = all_iids[1]
         ts = self.clock.timestamp_ns()
         meta = self._meta_by_iid.get(str(yes_iid), {})
         self.publish_data(

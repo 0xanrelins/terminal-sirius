@@ -61,6 +61,9 @@ class TerminalSiriusStrategy(Strategy):
     def __init__(self, config: TerminalSiriusStrategyConfig) -> None:
         super().__init__(config)
         self._slope_eps = float(config.slope_range_threshold)
+        self._recovery_exit_pct = float(config.recovery_exit_pct) / 100.0
+        self._max_entry_token_price = float(config.max_entry_token_price)
+        self._min_entry_seconds = int(config.min_seconds_to_expiry_for_entry)
         self._states: dict[str, _LayerState] = {
             sym: _LayerState() for sym in config.binance_instruments
         }
@@ -75,6 +78,12 @@ class TerminalSiriusStrategy(Strategy):
             BINANCE_TO_POLY_SERIES[sym]: sym
             for sym in config.binance_instruments
             if sym in BINANCE_TO_POLY_SERIES
+        }
+        self._entry_anchor_price: dict[str, float | None] = {
+            sym: None for sym in config.binance_instruments
+        }
+        self._entry_side: dict[str, str | None] = {
+            sym: None for sym in config.binance_instruments
         }
 
     def on_start(self) -> None:
@@ -185,6 +194,20 @@ class TerminalSiriusStrategy(Strategy):
             return False, "quote precision stale (tick size change)"
         return True, ""
 
+    def _quote_mid_price(self, instrument_id: InstrumentId) -> float | None:
+        tick = self.cache.quote_tick(instrument_id)
+        if tick is None:
+            return None
+        bid = float(tick.bid_price) if tick.bid_price is not None else None
+        ask = float(tick.ask_price) if tick.ask_price is not None else None
+        if bid is not None and ask is not None and bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        if bid is not None and bid > 0:
+            return bid
+        if ask is not None and ask > 0:
+            return ask
+        return None
+
     def _on_active_market(self, data: ActivePolymarketMarket) -> None:
         """Adopt active YES/NO instruments from ``PolymarketQuoteBridgeActor`` rotation."""
         binance = self._series_to_binance.get(data.series)
@@ -219,6 +242,12 @@ class TerminalSiriusStrategy(Strategy):
 
     def on_position_opened(self, event: PositionOpened) -> None:
         # PositionOpened is a PositionEvent — fields live on the event, not event.position.
+        symbol = self._symbol_for_instrument_id(event.instrument_id)
+        if symbol is not None:
+            st = self._states.get(symbol)
+            if st is not None and st.last_price is not None:
+                self._entry_anchor_price[symbol] = float(st.last_price)
+            self._entry_side[symbol] = self._direction_for_instrument(symbol, event.instrument_id)
         self.log.info(
             f"PAPER position OPEN {event.instrument_id} {event.side} "
             f"qty={event.quantity} avg={event.avg_px_open}",
@@ -226,6 +255,10 @@ class TerminalSiriusStrategy(Strategy):
         )
 
     def on_position_closed(self, event: PositionClosed) -> None:
+        symbol = self._symbol_for_instrument_id(event.instrument_id)
+        if symbol is not None:
+            self._entry_anchor_price[symbol] = None
+            self._entry_side[symbol] = None
         self.log.info(
             f"PAPER position CLOSE {event.instrument_id} pnl={event.realized_pnl}",
             color=LogColor.MAGENTA,
@@ -299,17 +332,37 @@ class TerminalSiriusStrategy(Strategy):
     def _exit_decision(
         self,
         symbol: str,
-        _st: _LayerState,
+        st: _LayerState,
         held_iid: InstrumentId,
     ) -> Decision:
         """
-        Hold until Polymarket resolution — no discretionary exit.
+        Recovery exit before binary settlement.
 
-        Nautilus ``BinaryOption`` matching enters pending resolution at
-        ``instrument.expiration_ns`` and settles open positions when an
-        ``InstrumentClose`` (or sandbox settlement price) is applied.
-        The strategy does not call ``close_all_positions`` mid-window.
+        Entry anchor is the Binance underlying price at ``PositionOpened``. For LONG
+        direction, close when price recovers ``+recovery_exit_pct`` from anchor.
+        For SHORT direction, close when price reaches ``-recovery_exit_pct``.
         """
+        anchor = self._entry_anchor_price.get(symbol)
+        direction = self._entry_side.get(symbol)
+        price = st.last_price
+        if anchor is not None and price is not None and direction in ("LONG", "SHORT"):
+            if direction == "LONG":
+                target = anchor * (1.0 + self._recovery_exit_pct)
+                if price >= target:
+                    self.log.info(
+                        f"{symbol} recovery exit LONG hit: px={price:.6f} target={target:.6f}",
+                        color=LogColor.CYAN,
+                    )
+                    return Decision.CLOSE
+            else:
+                target = anchor * (1.0 - self._recovery_exit_pct)
+                if price <= target:
+                    self.log.info(
+                        f"{symbol} recovery exit SHORT hit: px={price:.6f} target={target:.6f}",
+                        color=LogColor.CYAN,
+                    )
+                    return Decision.CLOSE
+
         instrument = self.cache.instrument(held_iid)
         if instrument is None:
             return Decision.HOLD
@@ -332,7 +385,7 @@ class TerminalSiriusStrategy(Strategy):
         return ""
 
     def _entry_allowed(self, instrument) -> bool:
-        """Block entries on expired 15m windows (before sandbox grace / bridge rotation)."""
+        """Block entries when market is too close to 15m expiry."""
         now_ns = self.clock.timestamp_ns()
         if now_ns >= instrument.expiration_ns:
             return False
@@ -340,7 +393,51 @@ class TerminalSiriusStrategy(Strategy):
         if window_start is None:
             return True
         now_sec = int(now_ns // 1_000_000_000)
-        return now_sec < window_start + WINDOW_SEC
+        window_end = window_start + WINDOW_SEC
+        if now_sec >= window_end:
+            return False
+        return (window_end - now_sec) >= self._min_entry_seconds
+
+    def _symbol_for_instrument_id(self, instrument_id: InstrumentId) -> str | None:
+        for sym in self.config.binance_instruments:
+            if instrument_id in (self._poly_iid.get(sym), self._poly_no_iid.get(sym)):
+                return sym
+        return None
+
+    def _direction_for_instrument(self, symbol: str, instrument_id: InstrumentId) -> str | None:
+        if instrument_id == self._poly_iid.get(symbol):
+            return "LONG"
+        if instrument_id == self._poly_no_iid.get(symbol):
+            return "SHORT"
+        return None
+
+    def _submit_market_exit(self, symbol: str, instrument_id: InstrumentId) -> bool:
+        positions = list(self.cache.positions_open(instrument_id=instrument_id))
+        if not positions:
+            return False
+        position = positions[0]
+        instrument = self.cache.instrument(instrument_id)
+        if instrument is None:
+            return False
+        ready, reason = self._execution_ready(instrument_id)
+        if not ready:
+            self.log.info(
+                f"skip CLOSE {symbol}: {reason} for {instrument_id}",
+                color=LogColor.YELLOW,
+            )
+            return False
+        order = self.order_factory.market(
+            instrument_id=instrument_id,
+            order_side=OrderSide.SELL,
+            quantity=position.quantity,
+            time_in_force=TimeInForce.IOC,
+        )
+        self.log.info(
+            f"PAPER submit CLOSE (SELL {instrument_id}) qty={position.quantity}",
+            color=LogColor.CYAN,
+        )
+        self.submit_order(order)
+        return True
 
     def _maybe_execute(self, symbol: str, decision: Decision) -> None:
         if decision == Decision.OPEN:
@@ -371,6 +468,19 @@ class TerminalSiriusStrategy(Strategy):
                     color=LogColor.YELLOW,
                 )
                 return
+            mid = self._quote_mid_price(target_iid)
+            if mid is None:
+                self.log.info(
+                    f"skip OPEN {symbol}: no mid price for {target_iid}",
+                    color=LogColor.YELLOW,
+                )
+                return
+            if mid > self._max_entry_token_price:
+                self.log.info(
+                    f"skip OPEN {symbol}: token price {mid:.4f} > {self._max_entry_token_price:.4f}",
+                    color=LogColor.YELLOW,
+                )
+                return
             # Quantity must carry the instrument's size precision (Polymarket=6); a bare
             # Quantity.from_str("10") has precision 0 and the exec engine rejects it.
             qty = instrument.make_qty(self.config.trade_size)
@@ -397,9 +507,14 @@ class TerminalSiriusStrategy(Strategy):
                 color=LogColor.CYAN,
             )
             self.submit_order(order)
+            if st.last_price is not None:
+                self._entry_anchor_price[symbol] = float(st.last_price)
+            self._entry_side[symbol] = direction
             st.liq_long_trigger = False
             st.liq_short_trigger = False
         elif decision == Decision.CLOSE:
             for iid in (self._poly_iid.get(symbol), self._poly_no_iid.get(symbol)):
-                if iid is not None:
-                    self.close_all_positions(iid)
+                if iid is None:
+                    continue
+                if self._submit_market_exit(symbol, iid):
+                    break

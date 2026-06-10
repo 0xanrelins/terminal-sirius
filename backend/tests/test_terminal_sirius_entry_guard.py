@@ -16,13 +16,21 @@ NO = InstrumentId.from_str("0xno.POLYMARKET")
 SYMBOL = "BTCUSDT-PERP.BINANCE"
 
 
-def _px(precision: int):
-    return MagicMock(precision=precision)
+def _px(precision: int, value: float = 0.40):
+    px = MagicMock(precision=precision)
+    px.__float__.return_value = value
+    return px
 
 
-def _quote(*, bid_prec: int | None = 3, ask_prec: int | None = 3):
-    bid = _px(bid_prec) if bid_prec is not None else None
-    ask = _px(ask_prec) if ask_prec is not None else None
+def _quote(
+    *,
+    bid_prec: int | None = 3,
+    ask_prec: int | None = 3,
+    bid_value: float = 0.40,
+    ask_value: float = 0.40,
+):
+    bid = _px(bid_prec, bid_value) if bid_prec is not None else None
+    ask = _px(ask_prec, ask_value) if ask_prec is not None else None
     return MagicMock(bid_price=bid, ask_price=ask)
 
 
@@ -155,6 +163,23 @@ def test_maybe_execute_skips_on_stale_quote_precision():
     inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     s._cache_mock.instrument.return_value = inst
     s._cache_mock.quote_tick.return_value = _quote(bid_prec=2, ask_prec=2)
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_not_called()
+
+
+def test_maybe_execute_skips_when_token_mid_above_max_entry_price():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    inst = MagicMock()
+    inst.price_precision = 3
+    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote(bid_prec=3, ask_prec=3, bid_value=0.60, ask_value=0.60)
     s.submit_order = MagicMock()
 
     s._maybe_execute(SYMBOL, Decision.OPEN)

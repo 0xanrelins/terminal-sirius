@@ -274,7 +274,7 @@ def build_node(
             starting_balances=[os.environ.get("STRATEGY_STARTING_BALANCE", "10_000 pUSD")],
             instrument_provider=InstrumentProviderConfig(load_all=True),
             account_type="CASH",
-            oms_type="NETTING",
+            oms_type="HEDGING",
         )
         print("[nautilus] Polymarket Sandbox execution (paper trade, binary settlement)")
     elif strategy_on and exec_cfg is None:
