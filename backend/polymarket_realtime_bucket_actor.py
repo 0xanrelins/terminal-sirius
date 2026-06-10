@@ -10,19 +10,17 @@ from typing import Optional
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId
 
-from adapters.polymarket.gamma import get_token_ids
-from adapters.polymarket.slug_load_guard import SLUG_LOAD_SEM
-from adapters.polymarket.slug_load_guard import SlugLoadGuard
+from adapters.polymarket.messages import ActivePolymarketMarket
 from adapters.polymarket.quote_bridge_actor import should_broadcast_quote
-from adapters.polymarket.rolling import active_rolling_slugs, series_symbol
+from adapters.polymarket.rolling import series_symbol
 from bar_time import bar_open_time_ns
 
 REALTIME_INTERVALS = ("1s", "5s")
 FORMING_BAR_THROTTLE_NS = 500_000_000  # 500ms — 2 forming bar emits/sec
-ROTATION_POLL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 1.0
 
 
@@ -65,11 +63,11 @@ class PolymarketRealtimeBucketActorConfig(ActorConfig, frozen=True):
 
 
 class PolymarketRealtimeBucketActor(Actor):
-    """Subscribe to UP quote ticks; emit 1s/5s bars on series.POLYMARKET symbols."""
+    """Subscribe to UP quote ticks after ``PolymarketQuoteBridgeActor`` loads instruments."""
 
     def __init__(self, config: PolymarketRealtimeBucketActorConfig, data_queue: queue.Queue) -> None:
         super().__init__(config)
-        self._series = list(config.series)
+        self._series = set(config.series)
         self._queue = data_queue
         self._series_slugs: dict[str, str] = {}
         self._slug_yes_iid: dict[str, InstrumentId] = {}
@@ -77,9 +75,7 @@ class PolymarketRealtimeBucketActor(Actor):
         self._iid_to_slug: dict[str, str] = {}
         self._states: dict[tuple[str, str], _StreamState] = {}
         self._last_mid: dict[str, float] = {}
-        self._rotation_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
-        self._slug_load_guard = SlugLoadGuard()
 
     def _enqueue(self, msg: dict) -> None:
         try:
@@ -102,24 +98,20 @@ class PolymarketRealtimeBucketActor(Actor):
         self._last_mid.pop(symbol, None)
 
     def on_start(self) -> None:
+        self.subscribe_data(DataType(ActivePolymarketMarket))
         if self._series:
-            asyncio.create_task(self._bootstrap_delayed())
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     def on_stop(self) -> None:
-        if self._rotation_task and not self._rotation_task.done():
-            self._rotation_task.cancel()
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
 
     def on_dispose(self) -> None:
         self.on_stop()
 
-    async def _bootstrap_delayed(self) -> None:
-        await asyncio.sleep(5.0)
-        for series in self._series:
-            await self._add_series(series)
-        self._rotation_task = asyncio.create_task(self._rotation_loop())
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+    def on_data(self, data) -> None:
+        if isinstance(data, ActivePolymarketMarket):
+            self._on_active_market(data)
 
     async def _heartbeat_loop(self) -> None:
         while True:
@@ -138,47 +130,46 @@ class PolymarketRealtimeBucketActor(Actor):
                 self.log.warning(f"PM bucket heartbeat error: {e!r}")
             await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
 
-    async def _rotation_loop(self) -> None:
-        while True:
-            try:
-                for series in list(self._series_slugs):
-                    await self._sync_series_slugs(series)
-                    await asyncio.sleep(0.25)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log.warning(f"PM realtime bucket rotation error: {e!r}")
-            await asyncio.sleep(ROTATION_POLL_SEC)
+    def _on_active_market(self, data: ActivePolymarketMarket) -> None:
+        """Attach quote subscription only after bridge registered instruments in cache."""
+        series = str(data.series or "")
+        slug = str(data.slug or "")
+        if not series or series not in self._series or not slug:
+            return
 
-    async def _add_series(self, series: str) -> None:
-        if series not in self._series_slugs:
-            current, _ = active_rolling_slugs(series)
-            self._series_slugs[series] = current
-        await self._sync_series_slugs(series)
-
-    async def _sync_series_slugs(self, series: str) -> None:
-        current, _ = active_rolling_slugs(series)
         tracked = self._series_slugs.get(series)
-        if tracked is not None and tracked != current:
-            await self._drop_slug(tracked)
+        if tracked is not None and tracked != slug:
+            self._drop_slug(tracked)
             self._clear_series_bucket_states(series)
-            self._series_slugs[series] = current
-        elif series not in self._series_slugs:
-            self._series_slugs[series] = current
-        await self._ensure_slug(current, series=series)
-        for slug in list(self._slug_yes_iid):
-            iid = self._slug_yes_iid.get(slug)
-            if iid is None:
-                continue
-            if self._yes_iid_to_series.get(str(iid)) == series and slug != current:
-                await self._drop_slug(slug)
 
-    async def _drop_slug(self, slug: str) -> None:
+        self._series_slugs[series] = slug
+        yes_iid = data.instrument_id
+        if self.cache.instrument(yes_iid) is None:
+            self.log.warning(
+                f"PM bucket: defer {series!r} slug={slug!r} — instrument not in cache yet",
+            )
+            return
+        self._attach_yes_quotes(yes_iid, series=series, slug=slug)
+
+    def _attach_yes_quotes(self, yes_iid: InstrumentId, *, series: str, slug: str) -> None:
+        existing = self._slug_yes_iid.get(slug)
+        if existing == yes_iid:
+            return
+        if existing is not None and existing != yes_iid:
+            self._drop_slug(slug)
+
+        iid_str = str(yes_iid)
+        self.subscribe_quote_ticks(yes_iid)
+        self._slug_yes_iid[slug] = yes_iid
+        self._yes_iid_to_series[iid_str] = series
+        self._iid_to_slug[iid_str] = slug
+        self.log.info(f"PM bucket: subscribed UP quotes for {series!r} slug={slug!r}")
+
+    def _drop_slug(self, slug: str) -> None:
         """Drop local slug tracking only — do not unsubscribe_quote_ticks.
 
         Quote ticks are shared with PolymarketQuoteBridgeActor on the same
         TradingNode; unsubscribing here would kill the price widget WS feed.
-        Stale slugs are ignored via should_broadcast_quote in on_quote_tick.
         """
         iid = self._slug_yes_iid.pop(slug, None)
         if iid is None:
@@ -186,53 +177,6 @@ class PolymarketRealtimeBucketActor(Actor):
         iid_str = str(iid)
         self._yes_iid_to_series.pop(iid_str, None)
         self._iid_to_slug.pop(iid_str, None)
-
-    async def _ensure_slug(self, slug: str, *, series: str) -> None:
-        if slug in self._slug_yes_iid:
-            return
-
-        now_ns = self.clock.timestamp_ns()
-        if self._slug_load_guard.should_skip(slug, now_ns):
-            return
-
-        async with SLUG_LOAD_SEM:
-            if slug in self._slug_yes_iid:
-                return
-            await self._load_slug_locked(slug, series=series)
-
-    async def _load_slug_locked(self, slug: str, *, series: str) -> None:
-        from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
-
-        now_ns = self.clock.timestamp_ns()
-        try:
-            info = await get_token_ids(slug)
-            if not info:
-                raise LookupError(f"gamma returned no market for {slug!r}")
-            loader = await PolymarketDataLoader.from_market_slug(slug, token_index=0)
-        except Exception as e:
-            delay = self._slug_load_guard.record_failure(slug, now_ns, e)
-            self.log.warning(
-                f"PM bucket skip slug={slug!r}: {e!r} (retry in {delay:.0f}s)",
-            )
-            return
-
-        instrument = loader.instrument
-        iid = instrument.id
-        iid_str = str(iid)
-
-        if self.cache.instrument(iid) is None:
-            self.cache.add_instrument(instrument)
-        try:
-            self.request_instrument(iid)
-        except Exception as e:
-            self.log.warning(f"PM bucket request_instrument {iid}: {e!r}")
-
-        self._slug_load_guard.record_success(slug)
-        self.subscribe_quote_ticks(iid)
-        self._slug_yes_iid[slug] = iid
-        self._yes_iid_to_series[iid_str] = series
-        self._iid_to_slug[iid_str] = slug
-        self.log.info(f"PM bucket: subscribed UP quotes for {series!r} slug={slug!r}")
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         iid_str = str(tick.instrument_id)

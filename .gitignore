@@ -40,5 +40,6 @@ backend/data/
 # Nautilus catalog parquet (live writes if recorder re-enabled)
 backend/catalog/data/
 backend/catalog/live/
+backend/catalog/.liq_stream_state.json
 # Archived market-recorder snapshot (~200MB)
 archive/parquet-catalog-2026-06-03/

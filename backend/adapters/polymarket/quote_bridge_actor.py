@@ -1,7 +1,12 @@
 """
-Forward Polymarket quote ticks from Nautilus DataClient into the shared FastAPI data_queue.
+Polymarket 15m instrument lifecycle owner (live TradingNode).
 
-Forwards Nautilus PolymarketDataClient quote ticks to the UI queue (`type: polymarket`).
+Loads YES+NO via ``PolymarketDataLoader``, registers in cache, subscribes quotes,
+rotates rolling series, and publishes ``ActivePolymarketMarket`` for strategy,
+settlement, bucket, and monitor actors. Other components must not load slugs
+independently — they follow ``ActivePolymarketMarket`` + grace timing only.
+
+Also forwards YES quote ticks to the FastAPI data_queue (``type: polymarket``).
 """
 from __future__ import annotations
 
@@ -214,7 +219,7 @@ class PolymarketQuoteBridgeActor(Actor):
             self._slug_series[current] = series
         await self._ensure_slug(current, series=series)
         if self._slug_quote_iid.get(current) is not None:
-            # Re-announce each sync so a late-starting strategy still learns the active market.
+            # Re-announce when slug already loaded (late-starting consumers).
             self._publish_active_market(series, current)
         for slug in list(self._slug_series):
             if self._slug_series.get(slug) == series and slug != current:
@@ -236,17 +241,6 @@ class PolymarketQuoteBridgeActor(Actor):
                 self.unsubscribe_quote_ticks(iid)
             except Exception as e:
                 self.log.warning(f"Polymarket bridge: unsubscribe failed for {slug!r}: {e!r}")
-
-    def _register_instrument(self, instrument) -> InstrumentId:
-        """Cache + data-client request so Polymarket WS can resolve sibling tokens."""
-        iid = instrument.id
-        if self.cache.instrument(iid) is None:
-            self.cache.add_instrument(instrument)
-        try:
-            self.request_instrument(iid)
-        except Exception as e:
-            self.log.warning(f"Polymarket bridge: request_instrument failed for {iid}: {e!r}")
-        return iid
 
     async def _ensure_slug(self, slug: str, *, series: str | None) -> None:
         if slug in self._slug_quote_iid:
@@ -290,19 +284,11 @@ class PolymarketQuoteBridgeActor(Actor):
             return
 
         question = info.get("question") or slug
-        loaded: list[InstrumentId] = []
-        quote_iid: InstrumentId | None = None
         try:
-            for token_index in (0, 1):
-                loader = await PolymarketDataLoader.from_market_slug(
-                    slug, token_index=token_index
-                )
-                iid = self._register_instrument(
-                    align_binary_option_expiration(loader.instrument, slug),
-                )
-                loaded.append(iid)
-                if token_index == 0:
-                    quote_iid = iid
+            loaders = [
+                await PolymarketDataLoader.from_market_slug(slug, token_index=idx)
+                for idx in (0, 1)
+            ]
         except Exception as e:
             delay = self._slug_load_guard.record_failure(slug, now_ns, e)
             self.log.error(
@@ -311,9 +297,28 @@ class PolymarketQuoteBridgeActor(Actor):
             )
             return
 
-        if quote_iid is None:
-            return
+        instruments = [
+            align_binary_option_expiration(loader.instrument, slug) for loader in loaders
+        ]
+        loaded: list[InstrumentId] = []
+        for instrument in instruments:
+            iid = instrument.id
+            if self.cache.instrument(iid) is None:
+                self.cache.add_instrument(instrument)
+            if self.cache.instrument(iid) is None:
+                delay = self._slug_load_guard.record_failure(
+                    slug,
+                    now_ns,
+                    LookupError(f"instrument not in cache after register: {iid}"),
+                )
+                self.log.error(
+                    f"Polymarket bridge: cache miss for {slug!r} {iid} "
+                    f"(retry in {delay:.0f}s)",
+                )
+                return
+            loaded.append(iid)
 
+        quote_iid = loaded[0]
         self._slug_load_guard.record_success(slug)
         self._slug_to_iids[slug] = loaded
         self._slug_quote_iid[slug] = quote_iid
@@ -333,8 +338,12 @@ class PolymarketQuoteBridgeActor(Actor):
                 "question": question,
                 "token": token,
             }
+        # Subscribe only after YES+NO are in cache (avoids DataClient "Cannot find instrument").
+        for iid in loaded:
             self.subscribe_quote_ticks(iid)
         self.log.info(
             f"Polymarket bridge: subscribed quotes for {slug!r} → {quote_iid} "
             f"({len(loaded)} instrument(s) in cache)"
         )
+        if series:
+            self._publish_active_market(series, slug)

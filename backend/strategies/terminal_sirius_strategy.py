@@ -76,8 +76,6 @@ class TerminalSiriusStrategy(Strategy):
             for sym in config.binance_instruments
             if sym in BINANCE_TO_POLY_SERIES
         }
-        # Sandbox-safe when instrument definition and quote prices share price_precision.
-        self._exec_ready_iids: set[InstrumentId] = set()
 
     def on_start(self) -> None:
         bt = self.config.backtest_mode
@@ -135,20 +133,15 @@ class TerminalSiriusStrategy(Strategy):
             self._on_active_market(data)
 
     def on_instrument(self, instrument: Instrument) -> None:
-        """
-        Polymarket tick-size changes publish an updated ``BinaryOption`` here while
-        quotes may still carry the previous ``Price`` precision briefly.
-        """
+        """Retry pending entries after bridge rotation loads a new ``BinaryOption``."""
         if instrument.id not in self._tracked_poly_iids():
             return
-        self._sync_exec_ready(instrument.id)
         self._retry_execute_for(instrument.id)
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """Re-check readiness when a fresh quote arrives after instrument updates."""
+        """Retry pending entries when quote precision catches up after tick-size change."""
         if tick.instrument_id not in self._tracked_poly_iids():
             return
-        self._sync_exec_ready(tick.instrument_id)
         self._retry_execute_for(tick.instrument_id)
 
     def _tracked_poly_iids(self) -> set[InstrumentId]:
@@ -157,12 +150,6 @@ class TerminalSiriusStrategy(Strategy):
             if iid is not None:
                 out.add(iid)
         return out
-
-    def _request_instrument_safe(self, instrument_id: InstrumentId) -> None:
-        try:
-            self.request_instrument(instrument_id)
-        except Exception:  # noqa: BLE001 — best-effort; subscribe may already be in flight
-            pass
 
     def _quote_precision_ok(self, instrument: Instrument, tick: QuoteTick) -> bool:
         """Quote prices must match ``instrument.price_precision`` (Polymarket tick epochs)."""
@@ -175,14 +162,6 @@ class TerminalSiriusStrategy(Strategy):
             if px.precision != expected:
                 return False
         return has_price
-
-    def _sync_exec_ready(self, instrument_id: InstrumentId) -> None:
-        instrument = self.cache.instrument(instrument_id)
-        tick = self.cache.quote_tick(instrument_id)
-        if instrument is None or tick is None or not self._quote_precision_ok(instrument, tick):
-            self._exec_ready_iids.discard(instrument_id)
-            return
-        self._exec_ready_iids.add(instrument_id)
 
     def _retry_execute_for(self, instrument_id: InstrumentId) -> None:
         for sym in self.config.binance_instruments:
@@ -198,30 +177,16 @@ class TerminalSiriusStrategy(Strategy):
     def _execution_ready(self, instrument_id: InstrumentId) -> tuple[bool, str]:
         instrument = self.cache.instrument(instrument_id)
         if instrument is None:
-            return False, "awaiting on_instrument"
+            return False, "awaiting instrument in cache"
         tick = self.cache.quote_tick(instrument_id)
         if tick is None:
             return False, "no usable quote"
         if not self._quote_precision_ok(instrument, tick):
             return False, "quote precision stale (tick size change)"
-        if instrument_id not in self._exec_ready_iids:
-            return False, "awaiting on_instrument"
         return True, ""
 
-    def _prime_exec_ready(self, yes_iid: InstrumentId, no_iid: InstrumentId) -> None:
-        for iid in (yes_iid, no_iid):
-            self._exec_ready_iids.discard(iid)
-        if self.config.backtest_mode:
-            for iid in (yes_iid, no_iid):
-                self._sync_exec_ready(iid)
-            return
-        for iid in (yes_iid, no_iid):
-            # Polymarket DataClient has no live subscribe_instrument; request + quote
-            # subscribe (above) triggers auto_load_missing_instruments.
-            self._request_instrument_safe(iid)
-
     def _on_active_market(self, data: ActivePolymarketMarket) -> None:
-        """Adopt the active Polymarket YES + NO instruments announced by the quote bridge."""
+        """Adopt active YES/NO instruments from ``PolymarketQuoteBridgeActor`` rotation."""
         binance = self._series_to_binance.get(data.series)
         if binance is None or binance not in self._poly_iid:
             return
@@ -231,7 +196,6 @@ class TerminalSiriusStrategy(Strategy):
             return
         for prev in (self._poly_iid.get(binance), self._poly_no_iid.get(binance)):
             if prev is not None and prev not in (yes_iid, no_iid):
-                self._exec_ready_iids.discard(prev)
                 try:
                     self.unsubscribe_quote_ticks(prev)
                 except Exception:  # noqa: BLE001 — best-effort cleanup on rotation
@@ -240,7 +204,6 @@ class TerminalSiriusStrategy(Strategy):
         self._poly_no_iid[binance] = no_iid
         self.subscribe_quote_ticks(yes_iid)
         self.subscribe_quote_ticks(no_iid)
-        self._prime_exec_ready(yes_iid, no_iid)
         self.log.info(
             f"Polymarket market for {binance}: YES={yes_iid} NO={no_iid} (series={data.series})",
             color=LogColor.BLUE,

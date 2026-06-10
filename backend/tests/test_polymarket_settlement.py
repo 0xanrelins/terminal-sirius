@@ -7,12 +7,13 @@ from unittest.mock import patch
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 
+from adapters.polymarket.instrument_expiry import DEFAULT_EXPIRY_GRACE_SEC
 from adapters.polymarket.rolling import parse_window_epoch_from_slug
 from polymarket_settlement_actor import PolymarketSettlementActor
 from polymarket_settlement_actor import PolymarketSettlementActorConfig
+from polymarket_settlement_actor import SETTLE_GRACE_SEC
 from polymarket_settlement_actor import instrument_close_topic
 from polymarket_settlement_actor import position_won
-from polymarket_settlement_actor import quote_precision_ok
 from polymarket_settlement_actor import settlement_price_str
 from polymarket_settlement_actor import up_outcome_from_bar
 
@@ -85,55 +86,11 @@ def test_bar_open_sec_not_double_scaled():
     assert bar_open_time(ts_ns // 1_000_000_000, "15m") > 1_000_000
 
 
-def _px(precision: int):
-    px = MagicMock()
-    px.precision = precision
-    return px
+def test_settle_grace_matches_instrument_expiry_grace():
+    assert SETTLE_GRACE_SEC == DEFAULT_EXPIRY_GRACE_SEC
 
 
-def test_quote_precision_ok_matches_instrument():
-    inst = MagicMock()
-    inst.price_precision = 3
-    tick = MagicMock()
-    tick.bid_price = _px(3)
-    tick.ask_price = _px(3)
-    assert quote_precision_ok(inst, tick) is True
-
-
-def test_quote_precision_ok_rejects_stale_quote():
-    inst = MagicMock()
-    inst.price_precision = 3
-    tick = MagicMock()
-    tick.bid_price = _px(2)
-    tick.ask_price = _px(3)
-    assert quote_precision_ok(inst, tick) is False
-
-
-def test_apply_settlement_defers_without_ready_precision():
-    actor = PolymarketSettlementActor(
-        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
-    )
-    iid = InstrumentId.from_str("0xabc-YES.POLYMARKET")
-    inst = MagicMock()
-    inst.price_precision = 3
-    inst.description = "Up"
-    tick = MagicMock()
-    tick.bid_price = _px(2)
-    tick.ask_price = _px(2)
-    cache = MagicMock()
-    bus = MagicMock()
-    with (
-        patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache),
-        patch.object(type(actor), "msgbus", new_callable=PropertyMock, return_value=bus),
-    ):
-        cache.positions_open.return_value = True
-        cache.instrument.return_value = inst
-        cache.quote_tick.return_value = tick
-        assert actor._apply_settlement(iid, True, slug="btc-updown-15m-1") is False
-    bus.publish.assert_not_called()
-
-
-def test_apply_settlement_publishes_when_ready():
+def test_apply_settlement_publishes_instrument_close():
     actor = PolymarketSettlementActor(
         PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
     )
@@ -142,10 +99,6 @@ def test_apply_settlement_publishes_when_ready():
     inst.price_precision = 3
     inst.description = "Up"
     inst.make_price.return_value = Price.from_str("1.000")
-    tick = MagicMock()
-    tick.bid_price = _px(3)
-    tick.ask_price = _px(3)
-    actor._settlement_ready_iids.add(iid)
     cache = MagicMock()
     clock = MagicMock()
     clock.timestamp_ns.return_value = 1_000
@@ -157,9 +110,33 @@ def test_apply_settlement_publishes_when_ready():
     ):
         cache.positions_open.return_value = True
         cache.instrument.return_value = inst
-        cache.quote_tick.return_value = tick
         assert actor._apply_settlement(iid, True, slug="btc-updown-15m-1") is True
     bus.publish.assert_called_once()
+
+
+def test_on_bar_indexes_only_does_not_settle_immediately():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    actor._apply_settlement = MagicMock()
+    bar = MagicMock()
+    bar.bar_type.instrument_id = InstrumentId.from_str("BTCUSDT-PERP.BINANCE")
+    bar.ts_event = 1_700_000_000_000_000_000
+    spec = MagicMock()
+    spec.aggregation = 3  # BarAggregation.MINUTE value unused when string match
+    spec.step = 15
+    bar.bar_type.spec = spec
+    bar.bar_type.__str__ = lambda self=bar.bar_type: (
+        "BTCUSDT-PERP.BINANCE-15-MINUTE-LAST-EXTERNAL"
+    )
+    bar.open.as_double.return_value = 100.0
+    bar.close.as_double.return_value = 101.0
+    from bar_time import bar_open_time
+
+    actor.on_bar(bar)
+    actor._apply_settlement.assert_not_called()
+    window_open = bar_open_time(bar.ts_event // 1_000_000_000, "15m")
+    assert ("BTCUSDT-PERP.BINANCE", window_open) in actor._bar_by_window
 
 
 def test_history_request_plan_expands_for_old_open_window():
@@ -187,6 +164,46 @@ def test_history_request_plan_expands_for_old_open_window():
     start_dt, limit = plan["BTCUSDT-PERP.BINANCE"]
     assert int(start_dt.timestamp()) <= 1_799_963_100  # window_start - 15m
     assert limit > 32
+
+
+def test_settle_all_expired_respects_grace_after_window_end():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    window_start = 1_780_814_700
+    window_end = window_start + 900
+    iid = InstrumentId.from_str("0xabc-YES.POLYMARKET")
+    pos = MagicMock()
+    pos.instrument_id = iid
+    inst = MagicMock()
+    inst.info = {"market_slug": f"btc-updown-15m-{window_start}"}
+    bar = _bar("100", "101")
+    actor._bar_by_window[("BTCUSDT-PERP.BINANCE", window_start)] = bar
+    actor._iid_meta[str(iid)] = {
+        "slug": f"btc-updown-15m-{window_start}",
+        "series": "btc-updown-15m",
+        "market_outcome": "YES",
+    }
+    actor._apply_settlement = MagicMock(return_value=True)
+    clock = MagicMock()
+    cache = MagicMock()
+
+    with (
+        patch.object(type(actor), "clock", new_callable=PropertyMock, return_value=clock),
+        patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache),
+    ):
+        cache.positions_open.return_value = [pos]
+        cache.instrument.return_value = inst
+
+        clock.timestamp_ns.return_value = (window_end + 5) * 1_000_000_000
+        settled, _ = actor._settle_all_expired()
+        assert settled == 0
+        actor._apply_settlement.assert_not_called()
+
+        clock.timestamp_ns.return_value = (window_end + SETTLE_GRACE_SEC) * 1_000_000_000
+        settled, _ = actor._settle_all_expired()
+        assert settled == 1
+        actor._apply_settlement.assert_called_once()
 
 
 def test_request_window_history_dedupes_native_request_bars():

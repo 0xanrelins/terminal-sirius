@@ -89,14 +89,27 @@ export function LiquidationVerdictDashboard({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refreshStatsRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  const statsRequestIdRef = useRef(0);
+  const persistedRequestIdRef = useRef(0);
+  const statsAbortRef = useRef<AbortController | null>(null);
+  const persistedAbortRef = useRef<AbortController | null>(null);
+  const statsRefreshTimerRef = useRef<number | null>(null);
 
   const fetchStats = useCallback(async () => {
+    const requestId = ++statsRequestIdRef.current;
+    statsAbortRef.current?.abort();
+    const controller = new AbortController();
+    statsAbortRef.current = controller;
     try {
-      const res = await fetch(verdictStatsUrl({ coins, sides }));
+      const res = await fetch(verdictStatsUrl({ coins, sides }), {
+        signal: controller.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as LiquidationVerdictStats;
+      if (requestId !== statsRequestIdRef.current) return;
       setCumulativeStats(data);
-    } catch {
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       /* keep last cumulative stats */
     }
   }, [coins, sides]);
@@ -104,21 +117,37 @@ export function LiquidationVerdictDashboard({
   refreshStatsRef.current = fetchStats;
 
   const fetchPersisted = useCallback(async () => {
+    const requestId = ++persistedRequestIdRef.current;
+    persistedAbortRef.current?.abort();
+    const controller = new AbortController();
+    persistedAbortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(verdictFetchUrl({ coins, sides, limit: 0 }));
+      const res = await fetch(verdictFetchUrl({ coins, sides, limit: 0 }), {
+        signal: controller.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { verdicts: LiquidationVerdictRow[] };
+      if (requestId !== persistedRequestIdRef.current) return;
       setPersistedRows(data.verdicts ?? []);
-      setLiveRows([]);
       await fetchStats();
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      if (requestId !== persistedRequestIdRef.current) return;
       setError(e instanceof Error ? e.message : "Fetch failed");
     } finally {
-      setLoading(false);
+      if (requestId === persistedRequestIdRef.current) setLoading(false);
     }
   }, [coins, sides, fetchStats]);
+
+  const scheduleStatsRefresh = useCallback(() => {
+    if (statsRefreshTimerRef.current !== null) return;
+    statsRefreshTimerRef.current = window.setTimeout(() => {
+      statsRefreshTimerRef.current = null;
+      void refreshStatsRef.current?.();
+    }, 400);
+  }, []);
 
   useEffect(() => {
     return subscribe("*", (msg) => {
@@ -132,15 +161,25 @@ export function LiquidationVerdictDashboard({
       if (!sideSet.has(verdict.liq_side)) return;
 
       setLiveRows((prev) => mergeVerdictRows(prev, [verdict]));
-      void refreshStatsRef.current?.();
+      scheduleStatsRefresh();
     });
-  }, [subscribe, coins.join(","), sides.join(",")]);
+  }, [subscribe, coins.join(","), sides.join(","), scheduleStatsRefresh]);
 
   useEffect(() => {
     void fetchPersisted();
     const id = window.setInterval(() => void fetchPersisted(), 60_000);
     return () => window.clearInterval(id);
   }, [fetchPersisted]);
+
+  useEffect(() => {
+    return () => {
+      statsAbortRef.current?.abort();
+      persistedAbortRef.current?.abort();
+      if (statsRefreshTimerRef.current !== null) {
+        window.clearTimeout(statsRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   const displayRows = useMemo(() => {
     const filteredPersisted = persistedRows.filter((r) =>

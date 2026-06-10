@@ -93,17 +93,28 @@ def _prime_open_state(s: TerminalSiriusStrategy, clock: MagicMock) -> None:
     s._poly_no_iid[SYMBOL] = NO
 
 
-def test_maybe_execute_skips_without_on_instrument():
+def test_maybe_execute_skips_without_instrument_in_cache():
+    clock = MagicMock()
+    s = _strategy(clock)
+    _prime_open_state(s, clock)
+    s._cache_mock.instrument.return_value = None
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_not_called()
+
+
+def test_maybe_execute_skips_without_usable_quote():
     clock = MagicMock()
     s = _strategy(clock)
     _prime_open_state(s, clock)
     inst = MagicMock()
     inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
-    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     inst.price_precision = 3
-    inst.make_qty.return_value = MagicMock()
+    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     s._cache_mock.instrument.return_value = inst
-    s._cache_mock.quote_tick.return_value = _quote()
+    s._cache_mock.quote_tick.return_value = None
     s.submit_order = MagicMock()
 
     s._maybe_execute(SYMBOL, Decision.OPEN)
@@ -122,7 +133,6 @@ def test_maybe_execute_submits_when_ready():
     inst.make_qty.return_value = MagicMock()
     s._cache_mock.instrument.return_value = inst
     s._cache_mock.quote_tick.return_value = _quote()
-    s._exec_ready_iids.add(YES)
     order_factory = MagicMock()
     order_factory.market.return_value = MagicMock()
     patch.object(
@@ -135,55 +145,6 @@ def test_maybe_execute_submits_when_ready():
     s.submit_order.assert_called_once()
 
 
-def test_maybe_execute_skips_without_usable_quote():
-    clock = MagicMock()
-    s = _strategy(clock)
-    _prime_open_state(s, clock)
-    inst = MagicMock()
-    inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
-    inst.price_precision = 3
-    inst.info = {"market_slug": "btc-updown-15m-1780814700"}
-    s._cache_mock.instrument.return_value = inst
-    s._cache_mock.quote_tick.return_value = _quote(bid_prec=None, ask_prec=None)
-    s._exec_ready_iids.add(YES)
-    s.submit_order = MagicMock()
-
-    s._maybe_execute(SYMBOL, Decision.OPEN)
-
-    s.submit_order.assert_not_called()
-
-
-def test_on_active_market_clears_readiness_on_rotate_live():
-    clock = MagicMock()
-    s = _strategy(clock, backtest_mode=False)
-    s._cache_mock.instrument.return_value = None
-    old_yes = InstrumentId.from_str("0xold-yes.POLYMARKET")
-    old_no = InstrumentId.from_str("0xold-no.POLYMARKET")
-    s._poly_iid[SYMBOL] = old_yes
-    s._poly_no_iid[SYMBOL] = old_no
-    s._exec_ready_iids.update({old_yes, old_no})
-    s.subscribe_quote_ticks = MagicMock()
-    s.unsubscribe_quote_ticks = MagicMock()
-    s.request_instrument = MagicMock()
-
-    data = ActivePolymarketMarket(
-        instrument_id=YES,
-        no_instrument_id=NO,
-        series="btc-updown-15m",
-        slug="btc-updown-15m-1780814700",
-        question="btc",
-        ts_event=1,
-        ts_init=1,
-    )
-    s._on_active_market(data)
-
-    assert old_yes not in s._exec_ready_iids
-    assert old_no not in s._exec_ready_iids
-    assert YES not in s._exec_ready_iids
-    assert NO not in s._exec_ready_iids
-    assert s.request_instrument.call_count == 2
-
-
 def test_maybe_execute_skips_on_stale_quote_precision():
     clock = MagicMock()
     s = _strategy(clock)
@@ -194,7 +155,6 @@ def test_maybe_execute_skips_on_stale_quote_precision():
     inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     s._cache_mock.instrument.return_value = inst
     s._cache_mock.quote_tick.return_value = _quote(bid_prec=2, ask_prec=2)
-    s._exec_ready_iids.add(YES)
     s.submit_order = MagicMock()
 
     s._maybe_execute(SYMBOL, Decision.OPEN)
@@ -202,14 +162,15 @@ def test_maybe_execute_skips_on_stale_quote_precision():
     s.submit_order.assert_not_called()
 
 
-def test_on_active_market_primes_readiness_in_backtest():
+def test_on_active_market_subscribes_quotes_on_rotate():
     clock = MagicMock()
-    s = _strategy(clock, backtest_mode=True)
-    inst = MagicMock()
-    inst.price_precision = 3
-    s._cache_mock.instrument.return_value = inst
-    s._cache_mock.quote_tick.return_value = _quote()
+    s = _strategy(clock, backtest_mode=False)
+    old_yes = InstrumentId.from_str("0xold-yes.POLYMARKET")
+    old_no = InstrumentId.from_str("0xold-no.POLYMARKET")
+    s._poly_iid[SYMBOL] = old_yes
+    s._poly_no_iid[SYMBOL] = old_no
     s.subscribe_quote_ticks = MagicMock()
+    s.unsubscribe_quote_ticks = MagicMock()
 
     data = ActivePolymarketMarket(
         instrument_id=YES,
@@ -222,11 +183,14 @@ def test_on_active_market_primes_readiness_in_backtest():
     )
     s._on_active_market(data)
 
-    assert YES in s._exec_ready_iids
-    assert NO in s._exec_ready_iids
+    assert s._poly_iid[SYMBOL] == YES
+    assert s._poly_no_iid[SYMBOL] == NO
+    assert s.subscribe_quote_ticks.call_count == 2
+    s.unsubscribe_quote_ticks.assert_any_call(old_yes)
+    s.unsubscribe_quote_ticks.assert_any_call(old_no)
 
 
-def test_on_instrument_marks_ready_and_retries_open():
+def test_on_instrument_retries_open_when_cache_ready():
     clock = MagicMock()
     s = _strategy(clock)
     _prime_open_state(s, clock)
@@ -248,7 +212,6 @@ def test_on_instrument_marks_ready_and_retries_open():
 
     s.on_instrument(inst)
 
-    assert YES in s._exec_ready_iids
     s.submit_order.assert_called_once()
 
 
@@ -268,5 +231,4 @@ def test_on_instrument_skips_submit_until_quote_precision_matches():
 
     s.on_instrument(inst)
 
-    assert YES not in s._exec_ready_iids
     s.submit_order.assert_not_called()
