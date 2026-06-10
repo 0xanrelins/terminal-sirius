@@ -1,0 +1,174 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  font-size: 12px;
+  color: #c8c8d0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1e1e28;
+  flex-shrink: 0;
+}
+
+.coinBtn {
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  background: #0d0d0f;
+  border: 1px solid #2a2a35;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.coinBtnOn {
+  color: #e2e2e2;
+  border-color: #4a4a58;
+}
+
+.sideDivider {
+  width: 1px;
+  height: 14px;
+  background: #2a2a35;
+  margin: 0 2px;
+}
+
+.thresholdInput {
+  width: 84px;
+  margin-left: auto;
+  padding: 3px 5px;
+  font-size: 11px;
+  color: #e2e2e2;
+  background: #0d0d0f;
+  border: 1px solid #2a2a35;
+  border-radius: 3px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.statCard {
+  background: #0d0d0f;
+  border: 1px solid #1e1e28;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.statLabel {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.statValue {
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.statHint {
+  margin-top: 2px;
+  font-size: 10px;
+  color: #7a7a88;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  background: #0d0d0f;
+  border: 1px solid #1e1e28;
+  border-radius: 4px;
+}
+
+.panelTitle {
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #1e1e28;
+}
+
+.list {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 52px 42px 62px 1fr 56px 52px minmax(180px, 1fr);
+  gap: 5px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #14141a;
+  align-items: center;
+}
+
+.rowHeader {
+  font-size: 9px;
+  color: #555;
+  text-transform: uppercase;
+}
+
+.details {
+  color: #878799;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.winnerRecovery {
+  color: #14f195;
+}
+.winnerLiq {
+  color: #f472b6;
+}
+.winnerNeutral {
+  color: #787888;
+}
+
+.statusCompleted {
+  color: #14f195;
+}
+
+.statusExpired {
+  color: #787888;
+}
+
+.empty {
+  padding: 12px;
+  color: #555;
+  text-align: center;
+}
+
+.status {
+  padding: 4px 8px;
+  font-size: 10px;
+  color: #555;
+  border-top: 1px solid #1e1e28;
+}

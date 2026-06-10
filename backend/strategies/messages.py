@@ -48,3 +48,30 @@ class LiquidationVolumeSnapshot(Data):
     short_volume: float = 0.0
     long_hit: bool = False
     short_hit: bool = False
+
+
+@customdataclass_pyo3()
+class LiquidationVerdict(Data):
+    """Causal post-liquidation path verdict for a single print."""
+
+    instrument_id: InstrumentId
+    event_id: str = ""
+    liq_side: str = ""
+    notional: float = 0.0
+    event_price: float = 0.0
+    winner: str = "neutral"
+    liq_move_pct: float = 0.0
+    recovery_move_pct: float = 0.0
+    dominance_ratio: float = 0.0
+    time_to_dominance_sec: float = 0.0
+    area_bias: float = 0.0
+    status: str = "completed"
+    completion_reason: str = ""
+
+
+@customdataclass_pyo3()
+class LiquidationVerdictStatus(Data):
+    """Open post-liquidation observations still inside the verdict window."""
+
+    pending_total: int = 0
+    pending_by_coin_json: str = "{}"

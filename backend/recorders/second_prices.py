@@ -45,6 +45,32 @@ def ticks_to_second_prices(ticks: list[TradeTick], *, symbol: str) -> list[Secon
     ]
 
 
+def load_event_second_prices(
+    catalog: Any,
+    symbol: str,
+    event_ts_ns: int,
+    window_sec: int,
+    *,
+    lookback_sec: int = 120,
+) -> SymbolPriceSeries:
+    """Per-event TradeTick window (aligned anchor + post-liq path for catalog replay)."""
+    start_ns = max(0, event_ts_ns - lookback_sec * 1_000_000_000)
+    end_ns = event_ts_ns + window_sec * 1_000_000_000
+    iid = InstrumentId.from_str(symbol)
+    raw_ticks = catalog.query(
+        data_cls=TradeTick,
+        identifiers=[str(iid)],
+        start=start_ns,
+        end=end_ns,
+    )
+    ticks = [t for raw in raw_ticks if isinstance(t := _unwrap(raw), TradeTick)]
+    rows = ticks_to_second_prices(ticks, symbol=symbol)
+    return SymbolPriceSeries(
+        rows=tuple(rows),
+        times_ns=tuple(int(r.ts_event) for r in rows),
+    )
+
+
 def load_second_prices_by_symbol(
     catalog: Any,
     symbols: set[str],

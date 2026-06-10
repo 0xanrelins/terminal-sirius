@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from strategies.config import (
     LiquidationSignalActorConfig,
+    LiquidationVerdictActorConfig,
     TerminalSiriusStrategyConfig,
     VwapSignalActorConfig,
 )
@@ -26,11 +27,40 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _env_decimal(name: str, default: str) -> Decimal:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return Decimal(default)
     return Decimal(raw)
+
+
+def build_liquidation_verdict_config(
+    *,
+    component_id: str,
+    instrument_ids: tuple[str, ...],
+    backtest_mode: bool = False,
+) -> LiquidationVerdictActorConfig:
+    return LiquidationVerdictActorConfig(
+        component_id=component_id,
+        instrument_ids=instrument_ids,
+        backtest_mode=backtest_mode,
+        max_observation_sec=_env_int("VERDICT_MAX_OBSERVATION_SEC", 450),
+        liq_move_threshold_pct=_env_float("VERDICT_LIQ_MOVE_THRESHOLD_PCT", 0.2),
+        recovery_move_threshold_pct=_env_float("VERDICT_RECOVERY_MOVE_THRESHOLD_PCT", 0.2),
+        min_notional=_env_float("VERDICT_MIN_NOTIONAL", 0.0),
+        min_notional_btc=_env_float("VERDICT_MIN_NOTIONAL_BTC", 10_000.0),
+        min_notional_eth=_env_float("VERDICT_MIN_NOTIONAL_ETH", 10_000.0),
+        min_notional_sol=_env_float("VERDICT_MIN_NOTIONAL_SOL", 5_000.0),
+        min_notional_xrp=_env_float("VERDICT_MIN_NOTIONAL_XRP", 5_000.0),
+        min_notional_doge=_env_float("VERDICT_MIN_NOTIONAL_DOGE", 2_500.0),
+    )
 
 
 def build_liquidation_signal_config(
@@ -84,6 +114,11 @@ def build_terminal_sirius_config(
         pos_multiplier_large=_env_float("STRATEGY_POS_MULT_LARGE", 3.0),
         trade_size=_env_decimal("STRATEGY_TRADE_SIZE", "10"),
         recalc_interval_sec=_env_float("STRATEGY_RECALC_INTERVAL_SEC", 1.0),
+        use_verdict_triggers=_env_bool("STRATEGY_USE_VERDICT_TRIGGERS", False),
+        use_rolling_liq_triggers=_env_bool("STRATEGY_USE_ROLLING_LIQ_TRIGGERS", True),
+        verdict_min_recovery_move_pct=_env_float("VERDICT_RECOVERY_MOVE_THRESHOLD_PCT", 0.2),
+        verdict_max_time_sec=_env_float("VERDICT_MAX_TIME_SEC", 450.0),
+        verdict_min_area_bias=_env_float("VERDICT_MIN_AREA_BIAS", 0.0),
     )
 
 

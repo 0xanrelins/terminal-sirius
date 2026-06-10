@@ -370,6 +370,31 @@ def build_node(
     liq_ui_cfg = LiquidationUiBridgeActorConfig(component_id="LiquidationUiBridge-001")
     node.trader.add_actor(LiquidationUiBridgeActor(config=liq_ui_cfg, data_queue=data_queue))
 
+    from liquidation_verdict_bridge_actor import (
+        LiquidationVerdictBridgeActor,
+        LiquidationVerdictBridgeActorConfig,
+    )
+    from strategies.env_config import build_liquidation_verdict_config
+    from strategies.liquidation_verdict_actor import LiquidationVerdictActor
+
+    node.trader.add_actor(
+        LiquidationVerdictActor(
+            config=build_liquidation_verdict_config(
+                component_id="LiqVerdictActor-001",
+                instrument_ids=instruments,
+            ),
+        ),
+    )
+    node.trader.add_actor(
+        LiquidationVerdictBridgeActor(
+            config=LiquidationVerdictBridgeActorConfig(
+                component_id="LiqVerdictBridge-001",
+            ),
+            data_queue=data_queue,
+        ),
+    )
+    print("[nautilus] LiquidationVerdictActor + bridge enabled (liquidation_verdict → WS queue)")
+
     rt_cfg = RealtimeBucketActorConfig(
         component_id="RealtimeBucketActor-001",
         instrument_ids=instruments,

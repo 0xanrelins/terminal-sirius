@@ -153,12 +153,70 @@ def liquidation_message_from_native(liq: Any) -> dict[str, Any] | None:
     }
 
 
+def synthetic_force_order_payload(
+    *,
+    symbol: str,
+    side: str,
+    price: float,
+    quantity: float,
+    trade_ms: int,
+    trade_id: int,
+) -> dict[str, Any]:
+    """Build a Binance-shaped payload so DB watchlist trigger can ingest ``LiquidationTick`` rows."""
+    return {
+        "e": "forceOrder",
+        "o": {
+            "s": nautilus_to_binance(symbol),
+            "S": side,
+            "ap": str(price),
+            "z": str(quantity),
+            "T": int(trade_ms),
+            "i": int(trade_id),
+        },
+    }
+
+
+def liquidation_db_trade_id_and_payload(msg: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """Resolve ``(trade_id, payload)`` for ``liquidation_events`` insert."""
+    raw = msg.get("_payload")
+    if raw is not None:
+        return force_order_trade_id(raw), raw
+    trade_id = msg.get("trade_id")
+    if trade_id is None:
+        return None
+    try:
+        symbol = str(msg["symbol"])
+        side = str(msg["side"])
+        notional = float(msg["notional"])
+        trade_ms = int(msg["time"]) * 1000
+        price = float(msg.get("price") or 0.0)
+        quantity = float(msg.get("quantity") or 0.0)
+        if quantity <= 0 and price > 0:
+            quantity = notional / price
+        if price <= 0 and quantity > 0:
+            price = notional / quantity
+    except (KeyError, TypeError, ValueError):
+        return None
+    return int(trade_id), synthetic_force_order_payload(
+        symbol=symbol,
+        side=side,
+        price=price,
+        quantity=quantity,
+        trade_ms=trade_ms,
+        trade_id=int(trade_id),
+    )
+
+
 def liquidation_message_from_tick(tick: Any) -> dict[str, Any] | None:
     """``LiquidationTick`` (custom feed) → WS/DB queue message with bar-bucket deltas."""
     try:
         symbol = str(tick.symbol)
         side = str(tick.side)
         notional = float(tick.notional)
+        price = float(tick.price)
+        quantity = float(tick.quantity)
+        if quantity <= 0 and price > 0:
+            quantity = notional / price
         trade_ms = int(tick.ts_event) // 1_000_000
     except (AttributeError, TypeError, ValueError):
         return None
@@ -182,6 +240,8 @@ def liquidation_message_from_tick(tick: Any) -> dict[str, Any] | None:
         "symbol": symbol,
         "side": side,
         "notional": round(notional, 2),
+        "price": price,
+        "quantity": quantity,
         "time": trade_ms // 1000,
         "bars": bar_snapshots,
         "_payload": None,

@@ -28,7 +28,10 @@ from adapters.polymarket.rolling import WINDOW_SEC
 from adapters.polymarket.rolling import parse_window_epoch_from_slug
 from strategies.config import TerminalSiriusStrategyConfig
 from strategies.mapping import BINANCE_TO_POLY_SERIES
+from strategies.liquidation_verdict_logic import verdict_passes_gates
+from strategies.liquidation_verdict_logic import CompletedVerdict
 from strategies.messages import LiquidationTrigger
+from strategies.messages import LiquidationVerdict
 from strategies.messages import VwapZoneSnapshot
 from strategies.signal_state import SignalInputs
 from strategies.signal_state import entry_direction
@@ -79,7 +82,10 @@ class TerminalSiriusStrategy(Strategy):
     def on_start(self) -> None:
         bt = self.config.backtest_mode
         subscribe_custom_data(self, VwapZoneSnapshot, backtest=bt)
-        subscribe_custom_data(self, LiquidationTrigger, backtest=bt)
+        if self.config.use_rolling_liq_triggers:
+            subscribe_custom_data(self, LiquidationTrigger, backtest=bt)
+        if self.config.use_verdict_triggers:
+            subscribe_custom_data(self, LiquidationVerdict, backtest=bt)
         subscribe_custom_data(self, ActivePolymarketMarket, backtest=bt)
 
         self.clock.set_timer(
@@ -110,6 +116,8 @@ class TerminalSiriusStrategy(Strategy):
             st.last_price = data.close
             st.vwap_ready = True
         elif isinstance(data, LiquidationTrigger):
+            if not self.config.use_rolling_liq_triggers:
+                return
             symbol = str(data.instrument_id)
             st = self._states.get(symbol)
             if st is None:
@@ -119,6 +127,10 @@ class TerminalSiriusStrategy(Strategy):
             if data.short_triggered:
                 st.liq_short_trigger = True
             self._maybe_execute(symbol, self._recalculate(symbol))
+        elif isinstance(data, LiquidationVerdict):
+            if not self.config.use_verdict_triggers:
+                return
+            self._on_liquidation_verdict(data)
         elif isinstance(data, ActivePolymarketMarket):
             self._on_active_market(data)
 
@@ -270,6 +282,40 @@ class TerminalSiriusStrategy(Strategy):
         if direction is None:
             return Decision.HOLD
         return Decision.OPEN
+
+    def _on_liquidation_verdict(self, data: LiquidationVerdict) -> None:
+        symbol = str(data.instrument_id)
+        st = self._states.get(symbol)
+        if st is None:
+            return
+        completed = CompletedVerdict(
+            event_id=data.event_id,
+            symbol=symbol,
+            liq_side=data.liq_side,  # type: ignore[arg-type]
+            notional=float(data.notional),
+            event_price=float(data.event_price),
+            event_ts_ns=int(data.ts_event),
+            winner=data.winner,  # type: ignore[arg-type]
+            liq_move_pct=float(data.liq_move_pct),
+            recovery_move_pct=float(data.recovery_move_pct),
+            dominance_ratio=float(data.dominance_ratio),
+            time_to_dominance_sec=float(data.time_to_dominance_sec),
+            area_bias=float(data.area_bias),
+            status=data.status,  # type: ignore[arg-type]
+        )
+        if not verdict_passes_gates(
+            completed,
+            min_recovery_move_pct=float(self.config.verdict_min_recovery_move_pct),
+            max_time_to_completion_sec=float(self.config.verdict_max_time_sec),
+            min_area_bias=float(self.config.verdict_min_area_bias),
+            required_winner="recovery",
+        ):
+            return
+        if data.liq_side == "LONG":
+            st.liq_long_trigger = True
+        elif data.liq_side == "SHORT":
+            st.liq_short_trigger = True
+        self._maybe_execute(symbol, self._recalculate(symbol))
 
     def _signal_inputs(self, st: _LayerState) -> SignalInputs:
         return SignalInputs(

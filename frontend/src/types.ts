@@ -225,6 +225,34 @@ export type StrategySignalSnapshotMsg = {
   symbols: Record<string, StrategySignalSymbolState>;
 };
 
+export type VerdictWinner = "liquidation" | "recovery" | "neutral";
+export type VerdictStatus = "completed" | "expired";
+
+export type LiquidationVerdictRow = {
+  event_id: string;
+  symbol: string;
+  liq_side: "LONG" | "SHORT";
+  notional: number;
+  event_price: number;
+  winner: VerdictWinner;
+  liq_move_pct: number;
+  recovery_move_pct: number;
+  dominance_ratio: number;
+  time_to_dominance_sec: number;
+  area_bias: number;
+  status: VerdictStatus;
+  event_time: number;
+  ts?: number;
+};
+
+export type LiquidationVerdictMsg = {
+  type: "liquidation_verdict";
+  verdict: LiquidationVerdictRow;
+  tape: LiquidationVerdictRow[];
+  pending: number;
+  pending_by_symbol: Record<string, number>;
+};
+
 export type FeedMsg =
   | TradeMsg
   | QuoteMsg
@@ -234,7 +262,8 @@ export type FeedMsg =
   | LiquidationMsg
   | PaperSnapshotMsg
   | PaperEventMsg
-  | StrategySignalSnapshotMsg;
+  | StrategySignalSnapshotMsg
+  | LiquidationVerdictMsg;
 
 export type Kline = {
   time: number;
@@ -265,7 +294,8 @@ export type WidgetType =
   | "bar_countdown"
   | "new_york_time"
   | "paper_trade_dashboard"
-  | "strategy_signals";
+  | "strategy_signals"
+  | "liquidation_verdict_dashboard";
 
 export type PriceTickerConfig = {
   id: string;
@@ -395,6 +425,14 @@ export type StrategySignalsConfig = {
   symbols?: string[];
 };
 
+export type LiquidationVerdictDashboardConfig = {
+  id: string;
+  type: "liquidation_verdict_dashboard";
+  coins?: string[];
+  sides?: ("LONG" | "SHORT")[];
+  minNotional?: number;
+};
+
 export type WidgetConfig =
   | PriceTickerConfig
   | CandlestickChartConfig
@@ -407,7 +445,8 @@ export type WidgetConfig =
   | BarCountdownConfig
   | NewYorkTimeConfig
   | PaperTradeDashboardConfig
-  | StrategySignalsConfig;
+  | StrategySignalsConfig
+  | LiquidationVerdictDashboardConfig;
 
 export type CanvasState = {
   widgets: WidgetConfig[];

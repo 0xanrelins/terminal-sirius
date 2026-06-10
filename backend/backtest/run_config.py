@@ -94,6 +94,15 @@ def build_terminal_sirius_run_config(
 
     actors = [
         ImportableActorConfig(
+            actor_path="strategies.liquidation_verdict_actor:LiquidationVerdictActor",
+            config_path="strategies.config:LiquidationVerdictActorConfig",
+            config={
+                "component_id": "LiqVerdictActor-BT",
+                "instrument_ids": list(binance_instruments),
+                "backtest_mode": True,
+            },
+        ),
+        ImportableActorConfig(
             actor_path="strategies.liquidation_signal_actor:LiquidationSignalActor",
             config_path="strategies.config:LiquidationSignalActorConfig",
             config={
@@ -122,6 +131,8 @@ def build_terminal_sirius_run_config(
                     "binance_instruments": list(binance_instruments),
                     "polymarket_series": list(BINANCE_TO_POLY_SERIES.values()),
                     "backtest_mode": True,
+                    "use_verdict_triggers": False,
+                    "use_rolling_liq_triggers": True,
                 },
             ),
         )

@@ -10,6 +10,7 @@ export default defineConfig({
       "/klines": { target: "http://localhost:8000" },
       "/liquidations": { target: "http://localhost:8000" },
       "/liquidation-events": { target: "http://localhost:8000" },
+      "/liq-verdict": { target: "http://localhost:8000" },
       "/liq-post-event": { target: "http://localhost:8000" },
       "/polymarket": { target: "http://localhost:8000" },
       "/paper": { target: "http://localhost:8000" },

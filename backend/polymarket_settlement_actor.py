@@ -40,6 +40,11 @@ BAR_INTERVAL = "15m"
 SETTLE_GRACE_SEC = 5.0
 CATCHUP_DELAY_SEC = 25.0
 HISTORY_LOOKBACK_H = 6
+HISTORY_MAX_LOOKBACK_H = 72
+HISTORY_LIMIT_MIN_BARS = 32
+HISTORY_LIMIT_MAX_BARS = 2_000
+HISTORY_LIMIT_BUFFER_BARS = 8
+BAR_SECONDS_15M = 15 * 60
 
 
 class PolymarketSettlementActorConfig(ActorConfig, frozen=True):
@@ -102,6 +107,7 @@ class PolymarketSettlementActor(Actor):
         # Instruments safe for InstrumentClose (on_instrument + quote precision aligned).
         self._settlement_ready_iids: set[InstrumentId] = set()
         self._hist_bar_count: int = 0
+        self._history_requests_by_window: set[tuple[str, int]] = set()
         self._boundary_task: asyncio.Task | None = None
         self._catchup_task: asyncio.Task | None = None
 
@@ -264,11 +270,71 @@ class PolymarketSettlementActor(Actor):
             self._index_bar(bar)
         return len(bars)
 
+    def _history_request_plan(self) -> dict[str, tuple[datetime, int]]:
+        """
+        Build symbol-specific Nautilus ``request_bars`` plan from current open positions.
+
+        Keeps the existing default lookback while expanding for older still-open windows,
+        bounded by ``HISTORY_MAX_LOOKBACK_H``.
+        """
+        now_sec = int(self.clock.timestamp_ns() // 1_000_000_000)
+        default_start_sec = now_sec - int(HISTORY_LOOKBACK_H * 3600)
+        min_start_sec = now_sec - int(HISTORY_MAX_LOOKBACK_H * 3600)
+        start_by_symbol: dict[str, int] = {
+            sym: default_start_sec for sym in self._bar_types
+        }
+
+        for pos in self.cache.positions_open(venue=self._venue):
+            iid = pos.instrument_id
+            iid_s = str(iid)
+            inst = self.cache.instrument(iid)
+            self._lock_slug(iid_s)
+            window = self._window_for_position(iid_s, inst)
+            if window is None:
+                continue
+            window_start_sec, _ = window
+            binance_sym = self._binance_for_iid(iid_s, inst)
+            if binance_sym is None or binance_sym not in start_by_symbol:
+                continue
+            candidate = max(min_start_sec, window_start_sec - BAR_SECONDS_15M)
+            if candidate < start_by_symbol[binance_sym]:
+                start_by_symbol[binance_sym] = candidate
+
+        out: dict[str, tuple[datetime, int]] = {}
+        for sym, start_sec in start_by_symbol.items():
+            age_sec = max(0, now_sec - start_sec)
+            bars = int(age_sec // BAR_SECONDS_15M) + HISTORY_LIMIT_BUFFER_BARS
+            limit = max(HISTORY_LIMIT_MIN_BARS, min(HISTORY_LIMIT_MAX_BARS, bars))
+            out[sym] = (datetime.fromtimestamp(start_sec, tz=timezone.utc), limit)
+        return out
+
+    def _request_window_history(self, binance_sym: str, window_start_sec: int) -> None:
+        """
+        Native targeted history request for a missing settlement bar.
+
+        Uses ``Actor.request_bars`` once per (symbol, window) to avoid log/request storms.
+        """
+        key = (binance_sym, window_start_sec)
+        if key in self._history_requests_by_window:
+            return
+        bar_type = self._bar_types.get(binance_sym)
+        if bar_type is None:
+            return
+        self._history_requests_by_window.add(key)
+        self.request_bars(
+            bar_type=bar_type,
+            start=datetime.fromtimestamp(window_start_sec, tz=timezone.utc),
+            limit=2,
+            callback=lambda _rid, s=binance_sym: self.log.info(
+                f"requested missing 15m history for {s} window={window_start_sec}",
+            ),
+        )
+
     async def _startup_catch_up(self) -> None:
         try:
             await asyncio.sleep(CATCHUP_DELAY_SEC)
-            start = datetime.now(timezone.utc) - timedelta(hours=HISTORY_LOOKBACK_H)
-            pending = len(self._bar_types)
+            plan = self._history_request_plan()
+            pending = len(plan)
             done = 0
 
             def _on_history_done(sym: str, _request_id) -> None:
@@ -278,10 +344,17 @@ class PolymarketSettlementActor(Actor):
                 done += 1
 
             for sym, bar_type in self._bar_types.items():
+                start, limit = plan.get(
+                    sym,
+                    (
+                        datetime.now(timezone.utc) - timedelta(hours=HISTORY_LOOKBACK_H),
+                        HISTORY_LIMIT_MIN_BARS,
+                    ),
+                )
                 self.request_bars(
                     bar_type=bar_type,
                     start=start,
-                    limit=32,
+                    limit=limit,
                     callback=lambda rid, s=sym: _on_history_done(s, rid),
                 )
 
@@ -418,6 +491,7 @@ class PolymarketSettlementActor(Actor):
             up_won = self._up_outcome_for_window(binance_sym, window_start_sec)
             if up_won is None:
                 skipped += 1
+                self._request_window_history(binance_sym, window_start_sec)
                 self.log.info(
                     f"defer settle {iid_s}: no bar {binance_sym} window={window_start_sec}",
                 )

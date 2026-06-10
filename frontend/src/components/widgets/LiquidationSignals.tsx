@@ -117,7 +117,6 @@ export function LiquidationSignals({
 
   useEffect(() => {
     let cancelled = false;
-    setRows([]);
     setHistoryLoading(true);
 
     const params = new URLSearchParams({

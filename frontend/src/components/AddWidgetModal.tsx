@@ -112,6 +112,13 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         onAdd({ id, type: "paper_trade_dashboard", curveMetric: "equity" });
       } else if (binanceType === "strategy_signals") {
         onAdd({ id, type: "strategy_signals" });
+      } else if (binanceType === "liquidation_verdict_dashboard") {
+        onAdd({
+          id,
+          type: "liquidation_verdict_dashboard",
+          coins: [...DEFAULT_POST_EVENT_COINS],
+          sides: ["LONG", "SHORT"],
+        });
       } else {
         onAdd({ id, type: "price_ticker", symbol: symbol.toUpperCase(), source: "binance" });
       }
@@ -147,6 +154,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
         binanceType === "new_york_time" ||
         binanceType === "paper_trade_dashboard" ||
         binanceType === "strategy_signals" ||
+        binanceType === "liquidation_verdict_dashboard" ||
         binanceType === "comparison_chart" ||
         binanceType === "liq_post_event_chart" ||
         binanceType === "candlestick_chart" ||
@@ -195,6 +203,7 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                       "new_york_time",
                       "paper_trade_dashboard",
                       "strategy_signals",
+                      "liquidation_verdict_dashboard",
                     ] as WidgetType[]
                   ).map((t) => (
                     <button
@@ -221,7 +230,9 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
                                       ? "Paper Trade"
                                       : t === "strategy_signals"
                                         ? "Strategy Signals"
-                                        : "Liq Signals"}
+                                        : t === "liquidation_verdict_dashboard"
+                                          ? "Liq Verdict"
+                                          : "Liq Signals"}
                     </button>
                   ))}
                 </div>
@@ -290,6 +301,12 @@ export function AddWidgetModal({ onAdd, onClose }: Props) {
               {binanceType === "liquidation_signals" && (
                 <p className={styles.hint}>
                   BTC, ETH, SOL, DOGE, XRP liquidations. Pick coins and min $ from the widget toolbar.
+                </p>
+              )}
+
+              {binanceType === "liquidation_verdict_dashboard" && (
+                <p className={styles.hint}>
+                  Verdict tape: dominance, time-to-dominance, area bias per liquidation print (≥ actor min $).
                 </p>
               )}
 

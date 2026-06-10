@@ -189,6 +189,7 @@ class LiquidationFeedActor(Actor):
                 price = float(order["ap"])
                 quantity = float(order["z"])
                 ts = int(order["T"]) * 1_000_000  # ms → ns
+                order_id = int(order.get("i") or 0)
             except (KeyError, TypeError, ValueError):
                 continue
             self._emit_tick(
@@ -198,6 +199,7 @@ class LiquidationFeedActor(Actor):
                     notional=round(price * quantity, 2),
                     price=price,
                     quantity=quantity,
+                    order_id=order_id,
                     ts_event=ts,
                     ts_init=ts,
                 ),

@@ -2,8 +2,11 @@
 from liquidations import (
     build_liquidation_message,
     force_order_trade_id,
+    liquidation_db_trade_id_and_payload,
+    liquidation_message_from_tick,
     parse_force_order,
 )
+from recorders.data_types import LiquidationTick
 
 
 def _sample_item() -> dict:
@@ -60,3 +63,43 @@ def test_build_liquidation_message_includes_payload():
 
 def test_parse_rejects_non_force_order():
     assert parse_force_order({"e": "trade"}) is None
+
+
+def test_liquidation_message_from_tick_includes_trade_id_and_prices():
+    tick = LiquidationTick(
+        symbol="BTCUSDT-PERP.BINANCE",
+        side="SELL",
+        notional=100_000.0,
+        price=50_000.0,
+        quantity=2.0,
+        ts_event=1_710_000_000_100_000_000,
+        ts_init=1_710_000_000_100_000_000,
+    )
+    msg = liquidation_message_from_tick(tick)
+    assert msg is not None
+    assert msg["trade_id"] is not None
+    assert msg["price"] == 50_000.0
+    assert msg["quantity"] == 2.0
+    assert msg["_payload"] is None
+    assert msg["_updates"]
+
+
+def test_liquidation_db_trade_id_and_payload_from_tick_message():
+    msg = {
+        "type": "liquidation",
+        "trade_id": 12345,
+        "symbol": "BTCUSDT-PERP.BINANCE",
+        "side": "SELL",
+        "notional": 100_000.0,
+        "price": 50_000.0,
+        "quantity": 2.0,
+        "time": 1_710_000_000,
+        "_payload": None,
+    }
+    resolved = liquidation_db_trade_id_and_payload(msg)
+    assert resolved is not None
+    trade_id, payload = resolved
+    assert trade_id == 12345
+    assert payload["e"] == "forceOrder"
+    assert payload["o"]["s"] == "BTCUSDT"
+    assert payload["o"]["S"] == "SELL"

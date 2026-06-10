@@ -6,6 +6,7 @@ Schema:
   - `liquidation_bars` — long/short liquidation notional per bar (symbol, interval, time)
   - `liquidation_events` — raw Binance forceOrder JSON per event
   - `liquidation_watchlist_events` — denormalized major-coin liqs (trigger from liquidation_events)
+  - `liquidation_verdict_events` — completed live verdict rows (LiquidationVerdictBridge → BFF)
   - `paper_equity_snapshots` — paper-trade equity/PnL curve points (PaperTradeMonitorActor)
   - `paper_events` — paper-trade order/position lifecycle events (activity feed)
 """
@@ -17,6 +18,13 @@ import asyncpg
 
 LIQUIDATION_EVENTS_MAX_ROWS = 50_000
 LIQUIDATION_EVENTS_RETENTION_HOURS = 48
+LIQUIDATION_VERDICT_MAX_ROWS = 50_000
+LIQUIDATION_VERDICT_RETENTION_HOURS = 168
+
+
+def _prune_liquidation_verdicts_enabled() -> bool:
+    v = os.environ.get("PRUNE_LIQUIDATION_VERDICTS", "0").lower()
+    return v in ("1", "true", "yes", "on")
 PAPER_EQUITY_MAX_ROWS = 100_000
 PAPER_EVENTS_MAX_ROWS = 20_000
 _pool: Optional[asyncpg.Pool] = None
@@ -172,6 +180,32 @@ async def _migrate(p: asyncpg.Pool) -> None:
                         ON DELETE CASCADE;
                 END IF;
             END $$;
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_verdict_events (
+                event_id               TEXT PRIMARY KEY,
+                symbol                 TEXT NOT NULL,
+                liq_side               TEXT NOT NULL,
+                notional               DOUBLE PRECISION NOT NULL,
+                event_price            DOUBLE PRECISION NOT NULL,
+                winner                 TEXT NOT NULL,
+                liq_move_pct           DOUBLE PRECISION NOT NULL,
+                recovery_move_pct      DOUBLE PRECISION NOT NULL,
+                dominance_ratio        DOUBLE PRECISION NOT NULL,
+                time_to_dominance_sec  DOUBLE PRECISION NOT NULL,
+                area_bias              DOUBLE PRECISION NOT NULL,
+                status                 TEXT NOT NULL,
+                event_time             BIGINT NOT NULL,
+                received_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS liquidation_verdict_events_symbol_time
+            ON liquidation_verdict_events (symbol, event_time DESC)
+        """)
+        await conn.execute("""
+            ALTER TABLE liquidation_verdict_events
+            ADD COLUMN IF NOT EXISTS completion_reason TEXT NOT NULL DEFAULT ''
         """)
         await conn.execute("DROP TABLE IF EXISTS simulation_bets CASCADE")
         await conn.execute("DROP TABLE IF EXISTS simulation_cycles CASCADE")
@@ -459,6 +493,190 @@ async def prune_liquidation_events() -> None:
         )
         """,
         LIQUIDATION_EVENTS_MAX_ROWS,
+    )
+
+
+_verdict_prune_counter = 0
+
+
+async def insert_liquidation_verdict(row: dict) -> bool:
+    event_id = str(row.get("event_id") or "").strip()
+    if not event_id:
+        return False
+    try:
+        await pool().execute(
+            """
+            INSERT INTO liquidation_verdict_events (
+                event_id, symbol, liq_side, notional, event_price,
+                winner, liq_move_pct, recovery_move_pct, dominance_ratio,
+                time_to_dominance_sec, area_bias, status, completion_reason,
+                event_time
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, $8, $9,
+                $10, $11, $12, $13,
+                $14
+            )
+            ON CONFLICT (event_id) DO UPDATE SET
+                winner = EXCLUDED.winner,
+                liq_move_pct = EXCLUDED.liq_move_pct,
+                recovery_move_pct = EXCLUDED.recovery_move_pct,
+                dominance_ratio = EXCLUDED.dominance_ratio,
+                time_to_dominance_sec = EXCLUDED.time_to_dominance_sec,
+                area_bias = EXCLUDED.area_bias,
+                status = EXCLUDED.status,
+                completion_reason = EXCLUDED.completion_reason,
+                received_at = NOW()
+            """,
+            event_id,
+            str(row.get("symbol") or ""),
+            str(row.get("liq_side") or ""),
+            float(row.get("notional") or 0.0),
+            float(row.get("event_price") or 0.0),
+            str(row.get("winner") or "neutral"),
+            float(row.get("liq_move_pct") or 0.0),
+            float(row.get("recovery_move_pct") or 0.0),
+            float(row.get("dominance_ratio") or 0.0),
+            float(row.get("time_to_dominance_sec") or 0.0),
+            float(row.get("area_bias") or 0.0),
+            str(row.get("status") or "expired"),
+            str(row.get("completion_reason") or ""),
+            int(row.get("event_time") or 0),
+        )
+    except (TypeError, ValueError):
+        return False
+    if _prune_liquidation_verdicts_enabled():
+        await maybe_prune_liquidation_verdicts()
+    return True
+
+
+async def get_liquidation_verdict_events(
+    *,
+    coins: list[str],
+    min_notional: float = 0.0,
+    sides: frozenset[str] | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    sides = sides or frozenset({"LONG", "SHORT"})
+    sql = """
+        SELECT
+            event_id, symbol, liq_side, notional, event_price,
+            winner, liq_move_pct, recovery_move_pct, dominance_ratio,
+            time_to_dominance_sec, area_bias, status, completion_reason,
+            event_time
+        FROM liquidation_verdict_events
+        WHERE symbol = ANY($1::text[])
+          AND liq_side = ANY($2::text[])
+          AND notional >= $3
+        ORDER BY event_time DESC
+    """
+    args: list = [coins, list(sides), max(0.0, min_notional)]
+    if limit is not None and limit > 0:
+        sql += " LIMIT $4"
+        args.append(max(1, int(limit)))
+    rows = await pool().fetch(sql, *args)
+    return [
+        {
+            "event_id": r["event_id"],
+            "symbol": r["symbol"],
+            "liq_side": r["liq_side"],
+            "notional": round(float(r["notional"]), 2),
+            "event_price": float(r["event_price"]),
+            "winner": r["winner"],
+            "liq_move_pct": float(r["liq_move_pct"]),
+            "recovery_move_pct": float(r["recovery_move_pct"]),
+            "dominance_ratio": float(r["dominance_ratio"]),
+            "time_to_dominance_sec": float(r["time_to_dominance_sec"]),
+            "area_bias": float(r["area_bias"]),
+            "status": r["status"],
+            "completion_reason": str(r["completion_reason"] or ""),
+            "event_time": int(r["event_time"]),
+        }
+        for r in rows
+    ]
+
+
+async def get_liquidation_verdict_stats(
+    *,
+    coins: list[str],
+    min_notional: float = 0.0,
+    sides: frozenset[str] | None = None,
+) -> dict:
+    sides = sides or frozenset({"LONG", "SHORT"})
+    row = await pool().fetchrow(
+        """
+        SELECT
+            COUNT(*)::int AS count,
+            COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+            COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
+            COUNT(*) FILTER (
+                WHERE status = 'completed' AND winner = 'recovery'
+            )::int AS recovery_wins,
+            AVG(dominance_ratio) FILTER (WHERE status = 'completed') AS avg_dominance,
+            AVG(time_to_dominance_sec) FILTER (WHERE status = 'completed') AS avg_time,
+            AVG(area_bias) FILTER (WHERE status = 'completed') AS avg_area
+        FROM liquidation_verdict_events
+        WHERE symbol = ANY($1::text[])
+          AND liq_side = ANY($2::text[])
+          AND notional >= $3
+        """,
+        coins,
+        list(sides),
+        max(0.0, min_notional),
+    )
+    completed = int(row["completed"] or 0)
+    recovery_wins = int(row["recovery_wins"] or 0)
+    return {
+        "count": int(row["count"] or 0),
+        "completed": completed,
+        "expired": int(row["expired"] or 0),
+        "recovery_rate": (recovery_wins / completed) if completed > 0 else 0.0,
+        "avg_dominance": float(row["avg_dominance"] or 0.0),
+        "avg_time": float(row["avg_time"] or 0.0),
+        "avg_area": float(row["avg_area"] or 0.0),
+    }
+
+
+async def maybe_prune_liquidation_verdicts() -> None:
+    if not _prune_liquidation_verdicts_enabled():
+        return
+    global _verdict_prune_counter
+    _verdict_prune_counter += 1
+    if _verdict_prune_counter % 100 != 0:
+        return
+    await prune_liquidation_verdicts()
+
+
+async def clear_liquidation_verdict_events() -> int:
+    """Delete all verdict rows (e.g. after raising min-notional thresholds)."""
+    result = await pool().execute("DELETE FROM liquidation_verdict_events")
+    # asyncpg returns "DELETE N"
+    try:
+        return int(result.split()[-1])
+    except (AttributeError, IndexError, ValueError):
+        return 0
+
+
+async def prune_liquidation_verdicts() -> None:
+    if not _prune_liquidation_verdicts_enabled():
+        return
+    await pool().execute(
+        """
+        DELETE FROM liquidation_verdict_events
+        WHERE received_at < NOW() - make_interval(hours => $1::int)
+        """,
+        LIQUIDATION_VERDICT_RETENTION_HOURS,
+    )
+    await pool().execute(
+        """
+        DELETE FROM liquidation_verdict_events
+        WHERE event_id NOT IN (
+            SELECT event_id FROM liquidation_verdict_events
+            ORDER BY event_time DESC
+            LIMIT $1
+        )
+        """,
+        LIQUIDATION_VERDICT_MAX_ROWS,
     )
 
 

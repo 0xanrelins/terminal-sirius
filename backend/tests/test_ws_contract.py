@@ -13,6 +13,7 @@ def test_allowed_types_match_feed_msg_union() -> None:
         "paper_snapshot",
         "paper_event",
         "strategy_signal_snapshot",
+        "liquidation_verdict",
     }
     assert ALLOWED_WS_TYPES == expected
 
@@ -79,6 +80,29 @@ def test_validate_sample_market_messages() -> None:
                     "vwap_ready": True,
                 }
             },
+        }
+    )
+    validate_ws_payload(
+        {
+            "type": "liquidation_verdict",
+            "verdict": {
+                "event_id": "v-1",
+                "symbol": "BTC",
+                "liq_side": "LONG",
+                "notional": 100000.0,
+                "event_price": 100.0,
+                "winner": "recovery",
+                "liq_move_pct": 0.1,
+                "recovery_move_pct": 0.6,
+                "dominance_ratio": 6.0,
+                "time_to_dominance_sec": 18.0,
+                "area_bias": 0.4,
+                "status": "completed",
+                "event_time": 1,
+            },
+            "tape": [],
+            "pending": 0,
+            "pending_by_symbol": {},
         }
     )
 

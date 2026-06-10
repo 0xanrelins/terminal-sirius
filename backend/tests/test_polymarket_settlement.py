@@ -160,3 +160,43 @@ def test_apply_settlement_publishes_when_ready():
         cache.quote_tick.return_value = tick
         assert actor._apply_settlement(iid, True, slug="btc-updown-15m-1") is True
     bus.publish.assert_called_once()
+
+
+def test_history_request_plan_expands_for_old_open_window():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    clock = MagicMock()
+    now_sec = 1_800_000_000
+    clock.timestamp_ns.return_value = now_sec * 1_000_000_000
+    cache = MagicMock()
+    pos = MagicMock()
+    pos.instrument_id = InstrumentId.from_str("0xabc-YES.POLYMARKET")
+    inst = MagicMock()
+    inst.info = {"market_slug": "btc-updown-15m-1799964000"}  # 10h before `now_sec`
+    actor._bar_types["BTCUSDT-PERP.BINANCE"] = MagicMock()
+
+    with (
+        patch.object(type(actor), "clock", new_callable=PropertyMock, return_value=clock),
+        patch.object(type(actor), "cache", new_callable=PropertyMock, return_value=cache),
+    ):
+        cache.positions_open.return_value = [pos]
+        cache.instrument.return_value = inst
+        plan = actor._history_request_plan()
+
+    start_dt, limit = plan["BTCUSDT-PERP.BINANCE"]
+    assert int(start_dt.timestamp()) <= 1_799_963_100  # window_start - 15m
+    assert limit > 32
+
+
+def test_request_window_history_dedupes_native_request_bars():
+    actor = PolymarketSettlementActor(
+        PolymarketSettlementActorConfig(binance_instruments=("BTCUSDT-PERP.BINANCE",)),
+    )
+    actor._bar_types["BTCUSDT-PERP.BINANCE"] = MagicMock()
+    actor.request_bars = MagicMock()
+
+    actor._request_window_history("BTCUSDT-PERP.BINANCE", 1_780_000_000)
+    actor._request_window_history("BTCUSDT-PERP.BINANCE", 1_780_000_000)
+
+    actor.request_bars.assert_called_once()

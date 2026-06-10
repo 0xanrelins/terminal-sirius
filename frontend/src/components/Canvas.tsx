@@ -36,6 +36,8 @@ import {
   STRATEGY_BINANCE_SYMBOLS,
   StrategySignalsWidget,
 } from "./widgets/StrategySignalsWidget";
+import { LiquidationVerdictDashboard } from "./widgets/LiquidationVerdictDashboard";
+import { normalizeVerdictCoins, normalizeVerdictSides } from "../lib/liquidationVerdict";
 import styles from "./Canvas.module.css";
 
 const COLS = 24;
@@ -56,9 +58,24 @@ function defaultLayout(id: string, type: WidgetConfig["type"]): Layout {
   const isMarketTimes = type === "market_times";
   const isPaper = type === "paper_trade_dashboard";
   const isStrategySignals = type === "strategy_signals";
-  const w = isPaper ? 16 : isStrategySignals ? 6 : isChart ? 14 : isLiq ? 8 : isMarketTimes ? 6 : 5;
+  const isVerdictDash = type === "liquidation_verdict_dashboard";
+  const w = isPaper
+    ? 16
+    : isVerdictDash
+      ? 12
+      : isStrategySignals
+        ? 6
+        : isChart
+          ? 14
+          : isLiq
+            ? 8
+            : isMarketTimes
+              ? 6
+              : 5;
   const h = isPaper
     ? 16
+    : isVerdictDash
+      ? 12
     : isStrategySignals
       ? 10
     : isChart
@@ -80,6 +97,7 @@ function handleLabel(cfg: WidgetConfig): string {
   if (cfg.type === "new_york_time") return "New York";
   if (cfg.type === "paper_trade_dashboard") return "Paper Trade";
   if (cfg.type === "strategy_signals") return "Strategy Signals";
+  if (cfg.type === "liquidation_verdict_dashboard") return "Liq Verdict";
   if (
     cfg.type === "candlestick_chart" ||
     cfg.type === "comparison_chart" ||
@@ -185,6 +203,14 @@ function renderWidget(
       return (
         <StrategySignalsWidget
           symbols={cfg.symbols ?? [...STRATEGY_BINANCE_SYMBOLS]}
+          onConfigChange={(patch) => onUpdate(cfg.id, patch)}
+        />
+      );
+    case "liquidation_verdict_dashboard":
+      return (
+        <LiquidationVerdictDashboard
+          coins={normalizeVerdictCoins(cfg.coins)}
+          sides={normalizeVerdictSides(cfg.sides)}
           onConfigChange={(patch) => onUpdate(cfg.id, patch)}
         />
       );

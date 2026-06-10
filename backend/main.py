@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_broadcast_loop())
     asyncio.create_task(_liquidation_events_retention_loop())
+    asyncio.create_task(_liquidation_verdict_retention_loop())
 
     yield
 
@@ -152,6 +153,99 @@ async def liquidation_events_endpoint(
         else:
             sym_tuple = tuple(MAJOR_NAUTILUS_SYMBOLS)
         return await fetch_liquidation_events(sym_tuple, min(limit, 500))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+def _liq_verdict_filters(
+    symbols: Optional[str],
+    sides: Optional[str],
+) -> tuple[tuple[str, ...], list[str], frozenset[str]]:
+    from recorders.liq_post_event_service import NAUTILUS_TO_COIN
+    from recorders.liq_post_event_service import parse_sides_param
+    from recorders.liq_post_event_service import parse_symbols_param
+
+    sym_tuple = parse_symbols_param(symbols)
+    coins = [NAUTILUS_TO_COIN.get(sym, sym.split("USDT")[0]) for sym in sym_tuple]
+    return sym_tuple, coins, parse_sides_param(sides)
+
+
+@app.get("/liq-verdict/stats")
+async def liq_verdict_stats_endpoint(
+    symbols: Optional[str] = None,
+    min_notional: float = 0.0,
+    sides: Optional[str] = None,
+):
+    """Cumulative verdict aggregates over all persisted rows (not list window)."""
+    try:
+        _sym_tuple, coins, side_set = _liq_verdict_filters(symbols, sides)
+        if not _persist_liquidation_verdicts_to_db_enabled():
+            return {
+                "count": 0,
+                "completed": 0,
+                "expired": 0,
+                "recovery_rate": 0.0,
+                "avg_dominance": 0.0,
+                "avg_time": 0.0,
+                "avg_area": 0.0,
+            }
+        return await db.get_liquidation_verdict_stats(
+            coins=coins,
+            min_notional=min_notional,
+            sides=side_set,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/liq-verdict/recent")
+async def liq_verdict_recent_endpoint(
+    symbols: Optional[str] = None,
+    min_notional: float = 0.0,
+    sides: Optional[str] = None,
+    limit: Optional[int] = 0,
+    liq_move_threshold_pct: float = 0.2,
+    recovery_move_threshold_pct: float = 0.2,
+    max_observation_sec: int = 450,
+):
+    """Post-liquidation verdict rows (DB-persisted live + catalog backfill)."""
+    try:
+        from recorders.liq_verdict_service import build_verdict_response
+        from recorders.liq_verdict_service import merge_verdict_rows
+
+        sym_tuple, coins, side_set = _liq_verdict_filters(symbols, sides)
+        row_limit = None if limit is None or int(limit) <= 0 else max(1, int(limit))
+        catalog_limit = row_limit if row_limit is not None else 500
+
+        if _persist_liquidation_verdicts_to_db_enabled():
+            persisted = await db.get_liquidation_verdict_events(
+                coins=coins,
+                min_notional=min_notional,
+                sides=side_set,
+                limit=row_limit,
+            )
+            return {"verdicts": persisted}
+
+        loop = asyncio.get_running_loop()
+        catalog_resp = await loop.run_in_executor(
+            None,
+            lambda: build_verdict_response(
+                symbols=symbols,
+                min_notional=min_notional,
+                sides=sides,
+                limit=catalog_limit,
+                liq_move_threshold_pct=liq_move_threshold_pct,
+                recovery_move_threshold_pct=recovery_move_threshold_pct,
+                max_observation_sec=max_observation_sec,
+            ),
+        )
+        return {
+            "verdicts": merge_verdict_rows(
+                [],
+                catalog_resp.get("verdicts") or [],
+                limit=row_limit,
+            )
+        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -295,6 +389,10 @@ async def _broadcast_loop() -> None:
             _maybe_persist_paper_snapshot(msg)
         elif msg.get("type") == "paper_event":
             asyncio.create_task(_persist_paper_event(msg))
+        elif msg.get("type") == "liquidation_verdict":
+            verdict = msg.get("verdict") or {}
+            if verdict.get("event_id"):
+                asyncio.create_task(_persist_liquidation_verdict(verdict))
 
         if not _clients:
             continue
@@ -311,23 +409,32 @@ def _persist_liquidation_events_to_db_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _persist_liquidation_verdicts_to_db_enabled() -> bool:
+    v = os.environ.get("PERSIST_LIQUIDATION_VERDICTS_TO_DB", "1").lower()
+    return v in ("1", "true", "yes", "on")
+
+
 async def _persist_liquidation(msg: dict) -> None:
     try:
-        from liquidations import record_liquidation
+        from liquidations import liquidation_db_trade_id_and_payload, record_liquidation
 
-        # Child process updated its own _buckets; replay here so parent-process
-        # in-memory state (read by fetch_liquidation_bars) stays current.
-        record_liquidation(msg["symbol"], msg["side"], msg["notional"], msg["time"] * 1000)
+        updates = msg.get("_updates")
+        if updates is None:
+            # Child process updated its own _buckets; replay here so parent-process
+            # in-memory state (read by fetch_liquidation_bars) stays current.
+            updates = record_liquidation(
+                msg["symbol"],
+                msg["side"],
+                msg["notional"],
+                msg["time"] * 1000,
+            )
 
-        payload = msg.get("_payload")
-        if payload is not None and _persist_liquidation_events_to_db_enabled():
-            from liquidations import force_order_trade_id
-
-            trade_id = force_order_trade_id(payload)
-            if await db.insert_liquidation_event(trade_id, payload):
-                await db.maybe_prune_liquidation_events()
-
-        updates = msg.get("_updates") or []
+        if _persist_liquidation_events_to_db_enabled():
+            resolved = liquidation_db_trade_id_and_payload(msg)
+            if resolved is not None:
+                trade_id, payload = resolved
+                if await db.insert_liquidation_event(trade_id, payload):
+                    await db.maybe_prune_liquidation_events()
         for u in updates:
             await db.add_liquidation_delta(
                 symbol=u["symbol"],
@@ -347,6 +454,28 @@ async def _liquidation_events_retention_loop() -> None:
             await db.prune_liquidation_events()
         except Exception as e:
             print(f"[warn] liquidation_events retention failed: {e}")
+
+
+async def _persist_liquidation_verdict(verdict: dict) -> None:
+    if not _persist_liquidation_verdicts_to_db_enabled():
+        return
+    try:
+        await db.insert_liquidation_verdict(verdict)
+    except Exception as e:
+        print(f"[warn] liquidation verdict persist failed: {e}")
+
+
+async def _liquidation_verdict_retention_loop() -> None:
+    from db import _prune_liquidation_verdicts_enabled
+
+    if not _prune_liquidation_verdicts_enabled():
+        return
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            await db.prune_liquidation_verdicts()
+        except Exception as e:
+            print(f"[warn] liquidation_verdict_events retention failed: {e}")
 
 
 # Downsample equity-curve persistence (snapshots stream every ~2s; keep the DB

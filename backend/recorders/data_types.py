@@ -35,3 +35,4 @@ class LiquidationTick(Data):
     notional: float = 0.0
     price: float = 0.0
     quantity: float = 0.0
+    order_id: int = 0
