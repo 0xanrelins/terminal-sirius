@@ -14,7 +14,7 @@ Environment variables:
   CATALOG_STREAMING_ENABLED — default true; native StreamingConfig on TradingNode
   CATALOG_PATH              — Parquet root (default backend/catalog)
   NAUTILUS_LOG_LEVEL        — Nautilus stdout log level (default WARNING)
-  STRATEGY_ENABLED          — register TerminalSirius strategy + signal actors
+  STRATEGY_ENABLED          — register active paper strategy + signal actors
   STRATEGY_PAPER_TRADE      — use SandboxExecutionClient for POLYMARKET (with STRATEGY_ENABLED)
 """
 from __future__ import annotations
@@ -307,7 +307,7 @@ def build_node(
     if exec_cfg is not None:
         exec_clients["POLYMARKET"] = exec_cfg
         if strategy_on:
-            print("[nautilus] Polymarket execution enabled for TerminalSiriusStrategy")
+            print("[nautilus] Polymarket execution enabled for active paper strategy")
         else:
             print("[nautilus] Polymarket ExecutionClient enabled (idle, no strategies)")
 
@@ -431,16 +431,16 @@ def build_node(
                 "so the strategy receives no ActivePolymarketMarket and cannot trade Polymarket"
             )
         from strategies.env_config import (
+            build_fresh_paper_strategy_config,
             build_liquidation_signal_config,
             build_strategy_signal_bridge_config,
-            build_terminal_sirius_config,
             build_vwap_signal_config,
             log_strategy_env_summary,
         )
         from strategy_signal_bridge_actor import StrategySignalBridgeActor
+        from strategies.fresh_paper_strategy import FreshPaperStrategy
         from strategies.liquidation_signal_actor import LiquidationSignalActor
         from strategies.mapping import BINANCE_TO_POLY_SERIES, STRATEGY_BINANCE_INSTRUMENTS
-        from strategies.terminal_sirius_strategy import TerminalSiriusStrategy
         from strategies.vwap_signal_actor import VwapSignalActor
 
         strategy_symbols = tuple(
@@ -450,6 +450,10 @@ def build_node(
             BINANCE_TO_POLY_SERIES[s]
             for s in strategy_symbols
             if s in BINANCE_TO_POLY_SERIES
+        )
+        strategy_cfg = build_fresh_paper_strategy_config(
+            binance_instruments=strategy_symbols,
+            polymarket_series=poly_series,
         )
 
         node.trader.add_actor(
@@ -469,12 +473,7 @@ def build_node(
             ),
         )
         node.trader.add_strategy(
-            TerminalSiriusStrategy(
-                config=build_terminal_sirius_config(
-                    binance_instruments=strategy_symbols,
-                    polymarket_series=poly_series,
-                ),
-            ),
+            FreshPaperStrategy(config=strategy_cfg),
         )
         node.trader.add_actor(
             PaperTradeMonitorActor(
@@ -485,6 +484,7 @@ def build_node(
                         os.environ.get("PAPER_SNAPSHOT_INTERVAL_SEC", "2.0")
                     ),
                     paper_trade=paper_trade,
+                    strategy_id=strategy_cfg.strategy_id,
                 ),
                 data_queue=data_queue,
             ),
@@ -517,7 +517,7 @@ def build_node(
         )
         log_strategy_env_summary()
         mode = "paper (Sandbox)" if paper_trade else "live exec"
-        print(f"[nautilus] TerminalSiriusStrategy + signal actors enabled — {mode}")
+        print(f"[nautilus] FreshPaperStrategy + signal actors enabled — {mode}")
         print("[nautilus] PaperTradeMonitorActor enabled (paper_snapshot/paper_event → WS queue)")
         print("[nautilus] StrategySignalBridgeActor enabled (strategy_signal_snapshot → WS queue)")
 

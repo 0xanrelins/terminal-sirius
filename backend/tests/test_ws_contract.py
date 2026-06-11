@@ -73,11 +73,20 @@ def test_validate_sample_market_messages() -> None:
         {
             "type": "strategy_signal_snapshot",
             "ts": 1,
+            "strategy_id": "fresh_paper",
+            "trade_enabled": True,
+            "recovery_exit_pct": 0.2,
+            "max_entry_token_price": 0.5,
+            "min_seconds_to_expiry_for_entry": 200,
+            "max_hold_seconds": 200,
             "symbols": {
                 "SOLUSDT-PERP.BINANCE": {
-                    "vwap": 142.5,
+                    "last_price": 142.5,
                     "decision": "HOLD",
-                    "vwap_ready": True,
+                    "market_ready": True,
+                    "entry_allowed": True,
+                    "liq_long_trigger": False,
+                    "liq_short_trigger": False,
                 }
             },
         }

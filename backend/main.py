@@ -64,6 +64,16 @@ async def lifespan(app: FastAPI):
     await db.init()
 
     try:
+        cleared = await db.clear_paper_run_history()
+        if cleared["events"] or cleared["equity_points"]:
+            print(
+                "[paper] cleared prior run history: "
+                f"{cleared['events']} events, {cleared['equity_points']} equity points"
+            )
+    except Exception as e:
+        print(f"[warn] paper run history clear failed: {e}")
+
+    try:
         _node_process = run_node_in_process(data_queue)
     except ImportError as e:
         print(f"[warn] Nautilus not available, market data disabled: {e}")
@@ -294,10 +304,13 @@ async def paper_equity_endpoint(
 
 
 @app.get("/paper/events")
-async def paper_events_endpoint(limit: int = 200):
+async def paper_events_endpoint(
+    limit: int = 200,
+    run_started_ts: Optional[int] = None,
+):
     """Recent paper-trade order/position events (newest first)."""
     try:
-        return await db.get_paper_events(min(limit, 1000))
+        return await db.get_paper_events(min(limit, 1000), run_started_ts=run_started_ts)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

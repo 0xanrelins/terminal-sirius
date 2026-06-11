@@ -123,6 +123,34 @@ export function calculateSessionVWAPSegments(
   return segments;
 }
 
+/** Current session bucket VWAP at the latest bar — for live forming-bar tail updates. */
+export function calculateSessionVwapTailPoint(
+  bars: OhlcvBar[],
+  period: number,
+  chartInterval: string
+): LineData<UTCTimestamp> | null {
+  if (bars.length === 0) return null;
+
+  const p = Math.max(1, Math.floor(period));
+  const last = bars[bars.length - 1];
+  const targetBucket = sessionBucketOpen(last.time as number, chartInterval, p);
+
+  let sumPv = 0;
+  let sumV = 0;
+  for (const b of bars) {
+    const bucket = sessionBucketOpen(b.time as number, chartInterval, p);
+    if (bucket !== targetBucket) continue;
+    const vol = b.volume;
+    if (vol <= 0) continue;
+    const tp = (b.high + b.low + b.close) / 3;
+    sumPv += tp * vol;
+    sumV += vol;
+  }
+
+  if (sumV <= 0) return null;
+  return { time: last.time, value: sumPv / sumV };
+}
+
 export function isAnchoredVwapType(type: string): boolean {
   return type === "vwap" || type === "session_vwap";
 }

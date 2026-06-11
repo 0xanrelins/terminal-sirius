@@ -263,20 +263,23 @@
   font-size: 15px;
 }
 
-.colMarketOpen { width: 36%; }
+.colMarketOpen { width: 30%; }
 .colSideOpen { width: 10%; }
 .colQtyOpen { width: 12%; }
 .colAvgOpen { width: 14%; }
-.colUpnlOpen { width: 16%; }
+.colEntryOpen { width: 18%; }
+.colUpnlOpen { width: 14%; }
 .colAgeOpen { width: 12%; }
 
-.colMarketClosed { width: 28%; }
-.colSideClosed { width: 9%; }
-.colQtyClosed { width: 9%; }
-.colOpenClosed { width: 11%; }
-.colCloseClosed { width: 11%; }
-.colOutcomeClosed { width: 8%; }
-.colRpnlClosed { width: 12%; }
+.colMarketClosed { width: 24%; }
+.colSideClosed { width: 8%; }
+.colQtyClosed { width: 8%; }
+.colOpenClosed { width: 10%; }
+.colCloseClosed { width: 10%; }
+.colEntryClosed { width: 16%; }
+.colOutcomeClosed { width: 7%; }
+.colReasonClosed { width: 10%; }
+.colRpnlClosed { width: 9%; }
 .colAgeClosed { width: 8%; }
 
 .table thead th {
@@ -368,6 +371,16 @@
 .kindBlue { color: #4ea1ff; background: #4ea1ff1a; }
 .kindRed { color: #f85149; background: #f851491a; }
 .kindDim { color: #9aa0ac; background: #9aa0ac14; }
+
+.reasonRecovery {
+  color: #4ea1ff;
+  font-weight: 700;
+}
+
+.reasonSettlement {
+  color: #9aa0ac;
+  font-weight: 700;
+}
 
 .feedInstr { color: #c7ccd5; overflow: hidden; text-overflow: ellipsis; }
 .feedDetail { color: #9aa0ac; overflow: hidden; text-overflow: ellipsis; }

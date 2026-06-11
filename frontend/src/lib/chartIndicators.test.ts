@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateSessionVWAP,
   calculateSessionVWAPSegments,
+  calculateSessionVwapTailPoint,
   type OhlcvBar,
 } from "./chartIndicators";
 
@@ -74,5 +75,29 @@ describe("calculateSessionVWAPSegments", () => {
     const flat = calculateSessionVWAP(bars, 3, "1m");
     const segments = calculateSessionVWAPSegments(bars, 3, "1m").flat();
     expect(flat.map((p) => p.value)).toEqual(segments.map((p) => p.value));
+  });
+});
+
+describe("calculateSessionVwapTailPoint", () => {
+  it("matches the last segment point for the current session bucket", () => {
+    const bars = [
+      barAt(0, 10, 10),
+      barAt(60, 20, 10),
+      barAt(120, 30, 10),
+    ];
+    const segments = calculateSessionVWAPSegments(bars, 3, "1m");
+    const tail = calculateSessionVwapTailPoint(bars, 3, "1m");
+
+    expect(tail?.time).toBe(120);
+    expect(tail?.value).toBe(segments[0][segments[0].length - 1].value);
+    expect(tail?.value).toBe(20);
+  });
+
+  it("updates when the forming bar wick changes within the same bucket", () => {
+    const bars = [barAt(0, 10, 10), barAt(60, 20, 5, 25, 15)];
+    const tail = calculateSessionVwapTailPoint(bars, 3, "1m");
+
+    expect(tail?.time).toBe(60);
+    expect(tail?.value).toBe((10 * 10 + 20 * 5) / 15);
   });
 });

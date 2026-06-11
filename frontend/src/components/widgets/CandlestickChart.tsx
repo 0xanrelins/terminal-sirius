@@ -60,7 +60,10 @@ import {
   binancePerpToPolySeries,
   polySeriesToFeedSymbol,
 } from "../../lib/binancePolySeries";
-import { paperFillMatchesSymbol, tradeMarkerForFill } from "../../lib/tradeSignalMarkers";
+import {
+  paperEventMatchesChart,
+  tradeMarkerForPaperEvent,
+} from "../../lib/tradeSignalMarkers";
 import { TradeSignalMarkersPrimitive } from "../../lib/tradeSignalMarkersPrimitive";
 import {
   liqApiInterval,
@@ -71,6 +74,7 @@ import {
 import {
   calculateEMA,
   calculateSessionVWAPSegments,
+  calculateSessionVwapTailPoint,
   calculateVWAP,
   isAnchoredVwapType,
   type OhlcvBar,
@@ -325,8 +329,8 @@ function mergeOhlcvBars(existing: OhlcvBar[], older: OhlcvBar[]): OhlcvBar[] {
 }
 
 const LIQ_FETCH_LIMIT = 10_000;
-/** Max candle repaint rate from trade ticks (indicators refresh on bar close). */
-const CANDLE_FLUSH_MS = 1000;
+/** Max candle repaint rate from trade ticks (match backend forming-bar 500ms). */
+const CANDLE_FLUSH_MS = 500;
 
 async function fetchLiquidationsForRange(
   symbol: string,
@@ -497,6 +501,8 @@ export function CandlestickChart({
   const liqPaneWithPolyRef = useRef<boolean | null>(null);
   const ohlcvBarsRef = useRef<OhlcvBar[]>([]);
   const liveBarRef = useRef<OhlcvBar | null>(null);
+  const paintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPaintAtRef = useRef(0);
   const loadingRef = useRef(false);
   const liqLoadingRef = useRef(false);
   const exhaustedRef = useRef(false);
@@ -583,11 +589,11 @@ export function CandlestickChart({
     }
   }, []);
 
-  const applyPaperTradeFill = useCallback(
+  const applyPaperTradeEvent = useCallback(
     (ev: PaperEventMsg) => {
       if (!indicatorsRef.current.some((i) => i.type === "trade_signals")) return;
-      if (!paperFillMatchesSymbol(ev, symbol)) return;
-      const marker = tradeMarkerForFill(ev, interval);
+      if (!paperEventMatchesChart(ev, symbol)) return;
+      const marker = tradeMarkerForPaperEvent(ev, interval);
       if (!marker) return;
       tradeSignalsPrimitiveRef.current?.addMarker(marker);
       syncTradeSignalsPrimitive();
@@ -781,8 +787,10 @@ export function CandlestickChart({
 
       if (isAnchoredVwapType(ind.type)) {
         const segments = anchoredVwapSegments(ohlcv, ind.period, interval);
-        segments.forEach((data, segIdx) => {
-          const key = vwapSegmentKey(ind.id, segIdx);
+        segments.forEach((data) => {
+          if (data.length === 0) return;
+          const bucket = sessionBucketOpen(data[0].time as number, interval, ind.period);
+          const key = vwapSegmentKey(ind.id, bucket);
           activeKeys.add(key);
           let line = prev.get(key);
           if (!line) {
@@ -856,6 +864,42 @@ export function CandlestickChart({
     syncMaSeries(chart, indicatorsRef.current);
   }, [syncMaSeries]);
 
+  const updateSessionVwapTail = useCallback(() => {
+    if (!historyReadyRef.current) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const vwapInd = indicatorsRef.current.find(
+      (i) => i.type === "vwap" || i.type === "session_vwap"
+    );
+    if (!vwapInd) return;
+
+    const point = calculateSessionVwapTailPoint(
+      ohlcvBarsRef.current,
+      vwapInd.period,
+      interval
+    );
+    if (!point || point.value === undefined) return;
+
+    const bucket = sessionBucketOpen(point.time as number, interval, vwapInd.period);
+    const key = vwapSegmentKey(vwapInd.id, bucket);
+    const prev = maSeriesRef.current;
+    let line = prev.get(key);
+
+    if (!line) {
+      syncMaSeries(
+        chart,
+        indicatorsRef.current.filter(
+          (i) => i.type === "vwap" || i.type === "session_vwap"
+        )
+      );
+      line = prev.get(key);
+      if (!line) return;
+    }
+
+    line.update(point);
+  }, [interval, syncMaSeries]);
+
   const applyBackendIndicator = useCallback(
     (msg: IndicatorMsg) => {
       if (!historyReadyRef.current) return;
@@ -924,7 +968,6 @@ export function CandlestickChart({
     } else {
       candleSeriesRef.current?.setData(toCandles(data));
     }
-    tradeSignalsPrimitiveRef.current?.refresh();
   }, []);
 
   const updatePriceSeries = useCallback((bar: OhlcvBar) => {
@@ -939,7 +982,6 @@ export function CandlestickChart({
         close: bar.close,
       });
     }
-    tradeSignalsPrimitiveRef.current?.refresh();
   }, []);
 
   const getPriceSeries = useCallback(() => {
@@ -958,6 +1000,11 @@ export function CandlestickChart({
     );
     primitive.setBoundaries(boundaries, next);
   }, []);
+
+  /** Re-anchor the upcoming session line on forming-bar paints (setBoundaries → refresh). */
+  const updateSessionBreakTail = useCallback(() => {
+    updateSessionBreakBoundaries();
+  }, [updateSessionBreakBoundaries]);
 
   const updateSessionHLines = useCallback(() => {
     const primitive = sessionHlinesRef.current;
@@ -1058,6 +1105,29 @@ export function CandlestickChart({
       updateSessionHLines,
     ]
   );
+
+  const liveOpsRef = useRef({
+    updatePriceSeries,
+    refreshMaSeries,
+    updateSessionVwapTail,
+    updateSessionBreakTail,
+    applyLiqBar,
+    applyBackendIndicator,
+    enforceRealtimeWindow,
+    updateSessionBreakBoundaries,
+    updateSessionHLines,
+  });
+  liveOpsRef.current = {
+    updatePriceSeries,
+    refreshMaSeries,
+    updateSessionVwapTail,
+    updateSessionBreakTail,
+    applyLiqBar,
+    applyBackendIndicator,
+    enforceRealtimeWindow,
+    updateSessionBreakBoundaries,
+    updateSessionHLines,
+  };
 
   const loadLiqForOhlcv = useCallback(async () => {
     if (!indicatorsRef.current.some((i) => i.type === "liquidations")) return;
@@ -1235,7 +1305,6 @@ export function CandlestickChart({
     const onVisibleRangeChange = (range: LogicalRange | null) => {
       sessionBreaksRef.current?.refresh();
       sessionHlinesRef.current?.refresh();
-      tradeSignalsPrimitiveRef.current?.refresh();
       if (!historyScrollEnabled || !range || range.from >= LOAD_THRESHOLD) return;
       void loadOlder();
     };
@@ -1387,9 +1456,9 @@ export function CandlestickChart({
     if (!hasTradeSignals) return;
     return subscribe("*", (msg) => {
       if (msg.type !== "paper_event") return;
-      applyPaperTradeFill(msg as PaperEventMsg);
+      applyPaperTradeEvent(msg as PaperEventMsg);
     });
-  }, [hasTradeSignals, subscribe, applyPaperTradeFill]);
+  }, [hasTradeSignals, subscribe, applyPaperTradeEvent]);
 
   useEffect(() => {
     if (!polyPaneActive) return;
@@ -1422,10 +1491,9 @@ export function CandlestickChart({
     void loadLiqForOhlcv();
   }, [hasLiquidations, loadLiqForOhlcv]);
 
-  // Live updates
+  // Live updates — stable subscription; handler reads latest ops via liveOpsRef.
   useEffect(() => {
-    let paintTimer: ReturnType<typeof setTimeout> | null = null;
-    let lastPaintAt = 0;
+    lastPaintAtRef.current = 0;
 
     const mergeBarIntoStore = (bar: OhlcvBar) => {
       const bars = ohlcvBarsRef.current;
@@ -1439,12 +1507,14 @@ export function CandlestickChart({
 
     const paintCandleSeries = (bar: OhlcvBar) => {
       if (!historyReadyRef.current) return;
-      updatePriceSeries(bar);
+      liveOpsRef.current.updatePriceSeries(bar);
     };
 
     const flushTradeCandle = (bar: OhlcvBar) => {
       paintCandleSeries(bar);
-      lastPaintAt = Date.now();
+      liveOpsRef.current.updateSessionVwapTail();
+      liveOpsRef.current.updateSessionBreakTail();
+      lastPaintAtRef.current = Date.now();
     };
 
     const scheduleTradeCandlePaint = (bar: OhlcvBar) => {
@@ -1453,49 +1523,57 @@ export function CandlestickChart({
 
       if (!historyReadyRef.current) return;
 
-      const elapsed = Date.now() - lastPaintAt;
+      const elapsed = Date.now() - lastPaintAtRef.current;
       if (elapsed >= CANDLE_FLUSH_MS) {
-        if (paintTimer) {
-          clearTimeout(paintTimer);
-          paintTimer = null;
+        if (paintTimerRef.current) {
+          clearTimeout(paintTimerRef.current);
+          paintTimerRef.current = null;
         }
         flushTradeCandle(bar);
         return;
       }
 
-      if (paintTimer) return;
-      paintTimer = setTimeout(() => {
-        paintTimer = null;
+      if (paintTimerRef.current) return;
+      paintTimerRef.current = setTimeout(() => {
+        paintTimerRef.current = null;
         const pending = liveBarRef.current;
         if (pending) flushTradeCandle(pending);
       }, CANDLE_FLUSH_MS - elapsed);
     };
 
     const commitOfficialBar = (bar: OhlcvBar) => {
-      if (paintTimer) {
-        clearTimeout(paintTimer);
-        paintTimer = null;
+      if (paintTimerRef.current) {
+        clearTimeout(paintTimerRef.current);
+        paintTimerRef.current = null;
       }
       liveBarRef.current = bar;
       mergeBarIntoStore(bar);
-      const windowTrimmed = isRealtimeOnlyInterval && enforceRealtimeWindow();
+      const ops = liveOpsRef.current;
+      const windowTrimmed = isRealtimeOnlyInterval && ops.enforceRealtimeWindow();
       if (!windowTrimmed) paintCandleSeries(bar);
-      refreshMaSeries();
-      if (indicatorsRef.current.some((i) => i.type === "session_breaks")) {
-        updateSessionBreakBoundaries();
+      if (!isRealtimeOnlyInterval) {
+        ops.refreshMaSeries();
+        if (indicatorsRef.current.some((i) => i.type === "session_breaks")) {
+          ops.updateSessionBreakBoundaries();
+        }
+        if (indicatorsRef.current.some((i) => i.type === "session_hlines")) {
+          ops.updateSessionHLines();
+        }
+      } else if (!windowTrimmed) {
+        ops.updateSessionVwapTail();
+        ops.updateSessionBreakTail();
       }
-      if (indicatorsRef.current.some((i) => i.type === "session_hlines")) {
-        updateSessionHLines();
-      }
-      lastPaintAt = Date.now();
+      lastPaintAtRef.current = Date.now();
     };
 
     const unsub = subscribe(symbol, (msg) => {
+      const ops = liveOpsRef.current;
+
       if (msg.type === "liquidation") {
         const liq = msg as LiquidationMsg;
         const snap = liquidationBarForChart(liq.bars, interval);
         if (snap) {
-          applyLiqBar(snap.time, snap.long, snap.short);
+          ops.applyLiqBar(snap.time, snap.long, snap.short);
         }
         return;
       }
@@ -1517,8 +1595,7 @@ export function CandlestickChart({
       }
 
       if (msg.type === "indicator" && msg.interval === interval) {
-        if (isRealtimeOnlyInterval) return;
-        applyBackendIndicator(msg as IndicatorMsg);
+        ops.applyBackendIndicator(msg as IndicatorMsg);
         return;
       }
 
@@ -1557,22 +1634,11 @@ export function CandlestickChart({
     });
 
     return () => {
-      if (paintTimer) clearTimeout(paintTimer);
+      if (paintTimerRef.current) clearTimeout(paintTimerRef.current);
+      paintTimerRef.current = null;
       unsub();
     };
-  }, [
-    symbol,
-    interval,
-    subscribe,
-    refreshMaSeries,
-    applyLiqBar,
-    updatePriceSeries,
-    isRealtimeOnlyInterval,
-    applyBackendIndicator,
-    enforceRealtimeWindow,
-    updateSessionBreakBoundaries,
-    updateSessionHLines,
-  ]);
+  }, [symbol, interval, subscribe, isRealtimeOnlyInterval]);
 
   // Close menus on outside click
   useEffect(() => {

@@ -77,6 +77,13 @@ export type LiquidationMsg = {
 
 /** Polymarket market context (from ActivePolymarketMarket + Cache instrument). */
 export type PaperMarketFields = {
+  strategy_id?: string;
+  entry_reason?: string;
+  anchor_price?: number;
+  liq_side?: string;
+  liq_notional?: number;
+  liq_threshold?: number;
+  max_entry_price?: number;
   market_label?: string;
   market_slug?: string;
   market_series?: string;
@@ -92,8 +99,11 @@ export type PaperMarketFields = {
 export type PaperSettlementOutcome = "won" | "lost" | "push";
 
 export type PaperPosition = {
+  position_id?: string | null;
   instrument_id: string;
   side: string;
+  run_started_ts?: number;
+  trader_id?: string;
   quantity: number | null;
   avg_px_open: number | null;
   avg_px_close?: number | null;
@@ -101,6 +111,7 @@ export type PaperPosition = {
   realized_pnl: number | null;
   /** Set when a 15m market expires (binary 0/1 settlement). */
   settlement_outcome?: PaperSettlementOutcome | null;
+  close_reason?: string | null;
   opened_ts: number;
   closed_ts?: number;
   duration_s: number;
@@ -125,6 +136,7 @@ export type PaperSnapshotMsg = {
   run: {
     strategy_on: boolean;
     paper: boolean;
+    strategy_id?: string;
     trader_id: string;
     venue: string;
     started_ts: number;
@@ -169,6 +181,9 @@ export type PaperEventMsg = {
   type: "paper_event";
   kind: PaperEventKind;
   ts: number;
+  position_id?: string | null;
+  run_started_ts?: number;
+  trader_id?: string;
   instrument_id: string;
   side?: string;
   quantity?: number | null;
@@ -176,6 +191,7 @@ export type PaperEventMsg = {
   commission?: number | null;
   realized_pnl?: number | null;
   settlement_outcome?: PaperSettlementOutcome | null;
+  close_reason?: string | null;
   duration_s?: number | null;
   opened_ts?: number;
   closed_ts?: number;
@@ -200,28 +216,35 @@ export type PaperEquityPoint = {
 };
 
 export type StrategySignalSymbolState = {
+  last_price: number | null;
+  liq_threshold: number | null;
+  liq_long_trigger: boolean;
+  liq_short_trigger: boolean;
+  active_slug: string | null;
+  yes_instrument_id: string | null;
+  no_instrument_id: string | null;
+  yes_ask: number | null;
+  no_ask: number | null;
+  seconds_to_expiry: number | null;
+  entry_allowed: boolean;
+  market_ready: boolean;
+  decision: "LONG" | "SHORT" | "HOLD";
   vwap: number | null;
   slope: number | null;
   low_zone: number | null;
   high_zone: number | null;
-  close: number | null;
-  vwap_ready: boolean;
-  long_volume: number;
-  short_volume: number;
-  liq_threshold: number | null;
-  liq_long_hit: boolean;
-  liq_short_hit: boolean;
-  liq_long_trigger: boolean;
-  liq_short_trigger: boolean;
-  in_range: boolean;
-  long_zone: boolean;
-  short_zone: boolean;
-  decision: "LONG" | "SHORT" | "HOLD";
+  last_verdict_winner: string | null;
 };
 
 export type StrategySignalSnapshotMsg = {
   type: "strategy_signal_snapshot";
   ts: number;
+  strategy_id: string;
+  trade_enabled: boolean;
+  recovery_exit_pct: number;
+  max_entry_token_price: number;
+  min_seconds_to_expiry_for_entry: number;
+  max_hold_seconds: number;
   symbols: Record<string, StrategySignalSymbolState>;
 };
 

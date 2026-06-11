@@ -139,6 +139,72 @@ def test_maybe_execute_submits_when_ready():
     inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     inst.price_precision = 3
     inst.make_qty.return_value = MagicMock()
+    inst.make_price.return_value = MagicMock()
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    order_factory = MagicMock()
+    order_factory.limit.return_value = MagicMock()
+    patch.object(
+        type(s), "order_factory", new_callable=PropertyMock, return_value=order_factory
+    ).start()
+    s.submit_order = MagicMock()
+
+    s._maybe_execute(SYMBOL, Decision.OPEN)
+
+    s.submit_order.assert_called_once()
+
+
+def test_recalculate_checks_exit_before_vwap_ready_gate():
+    clock = MagicMock()
+    s = _strategy(clock)
+    st = s._states[SYMBOL]
+    st.vwap_ready = False
+    st.slope = None
+    st.low_zone = None
+    st.last_price = 90_180.0
+    s._poly_iid[SYMBOL] = YES
+    s._held_instrument_id[SYMBOL] = YES
+    s._entry_anchor_price[SYMBOL] = 90_000.0
+    s._entry_side[SYMBOL] = "LONG"
+    s._cache_mock.positions_open.return_value = True
+
+    assert s._recalculate(SYMBOL) == Decision.CLOSE
+
+
+def test_exit_decision_long_hits_recovery_threshold():
+    clock = MagicMock()
+    s = _strategy(clock)
+    st = s._states[SYMBOL]
+    st.last_price = 90_200.0
+    s._entry_anchor_price[SYMBOL] = 90_000.0
+    s._entry_side[SYMBOL] = "LONG"
+
+    assert s._exit_decision(SYMBOL, st, YES) == Decision.CLOSE
+
+
+def test_exit_uses_held_instrument_after_poly_rotation():
+    clock = MagicMock()
+    s = _strategy(clock)
+    old_yes = InstrumentId.from_str("0xold-yes.POLYMARKET")
+    new_yes = InstrumentId.from_str("0xnew-yes.POLYMARKET")
+    s._poly_iid[SYMBOL] = new_yes
+    s._held_instrument_id[SYMBOL] = old_yes
+    s._entry_anchor_price[SYMBOL] = 90_000.0
+    s._entry_side[SYMBOL] = "LONG"
+    st = s._states[SYMBOL]
+    st.last_price = 90_200.0
+
+    position = MagicMock(quantity=MagicMock())
+
+    def positions_open(*, instrument_id=None, venue=None):
+        if instrument_id == old_yes:
+            return [position]
+        return []
+
+    s._cache_mock.positions_open.side_effect = positions_open
+    inst = MagicMock()
+    inst.price_precision = 3
+    inst.expiration_ns = 1_000_000_000_000_000
     s._cache_mock.instrument.return_value = inst
     s._cache_mock.quote_tick.return_value = _quote()
     order_factory = MagicMock()
@@ -148,8 +214,32 @@ def test_maybe_execute_submits_when_ready():
     ).start()
     s.submit_order = MagicMock()
 
-    s._maybe_execute(SYMBOL, Decision.OPEN)
+    s._maybe_execute(SYMBOL, Decision.CLOSE)
 
+    assert order_factory.market.call_args.kwargs["instrument_id"] == old_yes
+    s.submit_order.assert_called_once()
+
+
+def test_submit_market_exit_preserves_close_reason_tag():
+    clock = MagicMock()
+    s = _strategy(clock)
+    inst = MagicMock()
+    inst.price_precision = 3
+    s._cache_mock.instrument.return_value = inst
+    s._cache_mock.quote_tick.return_value = _quote()
+    s._cache_mock.positions_open.return_value = [MagicMock(quantity=MagicMock())]
+    order_factory = MagicMock()
+    order_factory.market.return_value = MagicMock()
+    patch.object(
+        type(s), "order_factory", new_callable=PropertyMock, return_value=order_factory
+    ).start()
+    s.submit_order = MagicMock()
+
+    assert s._submit_market_exit(SYMBOL, YES, reason="recovery_exit_0p2") is True
+
+    assert order_factory.market.call_args.kwargs["tags"] == [
+        "ts-exit:reason=recovery_exit_0p2"
+    ]
     s.submit_order.assert_called_once()
 
 
@@ -179,7 +269,12 @@ def test_maybe_execute_skips_when_token_mid_above_max_entry_price():
     inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
     inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     s._cache_mock.instrument.return_value = inst
-    s._cache_mock.quote_tick.return_value = _quote(bid_prec=3, ask_prec=3, bid_value=0.60, ask_value=0.60)
+    s._cache_mock.quote_tick.return_value = _quote(
+        bid_prec=3,
+        ask_prec=3,
+        bid_value=0.40,
+        ask_value=0.60,
+    )
     s.submit_order = MagicMock()
 
     s._maybe_execute(SYMBOL, Decision.OPEN)
@@ -226,10 +321,11 @@ def test_on_instrument_retries_open_when_cache_ready():
     inst.expiration_ns = (1_780_814_700 + 900 + 10) * 1_000_000_000
     inst.info = {"market_slug": "btc-updown-15m-1780814700"}
     inst.make_qty.return_value = MagicMock()
+    inst.make_price.return_value = MagicMock()
     s._cache_mock.instrument.return_value = inst
     s._cache_mock.quote_tick.return_value = _quote()
     order_factory = MagicMock()
-    order_factory.market.return_value = MagicMock()
+    order_factory.limit.return_value = MagicMock()
     patch.object(
         type(s), "order_factory", new_callable=PropertyMock, return_value=order_factory
     ).start()

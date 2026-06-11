@@ -36,7 +36,7 @@ Account-level; **no `symbol`** (broadcast to all clients). Emitted only when
 
 | `type` | Producer | Notes |
 |--------|----------|--------|
-| `strategy_signal_snapshot` | `StrategySignalBridgeActor` | Periodic (default 2s, `STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC`): `symbols` map keyed by Binance perp id |
+| `strategy_signal_snapshot` | `StrategySignalBridgeActor` | Periodic (default 2s, `STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC`): FreshPaper run meta (`strategy_id`, `trade_enabled`, exit/hold limits) + `symbols` map keyed by Binance perp id (Polymarket window, liq triggers, optional VWAP/verdict) |
 
 TypeScript union: `FeedMsg` in `frontend/src/types.ts`.
 

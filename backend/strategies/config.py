@@ -41,7 +41,33 @@ class VwapSignalActorConfig(ActorConfig, frozen=True):
     slope_range_threshold: PositiveFloat = 0.05
 
 
+class FreshPaperStrategyConfig(StrategyConfig, frozen=True):
+    """Config for the clean-slate active paper strategy skeleton."""
+
+    binance_instruments: tuple[str, ...] = ()
+    polymarket_series: tuple[str, ...] = ()
+    strategy_id: str = "fresh_paper"
+    backtest_mode: bool = False
+    recalc_interval_sec: PositiveFloat = 1.0
+    trade_enabled: bool = True
+    trade_size: Decimal = Decimal("10")
+    max_entry_token_price: PositiveFloat = 0.5
+    recovery_exit_pct: PositiveFloat = 0.2
+    min_seconds_to_expiry_for_entry: PositiveInt = 200
+    max_hold_seconds: PositiveInt = 200
+    liq_threshold_btc: PositiveFloat = 10_000.0
+    liq_threshold_eth: PositiveFloat = 10_000.0
+    liq_threshold_sol: PositiveFloat = 5_000.0
+    liq_threshold_xrp: PositiveFloat = 5_000.0
+    liq_threshold_doge: PositiveFloat = 2_500.0
+    use_vwap_input: bool = False
+    use_liquidation_input: bool = True
+    use_verdict_input: bool = False
+
+
 class TerminalSiriusStrategyConfig(StrategyConfig, frozen=True):
+    """Legacy Terminal Sirius paper strategy config."""
+
     binance_instruments: tuple[str, ...]
     polymarket_series: tuple[str, ...]
     backtest_mode: bool = False

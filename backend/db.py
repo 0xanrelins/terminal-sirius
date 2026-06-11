@@ -824,17 +824,47 @@ async def _prune_paper_events() -> None:
     )
 
 
-async def get_paper_events(limit: int) -> list[dict]:
-    """Recent paper-trade events, newest first."""
-    rows = await pool().fetch(
-        """
-        SELECT payload
-        FROM paper_events
-        ORDER BY id DESC
-        LIMIT $1
-        """,
-        limit,
-    )
+async def clear_paper_run_history() -> dict[str, int]:
+    """Drop persisted paper activity/equity from prior backend runs."""
+    events = await pool().execute("DELETE FROM paper_events")
+    equity = await pool().execute("DELETE FROM paper_equity_snapshots")
+
+    def _deleted_count(result: str) -> int:
+        try:
+            return int(str(result).split()[-1])
+        except (AttributeError, IndexError, ValueError):
+            return 0
+
+    return {
+        "events": _deleted_count(events),
+        "equity_points": _deleted_count(equity),
+    }
+
+
+async def get_paper_events(limit: int, run_started_ts: int | None = None) -> list[dict]:
+    """Recent paper-trade events, newest first (optional current-run filter)."""
+    if run_started_ts is not None:
+        rows = await pool().fetch(
+            """
+            SELECT payload
+            FROM paper_events
+            WHERE COALESCE((payload->>'run_started_ts')::bigint, ts) >= $1
+            ORDER BY id DESC
+            LIMIT $2
+            """,
+            run_started_ts,
+            limit,
+        )
+    else:
+        rows = await pool().fetch(
+            """
+            SELECT payload
+            FROM paper_events
+            ORDER BY id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
     out: list[dict] = []
     for r in rows:
         p = r["payload"]

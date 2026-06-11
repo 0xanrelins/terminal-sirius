@@ -31,11 +31,15 @@ from nautilus_trader.model.events import (
     PositionOpened,
 )
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.identifiers import InstrumentId, Venue
+from nautilus_trader.model.identifiers import InstrumentId, PositionId, Venue
 
 from adapters.polymarket.messages import ActivePolymarketMarket
 from adapters.polymarket.rolling import WINDOW_SEC
-from strategy_signal_tags import entry_signal_from_order_tags, parse_entry_signal_tag
+from strategy_signal_tags import (
+    entry_signal_from_order_tags,
+    parse_entry_signal_tag,
+    parse_exit_reason_tag,
+)
 
 if TYPE_CHECKING:
     import multiprocessing
@@ -45,6 +49,7 @@ class PaperTradeMonitorActorConfig(ActorConfig, frozen=True):
     venue: str = "POLYMARKET"
     snapshot_interval_sec: float = 2.0
     paper_trade: bool = True
+    strategy_id: str = "fresh_paper"
 
 
 def _num(value: Any) -> float | None:
@@ -134,6 +139,10 @@ def _settlement_outcome(realized_pnl: float | None) -> str | None:
     return "push"
 
 
+def _settlement_close_reason(realized_pnl: float | None) -> str | None:
+    return "settlement_expiry" if _settlement_outcome(realized_pnl) is not None else None
+
+
 def _money_dict(d: dict | None) -> dict[str, float]:
     """Convert a ``dict[Currency, Money]`` to ``{currency_code: amount}``."""
     if not d:
@@ -159,6 +168,7 @@ class PaperTradeMonitorActor(Actor):
         self._venue = Venue(config.venue)
         self._interval_sec = float(config.snapshot_interval_sec)
         self._paper_trade = bool(config.paper_trade)
+        self._strategy_id = str(config.strategy_id)
         self._started_ns: int = 0
         self._fills_count: int = 0
         # instrument_id str → market metadata (from ActivePolymarketMarket bus)
@@ -239,12 +249,21 @@ class PaperTradeMonitorActor(Actor):
         parts = [p for p in (label, outcome, window) if p]
         return " · ".join(parts) if parts else "—"
 
+    def _parsed_float(self, parsed: dict[str, str], key: str) -> float | None:
+        raw = parsed.get(key)
+        if raw in (None, "", "-"):
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
     def _market_context(
         self,
         instrument_id: InstrumentId | str,
         *,
         order_tags: Any = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         iid = str(instrument_id)
         meta = dict(self._iid_meta.get(iid, {}))
         inst = self.cache.instrument(InstrumentId.from_str(iid) if isinstance(instrument_id, str) else instrument_id)
@@ -253,10 +272,27 @@ class PaperTradeMonitorActor(Actor):
             if desc and not meta.get("market_question"):
                 meta["market_question"] = str(desc)
         parsed = parse_entry_signal_tag(order_tags)
-        if parsed and parsed.get("sym"):
-            meta["underlying"] = parsed["sym"]
-        if parsed and parsed.get("dir") in ("LONG", "SHORT"):
-            meta["underlying_direction"] = parsed["dir"]
+        if parsed and parsed.get("strategy_id"):
+            meta["strategy_id"] = parsed["strategy_id"]
+        if parsed and (parsed.get("symbol") or parsed.get("sym")):
+            meta["underlying"] = parsed.get("symbol") or parsed["sym"]
+        direction = parsed.get("direction") or parsed.get("dir") if parsed else None
+        if direction in ("LONG", "SHORT"):
+            meta["underlying_direction"] = direction
+        if parsed:
+            if parsed.get("reason"):
+                meta["entry_reason"] = parsed["reason"]
+            if parsed.get("liq_side"):
+                meta["liq_side"] = parsed["liq_side"]
+            for src_key, out_key in (
+                ("anchor", "anchor_price"),
+                ("notional", "liq_notional"),
+                ("threshold", "liq_threshold"),
+                ("max_px", "max_entry_price"),
+            ):
+                value = self._parsed_float(parsed, src_key)
+                if value is not None:
+                    meta[out_key] = value
         window = self._resolve_market_window(meta)
         if window:
             meta["market_window"] = window
@@ -279,6 +315,7 @@ class PaperTradeMonitorActor(Actor):
             "run": {
                 "strategy_on": True,
                 "paper": self._paper_trade,
+                "strategy_id": self._strategy_id,
                 "trader_id": str(self.trader_id),
                 "venue": str(self._venue),
                 "started_ts": self._started_ns,
@@ -329,7 +366,7 @@ class PaperTradeMonitorActor(Actor):
             "net": net_exposure.get(currency) if currency else None,
             "net_all": net_exposure,
         }
-        closed = list(self.cache.positions_closed(venue=self._venue))
+        closed = self._positions_closed_this_run()
         snapshot["positions"] = self._open_positions(now_ns)
         snapshot["closed_positions"] = self._closed_positions(closed)
         snapshot["orders"] = self._open_orders()
@@ -349,6 +386,26 @@ class PaperTradeMonitorActor(Actor):
                 return next(iter(source.keys()))
         return None
 
+    def _run_meta(self) -> dict[str, int | str]:
+        return {
+            "run_started_ts": self._started_ns,
+            "trader_id": str(self.trader_id),
+        }
+
+    def _position_id_str(self, position_id: PositionId | None) -> str | None:
+        if position_id is None:
+            return None
+        return str(position_id)
+
+    def _positions_closed_this_run(self) -> list:
+        """Closed positions since this actor started (current paper run)."""
+        out: list = []
+        for pos in self.cache.positions_closed(venue=self._venue):
+            ts_closed = int(getattr(pos, "ts_closed", 0) or 0)
+            if ts_closed >= self._started_ns:
+                out.append(pos)
+        return out
+
     def _open_positions(self, now_ns: int) -> list[dict]:
         out: list[dict] = []
         for pos in self.cache.positions_open(venue=self._venue):
@@ -366,6 +423,7 @@ class PaperTradeMonitorActor(Actor):
             unrealized = self.portfolio.unrealized_pnl(pos.instrument_id)
             out.append(
                 {
+                    "position_id": self._position_id_str(pos.id),
                     "instrument_id": str(pos.instrument_id),
                     "side": pos.side.name,
                     "quantity": qty,
@@ -374,7 +432,11 @@ class PaperTradeMonitorActor(Actor):
                     "realized_pnl": _num(pos.realized_pnl),
                     "opened_ts": ts_opened,
                     "duration_s": max(0.0, (now_ns - ts_opened) / 1e9),
-                    **self._market_context(pos.instrument_id),
+                    **self._run_meta(),
+                    **self._market_context(
+                        pos.instrument_id,
+                        order_tags=self._entry_tags_for_position(pos.id),
+                    ),
                 }
             )
         return out
@@ -388,8 +450,13 @@ class PaperTradeMonitorActor(Actor):
             ts_opened = int(getattr(pos, "ts_opened", 0) or 0)
             duration_ns = int(getattr(pos, "duration_ns", 0) or 0)
             rpnl = _num(pos.realized_pnl)
+            close_reason = (
+                self._close_reason_for_position(pos.id)
+                or _settlement_close_reason(rpnl)
+            )
             out.append(
                 {
+                    "position_id": self._position_id_str(pos.id),
                     "instrument_id": str(pos.instrument_id),
                     "side": getattr(getattr(pos, "side", None), "name", ""),
                     "quantity": _num(pos.peak_qty) or _num(pos.quantity),
@@ -401,7 +468,12 @@ class PaperTradeMonitorActor(Actor):
                     "opened_ts": ts_opened,
                     "closed_ts": ts_closed,
                     "duration_s": max(0.0, duration_ns / 1e9),
-                    **self._market_context(pos.instrument_id),
+                    "close_reason": close_reason,
+                    **self._run_meta(),
+                    **self._market_context(
+                        pos.instrument_id,
+                        order_tags=self._entry_tags_for_position(pos.id),
+                    ),
                 }
             )
         return out
@@ -479,10 +551,12 @@ class PaperTradeMonitorActor(Actor):
             display, tooltip = self._entry_signal_for_order(event.client_order_id)
             order = self.cache.order(event.client_order_id)
             tags = order.tags if order is not None else None
+            close_reason = parse_exit_reason_tag(tags)
             return {
                 "type": "paper_event",
                 "kind": "fill",
                 "ts": int(event.ts_event),
+                "position_id": self._position_id_str(event.position_id),
                 "instrument_id": str(event.instrument_id),
                 "side": event.order_side.name,
                 "quantity": _num(event.last_qty),
@@ -491,6 +565,8 @@ class PaperTradeMonitorActor(Actor):
                 "client_order_id": str(event.client_order_id),
                 "entry_signal": display,
                 "entry_signal_tooltip": tooltip,
+                "close_reason": close_reason,
+                **self._run_meta(),
                 **self._market_context(event.instrument_id, order_tags=tags),
             }
         if isinstance(event, OrderRejected):
@@ -502,6 +578,7 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "client_order_id": str(event.client_order_id),
                 "reason": str(event.reason),
+                **self._run_meta(),
                 **self._market_context(
                     event.instrument_id,
                     order_tags=order.tags if order is not None else None,
@@ -516,6 +593,7 @@ class PaperTradeMonitorActor(Actor):
                 "instrument_id": str(event.instrument_id),
                 "client_order_id": str(event.client_order_id),
                 "reason": str(event.reason),
+                **self._run_meta(),
                 **self._market_context(
                     event.instrument_id,
                     order_tags=order.tags if order is not None else None,
@@ -529,19 +607,26 @@ class PaperTradeMonitorActor(Actor):
                 "type": "paper_event",
                 "kind": "position_open",
                 "ts": int(event.ts_event),
+                "position_id": self._position_id_str(event.position_id),
                 "instrument_id": str(event.instrument_id),
                 "side": event.side.name,
                 "quantity": _num(event.quantity),
                 "price": _num(event.avg_px_open),
-                **self._market_context(event.instrument_id),
+                **self._run_meta(),
+                **self._market_context(
+                    event.instrument_id,
+                    order_tags=self._entry_tags_for_position(event.position_id),
+                ),
             }
         if isinstance(event, PositionClosed):
             duration_ns = int(getattr(event, "duration_ns", 0) or 0)
             rpnl = _num(event.realized_pnl)
+            close_reason = self._recent_close_reason(event) or _settlement_close_reason(rpnl)
             return {
                 "type": "paper_event",
                 "kind": "position_close",
                 "ts": int(event.ts_event),
+                "position_id": self._position_id_str(event.position_id),
                 "instrument_id": str(event.instrument_id),
                 "quantity": _num(event.peak_qty),
                 "price": _num(event.avg_px_close),
@@ -550,16 +635,23 @@ class PaperTradeMonitorActor(Actor):
                 "duration_s": max(0.0, duration_ns / 1e9),
                 "opened_ts": int(getattr(event, "ts_opened", 0) or 0),
                 "closed_ts": int(getattr(event, "ts_closed", 0) or 0),
-                **self._market_context(event.instrument_id),
+                "close_reason": close_reason,
+                **self._run_meta(),
+                **self._market_context(
+                    event.instrument_id,
+                    order_tags=self._entry_tags_for_position(event.position_id),
+                ),
             }
         if isinstance(event, PositionChanged):
             return {
                 "type": "paper_event",
                 "kind": "position_change",
                 "ts": int(event.ts_event),
+                "position_id": self._position_id_str(event.position_id),
                 "instrument_id": str(event.instrument_id),
                 "quantity": _num(event.quantity),
                 "realized_pnl": _num(event.realized_pnl),
+                **self._run_meta(),
                 **self._market_context(event.instrument_id),
             }
         return None
@@ -568,3 +660,32 @@ class PaperTradeMonitorActor(Actor):
         order = self.cache.order(client_order_id)
         tags = order.tags if order is not None else None
         return entry_signal_from_order_tags(tags)
+
+    def _entry_tags_for_position(self, position_id: PositionId | None) -> Any:
+        """Opening BUY tags via native ``Cache.orders_for_position``."""
+        if position_id is None:
+            return None
+        for order in self.cache.orders_for_position(position_id):
+            side = getattr(getattr(order, "side", None), "name", "")
+            if side != "BUY":
+                continue
+            tags = getattr(order, "tags", None)
+            if parse_entry_signal_tag(tags):
+                return tags
+        return None
+
+    def _recent_close_reason(self, event: PositionClosed) -> str | None:
+        return self._close_reason_for_position(event.position_id)
+
+    def _close_reason_for_position(self, position_id: PositionId | None) -> str | None:
+        """Exit reason from SELL orders linked to this position (HEDGING-safe)."""
+        if position_id is None:
+            return None
+        for order in reversed(self.cache.orders_for_position(position_id)):
+            side = getattr(getattr(order, "side", None), "name", "")
+            if side != "SELL":
+                continue
+            reason = parse_exit_reason_tag(getattr(order, "tags", None))
+            if reason:
+                return reason
+        return None

@@ -6,6 +6,7 @@ import os
 from decimal import Decimal
 
 from strategies.config import (
+    FreshPaperStrategyConfig,
     LiquidationSignalActorConfig,
     LiquidationVerdictActorConfig,
     TerminalSiriusStrategyConfig,
@@ -126,6 +127,35 @@ def build_terminal_sirius_config(
     )
 
 
+def build_fresh_paper_strategy_config(
+    *,
+    binance_instruments: tuple[str, ...],
+    polymarket_series: tuple[str, ...],
+) -> FreshPaperStrategyConfig:
+    return FreshPaperStrategyConfig(
+        binance_instruments=binance_instruments,
+        polymarket_series=polymarket_series,
+        strategy_id=os.environ.get("PAPER_STRATEGY_ID", "fresh_paper").strip() or "fresh_paper",
+        recalc_interval_sec=_env_float("PAPER_STRATEGY_RECALC_INTERVAL_SEC", 1.0),
+        trade_enabled=_env_bool("PAPER_STRATEGY_TRADE_ENABLED", True),
+        trade_size=_env_decimal("PAPER_STRATEGY_TRADE_SIZE", "10"),
+        max_entry_token_price=_env_float("PAPER_STRATEGY_MAX_ENTRY_TOKEN_PRICE", 0.5),
+        recovery_exit_pct=_env_float("PAPER_STRATEGY_RECOVERY_EXIT_PCT", 0.2),
+        min_seconds_to_expiry_for_entry=_env_int(
+            "PAPER_STRATEGY_MIN_SECONDS_TO_EXPIRY_FOR_ENTRY", 200
+        ),
+        max_hold_seconds=_env_int("PAPER_STRATEGY_MAX_HOLD_SECONDS", 200),
+        liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 10_000.0),
+        liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 10_000.0),
+        liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 5_000.0),
+        liq_threshold_xrp=_env_float("LIQ_THRESHOLD_XRP", 5_000.0),
+        liq_threshold_doge=_env_float("LIQ_THRESHOLD_DOGE", 2_500.0),
+        use_vwap_input=_env_bool("PAPER_STRATEGY_USE_VWAP_INPUT", False),
+        use_liquidation_input=_env_bool("PAPER_STRATEGY_USE_LIQUIDATION_INPUT", True),
+        use_verdict_input=_env_bool("PAPER_STRATEGY_USE_VERDICT_INPUT", False),
+    )
+
+
 def build_strategy_signal_bridge_config(
     *,
     component_id: str,
@@ -136,11 +166,20 @@ def build_strategy_signal_bridge_config(
     return StrategySignalBridgeActorConfig(
         component_id=component_id,
         instrument_ids=instrument_ids,
-        slope_range_threshold=_env_float("STRATEGY_SLOPE_RANGE_THRESHOLD", 0.05),
+        strategy_id=os.environ.get("PAPER_STRATEGY_ID", "fresh_paper").strip() or "fresh_paper",
+        trade_enabled=_env_bool("PAPER_STRATEGY_TRADE_ENABLED", True),
+        recovery_exit_pct=_env_float("PAPER_STRATEGY_RECOVERY_EXIT_PCT", 0.2),
+        max_entry_token_price=_env_float("PAPER_STRATEGY_MAX_ENTRY_TOKEN_PRICE", 0.5),
+        min_seconds_to_expiry_for_entry=_env_int(
+            "PAPER_STRATEGY_MIN_SECONDS_TO_EXPIRY_FOR_ENTRY", 200
+        ),
+        max_hold_seconds=_env_int("PAPER_STRATEGY_MAX_HOLD_SECONDS", 200),
         snapshot_interval_sec=_env_float(
             "STRATEGY_SIGNAL_SNAPSHOT_INTERVAL_SEC",
             _env_float("PAPER_SNAPSHOT_INTERVAL_SEC", 2.0),
         ),
+        use_vwap_input=_env_bool("PAPER_STRATEGY_USE_VWAP_INPUT", False),
+        use_verdict_input=_env_bool("PAPER_STRATEGY_USE_VERDICT_INPUT", False),
         liq_threshold_btc=_env_float("LIQ_THRESHOLD_BTC", 10_000.0),
         liq_threshold_eth=_env_float("LIQ_THRESHOLD_ETH", 10_000.0),
         liq_threshold_sol=_env_float("LIQ_THRESHOLD_SOL", 5_000.0),
@@ -166,4 +205,12 @@ def log_strategy_env_summary() -> None:
         f"min_tte_entry={_env_int('STRATEGY_MIN_SECONDS_TO_EXPIRY_FOR_ENTRY', 250)}s "
         f"trade_size={_env_decimal('STRATEGY_TRADE_SIZE', '10')} "
         f"warm-up≈{_env_int('STRATEGY_BAR_PERIOD', 900)}s"
+    )
+    print(
+        "[strategy] active=fresh_paper "
+        f"paper_strategy_id={os.environ.get('PAPER_STRATEGY_ID', 'fresh_paper').strip() or 'fresh_paper'} "
+        f"trade_enabled={_env_bool('PAPER_STRATEGY_TRADE_ENABLED', True)} "
+        f"fresh_trade_size={_env_decimal('PAPER_STRATEGY_TRADE_SIZE', '10')} shares "
+        f"fresh_max_entry={_env_float('PAPER_STRATEGY_MAX_ENTRY_TOKEN_PRICE', 0.5):.4f} "
+        f"fresh_recovery_exit={_env_float('PAPER_STRATEGY_RECOVERY_EXIT_PCT', 0.2):.4f}%"
     )

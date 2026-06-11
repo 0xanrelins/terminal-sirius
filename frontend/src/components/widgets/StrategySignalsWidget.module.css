@@ -13,12 +13,32 @@
 
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid #2a2a35;
   flex: 0 0 auto;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.meta {
+  font-size: 11px;
+  color: #8b909c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dim {
+  color: #5c6370;
+  margin: 0 3px;
 }
 
 .title {

@@ -8,37 +8,43 @@ import {
   type PrimitivePaneViewZOrder,
   type SeriesAttachedParameter,
   type SeriesType,
-  type UTCTimestamp,
 } from "lightweight-charts";
 import { coordinateForTime } from "./dailySessionBreaks";
-import { TRADE_LONG_COLOR, TRADE_SHORT_COLOR, type TradeSignalMarker } from "./tradeSignalMarkers";
+import {
+  TRADE_EXIT_COLOR,
+  TRADE_LONG_COLOR,
+  TRADE_SHORT_COLOR,
+  type TradeSignalMarker,
+} from "./tradeSignalMarkers";
 
 type MappedMarker = {
   x: number | null;
   y: number | null;
   direction: TradeSignalMarker["direction"];
+  action: TradeSignalMarker["action"];
 };
 
 const ARROW_PX = 11;
 const LONG_OFFSET_PX = 14;
 const SHORT_OFFSET_PX = 14;
+const STACK_STEP_PX = 12;
 
-function candleAtTime(
-  series: ISeriesApi<SeriesType>,
-  time: UTCTimestamp
-): { high: number; low: number } | null {
+type BarHighLow = { high: number; low: number };
+
+function buildBarIndex(
+  series: ISeriesApi<SeriesType>
+): Map<number, BarHighLow> {
+  const index = new Map<number, BarHighLow>();
   for (const bar of series.data()) {
-    if (bar.time !== time) continue;
+    const t = bar.time as number;
     if ("high" in bar && "low" in bar) {
-      return { high: bar.high as number, low: bar.low as number };
-    }
-    if ("value" in bar) {
+      index.set(t, { high: bar.high as number, low: bar.low as number });
+    } else if ("value" in bar) {
       const v = bar.value as number;
-      return { high: v, low: v };
+      index.set(t, { high: v, low: v });
     }
-    return null;
   }
-  return null;
+  return index;
 }
 
 function drawArrowUp(
@@ -73,6 +79,16 @@ function drawArrowDown(
   ctx.fill();
 }
 
+function markerColor(m: MappedMarker): string {
+  if (m.action === "exit") return TRADE_EXIT_COLOR;
+  return m.direction === "LONG" ? TRADE_LONG_COLOR : TRADE_SHORT_COLOR;
+}
+
+function markerPointsUp(m: MappedMarker): boolean {
+  if (m.action === "exit") return m.direction === "SHORT";
+  return m.direction === "LONG";
+}
+
 class TradeSignalMarkersRenderer implements IPrimitivePaneRenderer {
   constructor(private _mapped: MappedMarker[]) {}
 
@@ -89,10 +105,11 @@ class TradeSignalMarkersRenderer implements IPrimitivePaneRenderer {
         if (m.x === null || m.y === null) continue;
         const x = Math.round(m.x * hr);
         const y = Math.round(m.y * vr);
-        if (m.direction === "LONG") {
-          drawArrowUp(ctx, x, y, TRADE_LONG_COLOR, arrow);
+        const color = markerColor(m);
+        if (markerPointsUp(m)) {
+          drawArrowUp(ctx, x, y, color, arrow);
         } else {
-          drawArrowDown(ctx, x, y, TRADE_SHORT_COLOR, arrow);
+          drawArrowDown(ctx, x, y, color, arrow);
         }
       }
     });
@@ -119,17 +136,29 @@ class TradeSignalMarkersPaneView implements IPrimitivePaneView {
     }
 
     const timeScale = chart.timeScale();
+    const barIndex = buildBarIndex(series);
+    const byTime = new Map<number, TradeSignalMarker[]>();
+    for (const m of this._source.markers) {
+      const t = m.time as number;
+      const group = byTime.get(t);
+      if (group) group.push(m);
+      else byTime.set(t, [m]);
+    }
+
     this._mapped = this._source.markers.map((m) => {
-      const x = coordinateForTime(timeScale, series, m.time);
-      const candle = candleAtTime(series, m.time);
-      if (x === null || candle === null) {
-        return { x, y: null, direction: m.direction };
+      const group = byTime.get(m.time as number) ?? [m];
+      const center = (group.length - 1) / 2;
+      const xBase = coordinateForTime(timeScale, series, m.time);
+      const candle = barIndex.get(m.time as number) ?? null;
+      if (xBase === null || candle === null) {
+        return { x: xBase, y: null, direction: m.direction, action: m.action };
       }
+      const x = xBase + (m.stackIndex - center) * STACK_STEP_PX;
       const y =
         m.direction === "LONG"
           ? series.priceToCoordinate(candle.low)! + LONG_OFFSET_PX
           : series.priceToCoordinate(candle.high)! - SHORT_OFFSET_PX;
-      return { x, y, direction: m.direction };
+      return { x, y, direction: m.direction, action: m.action };
     });
     this._renderer = new TradeSignalMarkersRenderer(this._mapped);
   }
@@ -139,13 +168,17 @@ class TradeSignalMarkersPaneView implements IPrimitivePaneView {
   }
 }
 
-/** Canvas arrows for paper-trade entry fills (ISeriesPrimitive). */
+/** Canvas arrows for paper-trade entry/exit events (ISeriesPrimitive). */
 export class TradeSignalMarkersPrimitive implements ISeriesPrimitive {
   private _chart: IChartApi | null = null;
   private _series: ISeriesApi<SeriesType> | null = null;
   private _markers: TradeSignalMarker[] = [];
+  private _markerTimes = new Set<number>();
   private _paneView: TradeSignalMarkersPaneView;
   private _requestUpdate: (() => void) | null = null;
+  private _cachedFirstTime: number | null = null;
+  private _cachedLastTime: number | null = null;
+  private _cachedLength = 0;
 
   constructor() {
     this._paneView = new TradeSignalMarkersPaneView(this);
@@ -167,34 +200,81 @@ export class TradeSignalMarkersPrimitive implements ISeriesPrimitive {
     this._chart = param.chart;
     this._series = param.series;
     this._requestUpdate = param.requestUpdate;
-    this.refresh();
+    this._series.subscribeDataChanged(this._onDataChanged);
+    this._resetDataCache();
+    this.updateAllViews();
+    this._requestUpdate?.();
   }
 
   detached(): void {
+    this._series?.unsubscribeDataChanged(this._onDataChanged);
     this._chart = null;
     this._series = null;
     this._requestUpdate = null;
+    this._resetDataCache();
   }
 
   addMarker(marker: TradeSignalMarker): void {
     if (this._markers.some((m) => m.id === marker.id)) return;
-    this._markers = [...this._markers, marker].sort(
+    const stackIndex = this._markers.filter((m) => m.time === marker.time).length;
+    this._markers = [...this._markers, { ...marker, stackIndex }].sort(
       (a, b) => (a.time as number) - (b.time as number)
     );
+    this._markerTimes.add(marker.time as number);
     this.refresh();
   }
 
   clearMarkers(): void {
     this._markers = [];
+    this._markerTimes.clear();
     this.refresh();
   }
 
-  refresh(): void {
+  /** Library lifecycle — remap coordinates before each draw pass. */
+  updateAllViews(): void {
     this._paneView.update();
+  }
+
+  /** Marker set changed or series window shifted — schedule a redraw. */
+  refresh(): void {
+    this.updateAllViews();
     this._requestUpdate?.();
   }
 
   paneViews(): readonly IPrimitivePaneView[] {
     return [this._paneView];
   }
+
+  private _resetDataCache(): void {
+    this._cachedFirstTime = null;
+    this._cachedLastTime = null;
+    this._cachedLength = 0;
+  }
+
+  /** ISeriesApi.subscribeDataChanged — repaint when marker bars or series shape changes. */
+  private _onDataChanged = (): void => {
+    if (this._markers.length === 0) return;
+    const series = this._series;
+    if (!series) return;
+
+    const data = series.data();
+    if (data.length === 0) return;
+
+    const firstT = data[0].time as number;
+    const lastT = data[data.length - 1].time as number;
+    const len = data.length;
+
+    const structureChanged =
+      this._cachedLength !== len ||
+      this._cachedFirstTime !== firstT ||
+      this._cachedLastTime !== lastT;
+
+    this._cachedFirstTime = firstT;
+    this._cachedLastTime = lastT;
+    this._cachedLength = len;
+
+    if (structureChanged || this._markerTimes.has(lastT)) {
+      this.refresh();
+    }
+  };
 }

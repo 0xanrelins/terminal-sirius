@@ -1,5 +1,5 @@
 """
-Build ``BacktestRunConfig`` for Terminal Sirius from ParquetDataCatalog.
+Build ``BacktestRunConfig`` for the active paper strategy from ParquetDataCatalog.
 
 Uses native ``BacktestDataConfig``, ``BacktestVenueConfig``, ``ImportableActorConfig``.
 """
@@ -125,20 +125,23 @@ def build_terminal_sirius_run_config(
     if include_strategy:
         strategies.append(
             ImportableStrategyConfig(
-                strategy_path="strategies.terminal_sirius_strategy:TerminalSiriusStrategy",
-                config_path="strategies.config:TerminalSiriusStrategyConfig",
+                strategy_path="strategies.fresh_paper_strategy:FreshPaperStrategy",
+                config_path="strategies.config:FreshPaperStrategyConfig",
                 config={
                     "binance_instruments": list(binance_instruments),
                     "polymarket_series": list(BINANCE_TO_POLY_SERIES.values()),
+                    "strategy_id": "fresh_paper_backtest",
                     "backtest_mode": True,
-                    "use_verdict_triggers": False,
-                    "use_rolling_liq_triggers": True,
+                    "trade_enabled": False,
+                    "use_vwap_input": False,
+                    "use_liquidation_input": True,
+                    "use_verdict_input": False,
                 },
             ),
         )
 
     engine = BacktestEngineConfig(
-        trader_id=TraderId("TERMINAL-SIRIUS-BT-001"),
+        trader_id=TraderId("FRESH-PAPER-BT-001"),
         logging=LoggingConfig(log_level=log_level),
         catalogs=[DataCatalogConfig(path=path)],
         actors=actors,

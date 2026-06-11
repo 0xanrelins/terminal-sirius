@@ -20,6 +20,12 @@ import type {
   PaperMarketFields,
   PaperSnapshotMsg,
 } from "../../types";
+import {
+  closeReasonLabel,
+  isRecoveryExitReason,
+  isSettlementCloseReason,
+} from "../../lib/paperCloseReason";
+import { paperEventInRun, paperPositionRowKey } from "../../lib/paperRun";
 import styles from "./PaperTradeDashboard.module.css";
 
 type Props = {
@@ -74,6 +80,11 @@ function fmtDuration(seconds: number): string {
   return `${sec}s`;
 }
 
+function fmtAgeSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  return `${Math.floor(seconds)}s`;
+}
+
 function fmtClock(tsNs: number): string {
   const d = new Date(tsNs / 1e6);
   return d.toLocaleTimeString(undefined, { hour12: false });
@@ -112,6 +123,12 @@ function settlementClass(outcome: string | null | undefined): string {
   return "";
 }
 
+function closeReasonClass(reason: string | null | undefined): string {
+  if (isRecoveryExitReason(reason)) return styles.reasonRecovery;
+  if (isSettlementCloseReason(reason)) return styles.reasonSettlement;
+  return "";
+}
+
 const KIND_LABEL: Record<string, string> = {
   fill: "FILL",
   position_open: "OPEN",
@@ -136,12 +153,29 @@ function marketTitle(row: PaperMarketFields & { instrument_id: string }): string
 
 function marketTooltip(row: PaperMarketFields & { instrument_id: string }): string {
   const parts: string[] = [];
+  if (row.strategy_id) parts.push(`strategy: ${row.strategy_id}`);
+  if (row.entry_reason) parts.push(`entry: ${row.entry_reason}`);
+  if (row.anchor_price !== undefined) parts.push(`anchor: ${fmtNum(row.anchor_price, 4)}`);
+  if (row.liq_notional !== undefined) parts.push(`liq: ${fmtMoney(row.liq_notional)}`);
+  if (row.liq_threshold !== undefined) parts.push(`threshold: ${fmtMoney(row.liq_threshold)}`);
+  if (row.max_entry_price !== undefined) parts.push(`max entry: ${fmtNum(row.max_entry_price, 4)}`);
   if (row.market_question) parts.push(row.market_question);
   else if (row.market_window) parts.push(row.market_window);
   if (row.market_slug) parts.push(`slug: ${row.market_slug}`);
   if (row.underlying) parts.push(`underlying: ${row.underlying}`);
   parts.push(row.instrument_id);
   return parts.join("\n");
+}
+
+function entryContextLabel(row: PaperMarketFields): string {
+  if (!row.entry_reason && row.anchor_price === undefined && row.liq_notional === undefined) {
+    return "—";
+  }
+  const parts: string[] = [];
+  if (row.underlying_direction) parts.push(row.underlying_direction);
+  if (row.liq_notional !== undefined) parts.push(`liq ${fmtMoney(row.liq_notional)}`);
+  if (row.anchor_price !== undefined) parts.push(`a ${fmtNum(row.anchor_price, 2)}`);
+  return parts.join(" · ") || row.entry_reason || "—";
 }
 
 export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: Props) {
@@ -156,6 +190,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const curveRef = useRef<Map<number, number>>(new Map());
   const metricRef = useRef(curveMetric);
+  const runStartedRef = useRef<number | null>(null);
   metricRef.current = curveMetric;
 
   // ── chart init ──────────────────────────────────────────────────────────
@@ -239,15 +274,20 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
     }
   };
 
-  // ── seed from REST ──────────────────────────────────────────────────────
+  const runStartedTs = snapshot?.run?.started_ts ?? null;
+  runStartedRef.current = runStartedTs;
+
+  // ── seed from REST (re-fetch activity when current run is known) ─────────
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [eqRes, evRes] = await Promise.all([
-          fetch("/paper/equity?limit=5000"),
-          fetch("/paper/events?limit=200"),
-        ]);
+        const eqUrl = "/paper/equity?limit=5000";
+        const evUrl =
+          runStartedTs != null
+            ? `/paper/events?limit=200&run_started_ts=${runStartedTs}`
+            : "/paper/events?limit=200";
+        const [eqRes, evRes] = await Promise.all([fetch(eqUrl), fetch(evUrl)]);
         if (cancelled) return;
         if (eqRes.ok) {
           const pts: PaperEquityPoint[] = await eqRes.json();
@@ -262,9 +302,11 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
         }
         if (evRes.ok) {
           const evs: PaperEventMsg[] = await evRes.json();
-          setEvents(
-            evs.map((e, i) => ({ ...e, _id: `seed-${e.ts}-${i}` })).slice(0, MAX_FEED_ROWS)
-          );
+          const seeded = evs
+            .filter((e) => paperEventInRun(e, runStartedTs))
+            .map((e, i) => ({ ...e, _id: `seed-${e.ts}-${i}` }))
+            .slice(0, MAX_FEED_ROWS);
+          setEvents(seeded);
         }
       } catch {
         // best-effort seed; live WS will fill in
@@ -273,13 +315,14 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runStartedTs]);
 
   // ── live WS (account-level messages carry no symbol → subscribe "*") ──────
   useEffect(() => {
     return subscribe("*", (msg) => {
       if (msg.type === "paper_snapshot") {
         const snap = msg as PaperSnapshotMsg;
+        runStartedRef.current = snap.run?.started_ts ?? null;
         setSnapshot(snap);
         setLastSnapshotMs(Date.now());
         const value =
@@ -289,11 +332,13 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
         pushCurvePoint(snap.ts, value);
       } else if (msg.type === "paper_event") {
         const ev = msg as PaperEventMsg;
+        const runTs = ev.run_started_ts ?? runStartedRef.current;
+        if (!paperEventInRun(ev, runTs)) return;
         setEvents((prev) =>
-          [{ ...ev, _id: `${ev.ts}-${Math.random().toString(36).slice(2, 7)}` }, ...prev].slice(
-            0,
-            MAX_FEED_ROWS
-          )
+          [
+            { ...ev, _id: `${ev.position_id ?? ev.ts}-${Math.random().toString(36).slice(2, 7)}` },
+            ...prev.filter((row) => paperEventInRun(row, runTs)),
+          ].slice(0, MAX_FEED_ROWS)
         );
       }
     });
@@ -347,6 +392,10 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
   const positions = snapshot?.positions ?? [];
   const closedPositions = snapshot?.closed_positions ?? [];
   const counts = snapshot?.counts;
+  const visibleEvents = useMemo(
+    () => events.filter((e) => paperEventInRun(e, runStartedTs)),
+    [events, runStartedTs],
+  );
   const layoutStorage = typeof window !== "undefined" ? window.localStorage : undefined;
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: PANEL_STORAGE_KEY,
@@ -368,6 +417,8 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
         <div className={styles.headerMeta}>
           {snapshot?.run?.paper === false && <span className={styles.liveTag}>LIVE EXEC</span>}
           <span>{snapshot?.run?.venue ?? "—"}</span>
+          <span className={styles.dim}>·</span>
+          <span>{snapshot?.run?.strategy_id ?? "fresh_paper"}</span>
           <span className={styles.dim}>·</span>
           <span title={snapshot?.run?.trader_id}>
             {snapshot?.run?.trader_id ?? "—"}
@@ -459,6 +510,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                     <col className={styles.colSideOpen} />
                     <col className={styles.colQtyOpen} />
                     <col className={styles.colAvgOpen} />
+                    <col className={styles.colEntryOpen} />
                     <col className={styles.colUpnlOpen} />
                     <col className={styles.colAgeOpen} />
                   </colgroup>
@@ -468,6 +520,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                       <th>Side</th>
                       <th className={styles.right}>Qty</th>
                       <th className={styles.right}>Avg</th>
+                      <th>Entry</th>
                       <th className={styles.right}>uPnL</th>
                       <th className={styles.right}>Age</th>
                     </tr>
@@ -481,7 +534,7 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                       </tr>
                     )}
                     {positions.map((p) => (
-                      <tr key={p.instrument_id}>
+                      <tr key={paperPositionRowKey(p)}>
                         <td className={styles.marketCell} title={marketTooltip(p)}>
                           {marketTitle(p)}
                         </td>
@@ -492,10 +545,11 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                         </td>
                         <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
                         <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
+                        <td title={marketTooltip(p)}>{entryContextLabel(p)}</td>
                         <td className={`${styles.right} ${pnlClass(p.unrealized_pnl)}`}>
                           {fmtSignedMoney(p.unrealized_pnl)}
                         </td>
-                        <td className={styles.right}>{fmtDuration(p.duration_s)}</td>
+                        <td className={styles.right}>{fmtAgeSeconds(p.duration_s)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -518,7 +572,9 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                     <col className={styles.colQtyClosed} />
                     <col className={styles.colOpenClosed} />
                     <col className={styles.colCloseClosed} />
+                    <col className={styles.colEntryClosed} />
                     <col className={styles.colOutcomeClosed} />
+                    <col className={styles.colReasonClosed} />
                     <col className={styles.colRpnlClosed} />
                     <col className={styles.colAgeClosed} />
                   </colgroup>
@@ -529,7 +585,9 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                       <th className={styles.right}>Qty</th>
                       <th className={styles.right}>Open</th>
                       <th className={styles.right}>Close</th>
+                      <th>Entry</th>
                       <th className={styles.center}>W/L</th>
+                      <th className={styles.center}>Reason</th>
                       <th className={styles.right}>rPnL</th>
                       <th className={styles.right}>Age</th>
                     </tr>
@@ -537,13 +595,13 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                   <tbody>
                     {closedPositions.length === 0 && (
                       <tr>
-                        <td className={styles.emptyCell} colSpan={8}>
+                        <td className={styles.emptyCell} colSpan={9}>
                           No closed positions yet
                         </td>
                       </tr>
                     )}
-                    {closedPositions.map((p, idx) => (
-                      <tr key={`${p.instrument_id}-${p.closed_ts ?? p.opened_ts}-${idx}`}>
+                    {closedPositions.map((p) => (
+                      <tr key={paperPositionRowKey(p)}>
                         <td className={styles.marketCell} title={marketTooltip(p)}>
                           {marketTitle(p)}
                         </td>
@@ -555,15 +613,22 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
                         <td className={styles.right}>{fmtNum(p.quantity, 2)}</td>
                         <td className={styles.right}>{fmtNum(p.avg_px_open, 4)}</td>
                         <td className={styles.right}>{fmtNum(p.avg_px_close, 4)}</td>
+                        <td title={marketTooltip(p)}>{entryContextLabel(p)}</td>
                         <td
                           className={`${styles.center} ${settlementClass(p.settlement_outcome)}`}
                         >
                           {settlementLabel(p.settlement_outcome)}
                         </td>
+                        <td
+                          className={`${styles.center} ${closeReasonClass(p.close_reason)}`}
+                          title={p.close_reason ?? undefined}
+                        >
+                          {closeReasonLabel(p.close_reason)}
+                        </td>
                         <td className={`${styles.right} ${pnlClass(p.realized_pnl)}`}>
                           {fmtSignedMoney(p.realized_pnl)}
                         </td>
-                        <td className={styles.right}>{fmtDuration(p.duration_s)}</td>
+                        <td className={styles.right}>{fmtAgeSeconds(p.duration_s)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -576,13 +641,13 @@ export function PaperTradeDashboard({ curveMetric = "equity", onConfigChange }: 
             <div className={styles.tablePanel}>
               <div className={styles.sectionBar}>
                 <span className={styles.sectionTitle}>Activity</span>
-                <span className={styles.count}>{events.length}</span>
+                <span className={styles.count}>{visibleEvents.length}</span>
               </div>
               <div className={styles.feedScroll}>
-                {events.length === 0 && (
+                {visibleEvents.length === 0 && (
                   <div className={styles.emptyCell}>No activity yet</div>
                 )}
-                {events.map((e) => (
+                {visibleEvents.map((e) => (
                   <div
                     key={e._id}
                     className={styles.feedRow}
@@ -616,17 +681,25 @@ function feedKindClass(kind: string): string {
 
 function feedDetail(e: FeedEvent): string {
   if (e.kind === "fill") {
-    return `${e.side ?? ""} ${fmtNum(e.quantity, 2)} @ ${fmtNum(e.price, 4)}`;
+    const direction = e.underlying_direction ? ` ${e.underlying_direction}` : "";
+    const liq =
+      e.liq_notional !== undefined && e.liq_threshold !== undefined
+        ? ` · liq ${fmtMoney(e.liq_notional)}/${fmtMoney(e.liq_threshold)}`
+        : "";
+    const anchor = e.anchor_price !== undefined ? ` · anchor ${fmtNum(e.anchor_price, 4)}` : "";
+    const max = e.max_entry_price !== undefined ? ` · max ${fmtNum(e.max_entry_price, 4)}` : "";
+    return `${e.side ?? ""}${direction} ${fmtNum(e.quantity, 2)} @ ${fmtNum(e.price, 4)}${liq}${anchor}${max}`;
   }
   if (e.kind === "position_open") {
     return `${e.side ?? ""} ${fmtNum(e.quantity, 2)} @ ${fmtNum(e.price, 4)}`;
   }
   if (e.kind === "position_close") {
     const duration = e.duration_s !== null && e.duration_s !== undefined
-      ? ` in ${fmtDuration(e.duration_s)}`
+      ? ` in ${fmtAgeSeconds(e.duration_s)}`
       : "";
     const wl = e.settlement_outcome ? ` ${settlementLabel(e.settlement_outcome)}` : "";
-    return `pnl ${fmtSignedMoney(e.realized_pnl)}${wl}${duration}`;
+    const reason = e.close_reason ? ` · ${closeReasonLabel(e.close_reason)}` : "";
+    return `pnl ${fmtSignedMoney(e.realized_pnl)}${wl}${reason}${duration}`;
   }
   if (e.kind === "order_rejected" || e.kind === "order_denied") {
     return e.reason ?? "";
